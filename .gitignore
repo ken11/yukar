@@ -1,0 +1,54 @@
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+.DS_Store
+.env*
+!.env.example
+
+# Python (apps/api)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# 型生成の中間生成物（index.d.ts はコミットする）
+packages/api-types/openapi.json
+
+# カバレッジ / テスト成果物
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+test-results/
+playwright-report/
+
+# Python キャッシュ / ビルド成果物
+*.pyo
+*.pyd
+.mypy_cache/
+.ty_cache/
+*.egg-info/
+build/
+
+# ログ
+*.log
+
+# ローカル上書き設定
+*.local
+
+# エディタ
+.idea/
+.vscode/
+
+# 資格情報・鍵（誤コミット防止）
+*.pem
+*.key
+*.p12
+
+.claude
+.codex
+AGENTS.md
+CLAUDE.md

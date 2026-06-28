@@ -1,0 +1,8 @@
+packages:
+  - apps/web
+  - packages/*
+allowBuilds:
+  esbuild: true
+  sharp: false
+# Only resolve dependencies published at least 7 days ago (supply-chain hardening).
+minimumReleaseAge: 10080

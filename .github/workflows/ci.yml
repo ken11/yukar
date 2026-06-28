@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (ruff / ty / pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.11.21"
+
+      - name: Install Python 3.14 via uv
+        run: uv python install 3.14
+
+      - name: Install backend dependencies
+        working-directory: apps/api
+        run: uv sync --frozen --dev
+
+      # ruff format is intentionally omitted: ruff 0.15.x corrupts
+      # `except (A, B):` under target-version py314 (astral-sh/ruff#25065).
+      # check (lint/import-sort) is safe with the <0.15 pin in uv.lock.
+      - name: Lint (ruff check – no format)
+        working-directory: apps/api
+        run: uv run ruff check .
+
+      - name: Type-check (ty)
+        working-directory: apps/api
+        run: uv run ty check
+
+      - name: Test (pytest)
+        working-directory: apps/api
+        env:
+          # Force fake LLM provider so no AWS/Anthropic credentials are needed.
+          YUKAR_LLM_PROVIDER: fake
+          YUKAR_FAKE_SLEEP: "0"
+        run: uv run pytest --tb=short -q
+
+  frontend:
+    name: Frontend (biome / typecheck / vitest) + type-drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: "11.1.3"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Set up uv (for gen:types)
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.11.21"
+
+      - name: Install Python 3.14 via uv (for gen:types)
+        run: uv python install 3.14
+
+      - name: Install backend dependencies (for gen:types)
+        working-directory: apps/api
+        run: uv sync --frozen
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (biome check – no --write)
+        working-directory: apps/web
+        run: pnpm biome check .
+
+      - name: Type-check (tsc)
+        working-directory: apps/web
+        run: pnpm typecheck
+
+      - name: Test (vitest)
+        working-directory: apps/web
+        run: pnpm test
+
+      # Detect drift: regenerate api-types and fail if committed types differ.
+      # Run after vitest so type errors are caught first.
+      - name: Check api-types drift (gen:types)
+        run: |
+          pnpm gen:types
+          git diff --exit-code packages/api-types \
+            || (echo "ERROR: packages/api-types is out of sync with the backend OpenAPI schema. Run 'pnpm gen:types' and commit the result." && exit 1)

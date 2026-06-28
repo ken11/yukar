@@ -1,0 +1,104 @@
+/**
+ * Public type definitions for run-activity.
+ * Aggregates node state types and store state types.
+ */
+
+import type { StreamState } from "@/lib/assistant-ui/runtime";
+
+// ---- Node state types ----
+
+export type ManagerNodeStatus =
+  | "idle"
+  | "thinking" // manager_turn_started + token
+  | "delegating" // delegation event — waiting for workers
+  | "completed";
+
+export type WorkerNodeStatus =
+  | "pending" // delegation event — waiting to start
+  | "running" // worker_started + token
+  | "completed"
+  | "failed";
+
+export type EvaluatorNodeStatus =
+  | "evaluating" // evaluator_started
+  | "accepted"
+  | "rejected";
+
+export interface ManagerNodeState {
+  role: "manager";
+  threadId: string;
+  status: ManagerNodeStatus;
+  isStreaming: boolean;
+  lastMessage?: string;
+}
+
+export interface WorkerNodeState {
+  role: "worker";
+  threadId: string;
+  taskId: string | null;
+  repo: string | null;
+  taskTitle: string | null;
+  status: WorkerNodeStatus;
+  isStreaming: boolean;
+}
+
+export interface EvaluatorNodeState {
+  role: "evaluator";
+  threadId: string;
+  workerId: string;
+  taskId: string;
+  repo: string;
+  evalId: string;
+  status: EvaluatorNodeStatus;
+  isStreaming: boolean;
+}
+
+// #39: Removed unused ThreadNodeState union
+
+export interface ThreadTreeState {
+  manager: ManagerNodeState | null;
+  workers: Record<string, WorkerNodeState>;
+  evaluators: Record<string, EvaluatorNodeState>;
+  /** taskId → workerId mapping (built from delegation events) */
+  taskToWorker: Record<string, string>;
+}
+
+// ---- Store state types ----
+
+export type RunActivityStatus =
+  | "idle"
+  | "preparing"
+  | "running"
+  | "paused"
+  | "awaiting_input"
+  | "completed"
+  | "error"
+  | "interrupted";
+
+/** Live buffer state per thread */
+export interface ThreadLiveState {
+  streamState: StreamState;
+  /** At least one token has arrived, or the node is isStreaming */
+  isRunning: boolean;
+}
+
+export interface RunActivityState {
+  /** Overall run status */
+  runStatus: RunActivityStatus;
+  /** Flag indicating a pending pause is awaiting application */
+  pausePending: boolean;
+  /** Error message from run_failed. Set only on failure. */
+  runError: string | null;
+  /** Awaiting-input info from Manager's ask_user(). null = not awaiting. */
+  awaitingInput: { threadId: string; question: string } | null;
+  /** Agent tree */
+  treeState: ThreadTreeState;
+  /** Live buffers per thread. key=threadId */
+  liveBuffers: Record<string, ThreadLiveState>;
+  /**
+   * thread_id of the active manager thread.
+   * Set when restored from REST via RunState.manager_thread.
+   * null = not yet confirmed (operates with "manager" fallback).
+   */
+  managerThreadId: string | null;
+}

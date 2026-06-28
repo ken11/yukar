@@ -1,0 +1,272 @@
+@import "tailwindcss";
+
+/*
+ * yukar design token layer
+ */
+@theme {
+  /* ---- type scale (high-density scale from the mock) ---- */
+  --text-body-sm: 13px;
+  --text-body-sm--line-height: 18px;
+  --text-body-md: 14px;
+  --text-body-md--line-height: 20px;
+  --text-body-lg: 16px;
+  --text-body-lg--line-height: 24px;
+  --text-headline-sm: 18px;
+  --text-headline-sm--line-height: 28px;
+  --text-headline-sm--font-weight: 600;
+  --text-headline-md: 24px;
+  --text-headline-md--line-height: 32px;
+  --text-headline-md--letter-spacing: -0.02em;
+  --text-headline-md--font-weight: 600;
+  --text-headline-lg: 30px;
+  --text-headline-lg--line-height: 36px;
+  --text-headline-lg--letter-spacing: -0.02em;
+  --text-headline-lg--font-weight: 600;
+  --text-code-sm: 12px;
+  --text-code-sm--line-height: 18px;
+  --text-code-md: 14px;
+  --text-code-md--line-height: 22px;
+  --text-label: 12px;
+  --text-label--line-height: 16px;
+  --text-label--letter-spacing: 0.05em;
+  --text-label--font-weight: 500;
+
+  /* spacing — architectural-scale intervals */
+  --spacing-void:    2.5rem;   /* 40px */
+  --spacing-section: 4rem;     /* 64px */
+  --spacing-bay:     6rem;     /* 96px */
+  --rail-w:          56px;
+  --content-max:     1200px;
+  --measure-read:    720px;
+
+  /* additional type tokens */
+  --text-address: 14px;
+  --text-address--line-height: 20px;
+  --text-address--font-weight: 500;
+  --text-title: 26px;
+  --text-title--line-height: 32px;
+  --text-title--letter-spacing: -0.02em;
+  --text-title--font-weight: 600;
+  --tracking-instrument: 0.02em;
+
+}
+
+@theme inline {
+  --font-sans: var(--font-geist), var(--font-noto-jp), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "SFMono-Regular", monospace;
+
+  /* ---- color roles (sourced from :root / .dark) ---- */
+  --color-background: var(--color-background);
+  --color-on-background: var(--color-on-background);
+  --color-surface: var(--color-surface);
+  --color-surface-dim: var(--color-surface-dim);
+  --color-surface-bright: var(--color-surface-bright);
+  --color-surface-container-lowest: var(--color-surface-container-lowest);
+  --color-surface-container-low: var(--color-surface-container-low);
+  --color-surface-container: var(--color-surface-container);
+  --color-surface-container-high: var(--color-surface-container-high);
+  --color-surface-container-highest: var(--color-surface-container-highest);
+  --color-surface-variant: var(--color-surface-variant);
+  --color-on-surface: var(--color-on-surface);
+  --color-on-surface-variant: var(--color-on-surface-variant);
+  --color-outline: var(--color-outline);
+  --color-outline-variant: var(--color-outline-variant);
+
+  --color-primary: var(--color-primary);
+  --color-on-primary: var(--color-on-primary);
+  --color-primary-container: var(--color-primary-container);
+
+  --color-secondary: var(--color-secondary);
+  --color-on-secondary: var(--color-on-secondary);
+  --color-secondary-container: var(--color-secondary-container);
+
+  --color-error: var(--color-error);
+  --color-on-error: var(--color-on-error);
+  --color-error-container: var(--color-error-container);
+  --color-on-error-container: var(--color-on-error-container);
+
+  /* semantic state */
+  --color-added: var(--color-added);
+  --color-added-bg: var(--color-added-bg);
+  --color-removed: var(--color-removed);
+  --color-removed-bg: var(--color-removed-bg);
+  --color-running: var(--color-running);
+  --color-success: var(--color-success);
+  --color-light: var(--color-light);
+
+  /* shadow ridge */
+  --edge-lit: var(--edge-lit);
+  --edge-shadow: var(--edge-shadow);
+  --color-surface-header: var(--color-surface-header);
+}
+
+html[lang="ja"] { --leading-prose: 1.7; --tracking-prose: 0.02em; }
+html[lang="en"] { --leading-prose: 1.5; --tracking-prose: 0; }
+
+/* ============================================================
+ * Theme tokens
+ * ============================================================
+ * :root = light theme (default)
+ * .dark  = dark theme (overrides when html.dark is set)
+ * ============================================================ */
+
+/* --- Light theme (:root) --- */
+:root {
+  --color-background: #f5f5f7;
+  --color-on-background: #1a1a1c;
+  --color-surface: #f5f5f7;
+  --color-surface-dim: #e8e8ea;
+  --color-surface-bright: #ffffff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #ededef;
+  --color-surface-container: #e8e8ea;
+  --color-surface-container-high: #e0e0e2;
+  --color-surface-container-highest: #d8d8da;
+  --color-surface-variant: #dddde0;
+  --color-on-surface: #1a1a1c;
+  --color-on-surface-variant: #46494a;
+  --color-outline: #747778;
+  --color-outline-variant: #c4c7c8;
+
+  --color-primary: #1a1a1c;
+  --color-on-primary: #f5f5f7;
+  --color-primary-container: #e0e0e2;
+
+  --color-secondary: #006878;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #00879c;
+
+  --color-error: #ba1a1a;
+  --color-on-error: #ffffff;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #410002;
+
+  /* semantic state — adjusted for light theme */
+  --color-added:      #007a88;
+  --color-added-bg:   color-mix(in oklab, #00879c 10%, transparent);
+  --color-removed:    #ba1a1a;
+  --color-removed-bg: color-mix(in oklab, #ba1a1a 8%, transparent);
+  --color-running:    #006878;
+  --color-success:    #006878;
+  --color-light:      #006878;
+
+  /* shadow ridge — light theme */
+  --edge-lit:    color-mix(in oklab, #ffffff 60%, transparent);
+  --edge-shadow: color-mix(in oklab, #000000 12%, transparent);
+  --color-surface-header: #ededef;
+}
+
+/* --- Dark theme (.dark) --- */
+.dark {
+  --color-background: #131315;
+  --color-on-background: #e5e1e4;
+  --color-surface: #131315;
+  --color-surface-dim: #131315;
+  --color-surface-bright: #39393b;
+  --color-surface-container-lowest: #0e0e10;
+  --color-surface-container-low: #1c1b1d;
+  --color-surface-container: #201f22;
+  --color-surface-container-high: #2a2a2c;
+  --color-surface-container-highest: #353437;
+  --color-surface-variant: #353437;
+  --color-on-surface: #e5e1e4;
+  --color-on-surface-variant: #c4c7c8;
+  --color-outline: #8e9192;
+  --color-outline-variant: #444748;
+
+  --color-primary: #ffffff;
+  --color-on-primary: #2f3131;
+  --color-primary-container: #e2e2e2;
+
+  --color-secondary: #bdf4ff;
+  --color-on-secondary: #00363d;
+  --color-secondary-container: #00e3fd;
+
+  --color-error: #ffb4ab;
+  --color-on-error: #690005;
+  --color-error-container: #93000a;
+  --color-on-error-container: #ffdad6;
+
+  /* semantic state — dark theme */
+  --color-added:      #7fe9f5;
+  --color-added-bg:   color-mix(in oklab, #00e3fd 8%, transparent);
+  --color-removed:    #ffb4ab;
+  --color-removed-bg: color-mix(in oklab, #ffb4ab 7%, transparent);
+  --color-running:    #00e3fd;
+  --color-success:    #00e3fd;
+  --color-light:      #00e3fd;
+
+  /* shadow ridge — dark theme */
+  --edge-lit:    color-mix(in oklab, #ffffff 5%, transparent);
+  --edge-shadow: color-mix(in oklab, #000000 28%, transparent);
+  --color-surface-header: #181718;
+}
+
+@layer utilities {
+  /* .data — instrument values, IDs, counts, costs. Fixed-width tabular */
+  .data { font: 500 12px/16px var(--font-mono); color: var(--color-on-surface-variant);
+          font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-instrument); }
+  .address { font: 500 14px/20px var(--font-mono); color: var(--color-on-surface-variant);
+             font-variant-numeric: tabular-nums; }
+  .address-active { color: var(--color-on-surface); font-weight: 600; }
+
+  /* axis/datum = ridge produced by shadow. Creates the impression of a line via lit highlight + shadow-side tone pair, not a hard rule.
+     Use in combination with shifting the surface tone by one step (rail=container-low / header=surface-header / field=surface). */
+  /* Vertical axis — the right edge of the rail becomes a light-and-shadow ridge at the boundary with the field */
+  .edge-v { box-shadow: 1px 0 0 0 var(--edge-shadow), inset -1px 0 0 0 var(--edge-lit); }
+  /* Horizontal datum — bottom of header. The boundary between header surface (light) and field (dark) is the horizon */
+  .edge-h { box-shadow: 0 1px 0 0 var(--edge-shadow), inset 0 -1px 0 0 var(--edge-lit); }
+
+  /* single point of light — current location / live. Short vertical segment on the left edge */
+  .light-v { box-shadow: inset 2px 0 0 0 var(--color-light); }
+  @keyframes light-pulse { 0%,100% { opacity:.6 } 50% { opacity:1 } }
+  .light-live { animation: light-pulse 2.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .light-live { animation: none; opacity: 1; } }
+}
+
+html {
+  color-scheme: dark;
+}
+
+html:not(.dark) {
+  color-scheme: light;
+}
+
+/* Prevent horizontal scrolling on mobile */
+html,
+body {
+  overflow-x: hidden;
+}
+
+body {
+  @apply bg-background text-on-background font-sans antialiased;
+}
+
+/* Scrollbar for high-density UI (follows mock) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-outline-variant);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-outline);
+}
+
+.material-symbols-outlined {
+  font-variation-settings:
+    "FILL" 0,
+    "wght" 400,
+    "GRAD" 0,
+    "opsz" 24;
+  line-height: 1;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-secondary-container) 35%, transparent);
+}
