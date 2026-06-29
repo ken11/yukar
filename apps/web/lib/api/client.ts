@@ -1,6 +1,6 @@
 /**
  * Fetch wrapper for both RSC and client use.
- * - Server side (RSC): hits http://127.0.0.1:8000 directly
+ * - Server side (RSC): hits FastAPI directly (YUKAR_API_BASE_URL, default http://127.0.0.1:8000)
  * - Client side (browser): uses relative /api (via next.config.ts rewrite)
  */
 
@@ -17,8 +17,10 @@ export class ApiError extends Error {
 
 function baseUrl(): string {
   if (typeof window === "undefined") {
-    // RSC / Node — hit FastAPI directly
-    return "http://127.0.0.1:8000";
+    // RSC / Node — hit FastAPI directly. Mirror next.config.ts's rewrite target so
+    // server-side fetches reach the same FastAPI the browser's /api rewrite forwards to
+    // (E2E points YUKAR_API_BASE_URL at a different-port FastAPI).
+    return process.env.YUKAR_API_BASE_URL ?? "http://127.0.0.1:8000";
   }
   // browser — same-origin /api rewrite
   return "";
