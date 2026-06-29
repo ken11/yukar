@@ -356,6 +356,9 @@ const ja = {
     model: {
       globalModel: "グローバルモデル ID",
       maxTokens: "最大トークン数",
+      requestTimeout: "リクエストタイムアウト（秒）",
+      requestTimeoutHint:
+        "ストリーミング中に次のチャンクを待つ最大秒数（合計時間ではない）。高い推論努力（xhigh/max）は数分かかることがあり、既定が短いと接続タイムアウトになる。既定 900。",
       promptCaching: "プロンプトキャッシュ",
       promptCachingEnabled: "有効",
       promptCachingDisabled: "無効",

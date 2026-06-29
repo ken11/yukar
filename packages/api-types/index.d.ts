@@ -1945,6 +1945,11 @@ export interface components {
              * @default true
              */
             prompt_caching: boolean;
+            /**
+             * Request Timeout
+             * @default 900
+             */
+            request_timeout: number;
             roles?: components["schemas"]["LLMRolesSettings"];
             summarization?: components["schemas"]["ConversationSummarySettings"];
         };

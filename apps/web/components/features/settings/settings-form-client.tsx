@@ -37,6 +37,7 @@ function defaultSettings(): Settings {
       model_id: "us.anthropic.claude-sonnet-4-6-20251201-v1:0",
       max_tokens: 8192,
       prompt_caching: true,
+      request_timeout: 900,
       summarization: {
         enabled: true,
         summary_ratio: 0.3,
@@ -126,6 +127,7 @@ export function SettingsFormClient({ initialSettings }: SettingsFormClientProps)
     model_id: "",
     max_tokens: 8192,
     prompt_caching: true,
+    request_timeout: 900,
   };
   const agent = form.agent ?? {
     max_parallel_epics: 2,
@@ -264,6 +266,19 @@ export function SettingsFormClient({ initialSettings }: SettingsFormClientProps)
               onChange={(e) => setLlm({ max_tokens: Number(e.target.value) })}
               className={inputClass}
             />
+          </Field>
+
+          <Field id="settings-llm-request-timeout" label={st.model.requestTimeout}>
+            <input
+              id="settings-llm-request-timeout"
+              type="number"
+              min={1}
+              max={3600}
+              value={llm.request_timeout ?? 900}
+              onChange={(e) => setLlm({ request_timeout: Number(e.target.value) })}
+              className={inputClass}
+            />
+            <FieldHint>{st.model.requestTimeoutHint}</FieldHint>
           </Field>
 
           <Field id="settings-llm-prompt-caching" label={st.model.promptCaching}>

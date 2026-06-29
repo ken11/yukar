@@ -32,6 +32,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
       model_id: "us.anthropic.claude-sonnet-4-6-20251201-v1:0",
       max_tokens: 8192,
       prompt_caching: true,
+      request_timeout: 900,
       summarization: {
         enabled: true,
         summary_ratio: 0.3,
@@ -131,6 +132,7 @@ describe("SettingsFormClient — blank→null conversion for nullable fields", (
         model_id: "m",
         max_tokens: 8192,
         prompt_caching: true,
+        request_timeout: 900,
         summarization: {
           enabled: true,
           summary_ratio: 0.3,

@@ -84,6 +84,7 @@ def create_model(
         return FakeModel.from_env(role, model_id=model_id)
 
     if provider == "bedrock":
+        from botocore.config import Config as BotocoreConfig
         from strands.models.bedrock import BedrockModel
 
         extra: dict[str, Any] = {}
@@ -92,6 +93,16 @@ def create_model(
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
             }
+
+        # Raise the boto read timeout above the strands default (120s). High
+        # reasoning effort can leave the streaming socket idle for minutes
+        # between chunks; the default surfaces as a ReadTimeoutError mid-run.
+        # Passing boto_client_config means strands no longer injects its own
+        # read_timeout, so we set it explicitly here.
+        extra["boto_client_config"] = BotocoreConfig(
+            connect_timeout=60,
+            read_timeout=settings.request_timeout,
+        )
 
         if settings.prompt_caching:
             from strands.models import CacheConfig
@@ -133,6 +144,9 @@ def create_model(
         api_key_env = settings.api_key_env or "ANTHROPIC_API_KEY"
         api_key = os.environ.get(api_key_env)
         client_args: dict[str, Any] = {"api_key": api_key} if api_key else {}
+        # Mirror the bedrock read-timeout bump: high reasoning effort can stall
+        # the stream for minutes, exceeding the Anthropic SDK's default timeout.
+        client_args["timeout"] = float(settings.request_timeout)
 
         # Mirror the bedrock ``extra`` pattern: a ``dict[str, Any]`` (value type
         # ``Any``) so spreading it as ``**`` keyword args type-checks cleanly.

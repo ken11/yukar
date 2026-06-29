@@ -166,6 +166,14 @@ class LLMSettings(BaseModel):
     max_tokens: int = 8192
     # Enable Anthropic prompt caching (ignored for bedrock / fake).
     prompt_caching: bool = True
+    # Read timeout (seconds) for a single streaming LLM request — the maximum
+    # time to wait for the next chunk on the socket, NOT the total request time.
+    # High reasoning effort (thinking=adaptive at xhigh/max) can pause for many
+    # minutes before/between streamed chunks; the provider default (bedrock:
+    # 120s) is too short and surfaces as a connection/read timeout mid-run.
+    # Applied to bedrock (boto read_timeout) and anthropic (client timeout);
+    # ignored for fake.
+    request_timeout: int = Field(default=900, ge=1)
     # Per-role overrides — any unset field falls back to global model_id above.
     roles: LLMRolesSettings = Field(default_factory=LLMRolesSettings)
     # Conversation history summarisation settings.

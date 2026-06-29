@@ -364,6 +364,9 @@ const en = {
     model: {
       globalModel: "Global Model ID",
       maxTokens: "Max Tokens",
+      requestTimeout: "Request Timeout (seconds)",
+      requestTimeoutHint:
+        "Max seconds to wait for the next chunk while streaming (not total time). High reasoning effort (xhigh/max) can pause for minutes; too low a value surfaces as a connection timeout. Default 900.",
       promptCaching: "Prompt Caching",
       promptCachingEnabled: "Enabled",
       promptCachingDisabled: "Disabled",
