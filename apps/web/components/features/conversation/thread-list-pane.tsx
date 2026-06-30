@@ -44,9 +44,14 @@ export function ThreadListPane({
     staleTime: 30_000,
   });
 
-  // Separate active and archived threads
-  const activeThreads = threads.filter((t) => t.status !== "archived");
-  const archivedThreads = threads.filter((t) => t.status === "archived");
+  // The thread list shows only user-facing trial threads (manager) and any
+  // human "user" threads. Worker / evaluator / arbiter threads are system-
+  // generated and already fully represented — with live status and hierarchy —
+  // in the Agent State tree (ThreadTreePanel) below, so listing them here is
+  // redundant. They remain reachable via the Agent State tree links and by URL.
+  const listed = threads.filter((t) => t.role === "manager" || t.role === "user");
+  const activeThreads = listed.filter((t) => t.status !== "archived");
+  const archivedThreads = listed.filter((t) => t.status === "archived");
 
   return (
     <nav

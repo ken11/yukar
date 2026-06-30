@@ -829,6 +829,9 @@ describe("Mn2: INIT classifies failed evaluators as rejected", () => {
   it("an evaluator with status=failed is initialized as rejected", () => {
     const threads: ThreadEntry[] = [
       makeThreadEntry({ id: "manager", role: "manager" }),
+      // The parent worker is always present (registered before the evaluator);
+      // the tree is scoped to the active trial via the worker→manager link.
+      makeThreadEntry({ id: "w1", role: "worker", task: "T1", parent_thread_id: "manager" }),
       makeThreadEntry({
         id: "eval-1",
         role: "evaluator",
@@ -844,6 +847,7 @@ describe("Mn2: INIT classifies failed evaluators as rejected", () => {
   it("an evaluator with status=resolved is initialized as accepted", () => {
     const threads: ThreadEntry[] = [
       makeThreadEntry({ id: "manager", role: "manager" }),
+      makeThreadEntry({ id: "w1", role: "worker", task: "T1", parent_thread_id: "manager" }),
       makeThreadEntry({
         id: "eval-2",
         role: "evaluator",
@@ -3066,5 +3070,135 @@ describe("RUN_PREPARING — preparing phase before Manager starts", () => {
     };
     const action = toRunActivityAction(event);
     expect(action).toEqual({ type: "RUN_PREPARING" });
+  });
+});
+
+// ============================================================
+// 15. Agent-state tree is scoped to the active trial (P2)
+//     Archived / inactive trials' workers + evaluators must not linger.
+// ============================================================
+
+describe("Agent-state tree scoping to active trial", () => {
+  it("excludes an archived trial's worker + evaluator on INIT", () => {
+    const threads: ThreadEntry[] = [
+      // Archived trial A and its agents.
+      makeThreadEntry({ id: "mgr-A", role: "manager", status: "archived" }),
+      makeThreadEntry({
+        id: "w-A",
+        role: "worker",
+        task: "T1",
+        parent_thread_id: "mgr-A",
+        status: "resolved",
+      }),
+      makeThreadEntry({
+        id: "eval-A",
+        role: "evaluator",
+        task: "T1",
+        parent_thread_id: "w-A",
+        status: "resolved",
+      }),
+      // Active trial B (no agents yet).
+      makeThreadEntry({ id: "mgr-B", role: "manager", status: "active" }),
+    ];
+    const state = applyActions([
+      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-B" },
+      { type: "INIT", threads },
+    ]);
+    expect(state.treeState.workers["w-A"]).toBeUndefined();
+    expect(state.treeState.evaluators["eval-A"]).toBeUndefined();
+    expect(Object.keys(state.treeState.workers)).toHaveLength(0);
+    expect(Object.keys(state.treeState.evaluators)).toHaveLength(0);
+    expect(state.treeState.taskToWorker.T1).toBeUndefined();
+  });
+
+  it("keeps the active trial's worker + evaluator on INIT", () => {
+    const threads: ThreadEntry[] = [
+      makeThreadEntry({ id: "mgr-B", role: "manager", status: "active" }),
+      makeThreadEntry({ id: "w-B", role: "worker", task: "T1", parent_thread_id: "mgr-B" }),
+      makeThreadEntry({
+        id: "eval-B",
+        role: "evaluator",
+        task: "T1",
+        parent_thread_id: "w-B",
+        status: "resolved",
+      }),
+    ];
+    const state = applyActions([
+      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-B" },
+      { type: "INIT", threads },
+    ]);
+    expect(state.treeState.workers["w-B"]).toBeDefined();
+    expect(state.treeState.workers["w-B"].parentManagerId).toBe("mgr-B");
+    expect(state.treeState.evaluators["eval-B"]).toBeDefined();
+    expect(state.treeState.taskToWorker.T1).toBe("w-B");
+  });
+
+  it("drops all worker/evaluator nodes when no active trial remains", () => {
+    // Only an archived trial exists (e.g. the sole trial was archived → active_thread_id cleared).
+    const threads: ThreadEntry[] = [
+      makeThreadEntry({ id: "mgr-A", role: "manager", status: "archived" }),
+      makeThreadEntry({
+        id: "w-A",
+        role: "worker",
+        task: "T1",
+        parent_thread_id: "mgr-A",
+        status: "resolved",
+      }),
+    ];
+    const state = applyActions([
+      { type: "SET_MANAGER_THREAD_ID", threadId: null },
+      { type: "INIT", threads },
+    ]);
+    expect(Object.keys(state.treeState.workers)).toHaveLength(0);
+    expect(Object.keys(state.treeState.evaluators)).toHaveLength(0);
+  });
+
+  it("prunes a previous trial's live worker when SET_MANAGER_THREAD_ID switches trials", () => {
+    // Trial A is active and has a live (delegated) worker, then the user switches to trial B.
+    const delegation: DelegationEvent = {
+      ...BASE_EVENT,
+      type: "delegation",
+      items: [{ task_id: "T1", repo: "r", title: "task one" }],
+    } as DelegationEvent;
+    const state = applyActions([
+      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-A" },
+      // INIT creates the manager node so DELEGATION (which no-ops without one) applies.
+      { type: "INIT", threads: [makeThreadEntry({ id: "mgr-A", role: "manager" })] },
+      { type: "DELEGATION", event: delegation },
+    ]);
+    // The pending worker belongs to trial A.
+    expect(state.treeState.workers["pending-T1"].parentManagerId).toBe("mgr-A");
+
+    // Switch active trial to B — A's worker must be pruned.
+    const after = runActivityReducer(state, {
+      type: "SET_MANAGER_THREAD_ID",
+      threadId: "mgr-B",
+    });
+    expect(after.treeState.workers["pending-T1"]).toBeUndefined();
+    expect(Object.keys(after.treeState.workers)).toHaveLength(0);
+  });
+
+  it("clears the tree on SET_MANAGER_THREAD_ID(null) with no following INIT", () => {
+    // Trial A is active with a live worker, then it is archived mid-session:
+    // active_thread_id → null arrives via SET_MANAGER_THREAD_ID(null) with no
+    // INIT to reconcile. The lingering worker must be cleared immediately.
+    const delegation: DelegationEvent = {
+      ...BASE_EVENT,
+      type: "delegation",
+      items: [{ task_id: "T1", repo: "r", title: "task one" }],
+    } as DelegationEvent;
+    const state = applyActions([
+      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-A" },
+      { type: "INIT", threads: [makeThreadEntry({ id: "mgr-A", role: "manager" })] },
+      { type: "DELEGATION", event: delegation },
+    ]);
+    expect(state.treeState.workers["pending-T1"]).toBeDefined();
+
+    const after = runActivityReducer(state, {
+      type: "SET_MANAGER_THREAD_ID",
+      threadId: null,
+    });
+    expect(Object.keys(after.treeState.workers)).toHaveLength(0);
+    expect(Object.keys(after.treeState.evaluators)).toHaveLength(0);
   });
 });

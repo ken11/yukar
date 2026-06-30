@@ -40,6 +40,14 @@ export interface WorkerNodeState {
   taskTitle: string | null;
   status: WorkerNodeStatus;
   isStreaming: boolean;
+  /**
+   * thread_id of the manager trial this worker belongs to (its parent in the
+   * agent tree). Used to scope the agent-state tree to the active trial so that
+   * workers/evaluators of an archived (or otherwise inactive) trial do not
+   * linger. `null` = parent not yet known (just added live; kept while an
+   * active trial exists, cleared when there is no active trial).
+   */
+  parentManagerId: string | null;
 }
 
 export interface EvaluatorNodeState {

@@ -21,7 +21,15 @@ import { useCloseEpic, useReopenEpic } from "./use-close-epic";
  * Default ("all") HIDES closed only — merged is included in "all".
  * closed/merged only appear in isolation when their chip is explicitly selected.
  */
-type FilterValue = "all" | "planned" | "in_progress" | "completed" | "failed" | "closed" | "merged";
+type FilterValue =
+  | "all"
+  | "planned"
+  | "in_progress"
+  | "in_review"
+  | "completed"
+  | "failed"
+  | "closed"
+  | "merged";
 
 interface EpicsBoardClientProps {
   projectId: string;
@@ -79,6 +87,7 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
     { value: "all", labelKey: "epicsBoard.filter.all" },
     { value: "planned", labelKey: "epic.status.planned" },
     { value: "in_progress", labelKey: "epic.status.running" },
+    { value: "in_review", labelKey: "epic.status.in_review" },
     { value: "completed", labelKey: "epic.status.completed" },
     { value: "failed", labelKey: "epic.status.error" },
     { value: "closed", labelKey: "epic.status.closed" },

@@ -592,6 +592,7 @@ class EpicOrchestrator:
         )
         dispatch_tool = self._make_dispatch_tool()
         complete_epic_tool = self._make_complete_epic_tool()
+        read_branch_diff_tool = self._make_read_branch_diff_tool()
         ask_user_tool = self._make_ask_user_tool()
 
         # Register manager in threads.yaml index (UI listing only).
@@ -752,6 +753,7 @@ class EpicOrchestrator:
                 task_update_tool,
                 dispatch_tool,
                 complete_epic_tool,
+                read_branch_diff_tool,
                 ask_user_tool,
                 remember_tool,
                 *manager_repo_tools,
@@ -1128,6 +1130,109 @@ class EpicOrchestrator:
             return await self._do_complete_epic(learnings=learnings)
 
         return complete_epic
+
+    def _make_read_branch_diff_tool(self) -> Any:
+        """Return the read-only ``read_branch_diff`` tool bound to this orchestrator."""
+        from strands import tool
+
+        @tool
+        async def read_branch_diff(repo: str | None = None) -> dict[str, Any]:
+            """Read the branch diff (epic branch vs default branch) for final review.
+
+            Read-only.  Use this BEFORE calling ``complete_epic`` to independently
+            verify what was actually implemented across the Epic — do not rely
+            solely on the Evaluator verdicts.  The returned diff is the full
+            change set of this trial's branch versus each repo's default branch
+            (the same "branch diff" the user reviews).  If the diff does not
+            satisfy the task contracts or acceptance criteria, re-``dispatch`` a
+            fix or escalate via ``ask_user`` instead of completing.
+
+            Args:
+                repo: Inspect only this repository.  Omit to inspect every repo
+                    the Epic has touched.
+
+            Returns:
+                ``{ok, repos: [{repo, branch, total_added, total_deleted,
+                files: [{path, added, deleted}], diff, truncated}]}``.  A repo
+                whose diff cannot be computed is reported as ``{repo, error}``.
+            """
+            return await self._do_read_branch_diff(repo)
+
+        return read_branch_diff
+
+    # ------------------------------------------------------------------
+    # read_branch_diff implementation
+    # ------------------------------------------------------------------
+
+    async def _do_read_branch_diff(self, repo: str | None = None) -> dict[str, Any]:
+        """Host-side implementation of the read-only ``read_branch_diff`` tool."""
+        from pathlib import Path
+
+        from yukar.git.diff import get_diff
+        from yukar.storage import project_repo
+
+        # Per-repo unified-diff cap so a large change set cannot blow the
+        # Manager's context window.  File stats are always returned in full.
+        max_chars = 60_000
+
+        assert self._epic is not None
+
+        # Resolve the active trial branch with the same precedence as dispatch:
+        # the trial-specific ThreadEntry.branch, falling back to epic.branch.
+        trial_branch = self._epic.branch
+        tf = await threads_repo.get_threads(self._root, self._project_id, self._epic_id)
+        entry = next((t for t in tf.threads if t.id == self._manager_thread_id), None)
+        if entry is not None and entry.branch:
+            trial_branch = entry.branch
+
+        all_repos = await project_repo.list_repos(self._root, self._project_id)
+        by_name = {r.name: r for r in all_repos}
+        if repo is not None:
+            if repo not in by_name:
+                return {"ok": False, "reason": f"unknown repo: {repo!r}"}
+            targets = [by_name[repo]]
+        elif self._epic.touched_repos:
+            targets = [by_name[n] for n in self._epic.touched_repos if n in by_name]
+        else:
+            targets = all_repos
+
+        results: list[dict[str, Any]] = []
+        for r in targets:
+            try:
+                d = await get_diff(
+                    repo_path=Path(r.path),
+                    mode="epic",
+                    repo_name=r.name,
+                    branch=trial_branch,
+                    default_branch=r.default_branch,
+                )
+            except Exception as exc:
+                # Branch may not exist yet (no commits) or worktree is transient.
+                # Report per-repo and keep going rather than failing the tool.
+                results.append({"repo": r.name, "error": str(exc)})
+                continue
+            diff_text = d.unified_diff or ""
+            truncated = len(diff_text) > max_chars
+            if truncated:
+                diff_text = diff_text[:max_chars] + "\n…(diff truncated; inspect per-file)…\n"
+            results.append(
+                {
+                    "repo": d.repo,
+                    "branch": trial_branch,
+                    "total_added": d.total_added,
+                    "total_deleted": d.total_deleted,
+                    "files": [
+                        {"path": f.path, "added": f.added, "deleted": f.deleted} for f in d.files
+                    ],
+                    "diff": diff_text,
+                    "truncated": truncated,
+                }
+            )
+
+        out: dict[str, Any] = {"ok": True, "repos": results}
+        if not results:
+            out["note"] = "No repos to inspect yet (the Epic has touched no repositories)."
+        return out
 
     # ------------------------------------------------------------------
     # Dispatch implementation

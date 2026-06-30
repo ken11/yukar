@@ -363,12 +363,14 @@ class TestEpicStatusSync:
         handle = sup._runs[key]  # noqa: SLF001
         await asyncio.wait_for(handle.task, timeout=20.0)
 
+        # The Manager finishing means the work AWAITS USER REVIEW — not done.
+        # Only the user reaches completed/merged. See models.epic.EpicStatus.
         epic = await get_epic(root, "ep-proj", "EP-1")
         assert epic is not None
-        assert epic.status == "completed"
+        assert epic.status == "in_review"
 
     async def test_epic_status_via_api_run(self, app_client: AsyncClient) -> None:
-        """POST /run sets epic status to in_progress; after completion it's completed."""
+        """POST /run sets epic status to in_progress; after completion it's in_review."""
         from yukar.events.bus import subscribe
 
         await app_client.post("/api/projects", json={"id": "sp", "name": "SP", "repos": []})
@@ -402,20 +404,21 @@ class TestEpicStatusSync:
         await asyncio.wait_for(collector, timeout=3.0)
 
         # ``run_completed`` is emitted by the runner (orchestrator) as its final
-        # act, *before* the supervisor persists ``epic.status="completed"`` — the
+        # act, *before* the supervisor persists ``epic.status="in_review"`` — the
         # supervisor owns that write and runs it after ``runner.start()`` returns.
         # The event is therefore observable a beat before the terminal status
         # lands on disk, so poll for it rather than asserting it is already
         # persisted the instant the event fires (the sibling test synchronises on
-        # the run task itself for the same reason).
+        # the run task itself for the same reason). The run finishing leaves the
+        # epic awaiting the user's review, NOT completed.
         status = None
         for _ in range(50):
             r = await app_client.get("/api/projects/sp/epics/EP-1")
             status = r.json()["status"]
-            if status == "completed":
+            if status == "in_review":
                 break
             await asyncio.sleep(0.05)
-        assert status == "completed"
+        assert status == "in_review"
 
 
 # ---------------------------------------------------------------------------

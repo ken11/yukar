@@ -41,9 +41,10 @@ class PatchEpicRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     acceptance_criteria: str | None = None
-    status: Literal["planned", "in_progress", "completed", "failed", "closed", "merged"] | None = (
-        None
-    )
+    status: (
+        Literal["planned", "in_progress", "in_review", "completed", "failed", "closed", "merged"]
+        | None
+    ) = None
     manager_effort: Literal["high", "xhigh", "max"] | None = None
 
 
@@ -105,9 +106,12 @@ async def patch_epic(
     root: WorkspaceRootDep,
     supervisor: SupervisorDep,
 ) -> Epic:
-    # Guard: prevent setting a terminal status while a run is active —
-    # consistent with the dedicated /close endpoint.
-    if body.status in {"closed", "merged"} and supervisor.is_running(project_id, epic_id):
+    # Guard: prevent reaching a terminal / approved status while a run is active.
+    # ``completed`` is the user's "approve" action and, like close/merge, must
+    # not race an in-flight run — consistent with the dedicated /close endpoint.
+    if body.status in {"closed", "merged", "completed"} and supervisor.is_running(
+        project_id, epic_id
+    ):
         raise HTTPException(status_code=409, detail="A run is active — close is not allowed")
     epic = await get_epic_or_404(root, project_id, epic_id)
     previous_status = epic.status

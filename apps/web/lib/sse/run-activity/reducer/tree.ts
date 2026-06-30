@@ -27,14 +27,67 @@ import type {
 // ---- Tree helpers ----
 
 /**
- * Non-destructive reconciliation: preserves existing nodes while adding unregistered threads.
- * Called from the INIT action.
+ * Scope the worker/evaluator tree to a single manager trial.
+ *
+ * The agent-state tree shows the agents of the ACTIVE trial. Workers carry the
+ * id of the manager trial they belong to (`parentManagerId`); evaluators link
+ * to their worker via `workerId`. This drops everything that does not belong to
+ * `activeManagerId` so an archived (or otherwise inactive) trial's
+ * workers/evaluators stop lingering.
+ *
+ * Rules:
+ *   - `activeManagerId === null` → no active trial → empty workers/evaluators
+ *     (nothing to scope to; any lingering nodes are cleared).
+ *   - Otherwise a worker is kept iff its `parentManagerId` matches the active
+ *     trial, or is `null` (just added live under the active trial, parent not
+ *     yet resolved — kept optimistically).
+ *   - An evaluator is kept iff its parent worker survived.
  */
-export function applyTreeInit(tree: ThreadTreeState, threads: ThreadEntry[]): ThreadTreeState {
+export function scopeTreeToManager(
+  tree: ThreadTreeState,
+  activeManagerId: string | null,
+): ThreadTreeState {
+  const workers: Record<string, WorkerNodeState> = {};
+  for (const [id, w] of Object.entries(tree.workers)) {
+    if (activeManagerId === null) continue; // no active trial → drop all
+    if (w.parentManagerId == null || w.parentManagerId === activeManagerId) {
+      workers[id] = w;
+    }
+  }
+  const evaluators: Record<string, EvaluatorNodeState> = {};
+  for (const [id, e] of Object.entries(tree.evaluators)) {
+    if (workers[e.workerId]) evaluators[id] = e;
+  }
+  const taskToWorker: Record<string, string> = {};
+  for (const [task, wid] of Object.entries(tree.taskToWorker)) {
+    if (workers[wid]) taskToWorker[task] = wid;
+  }
+  return { manager: tree.manager, workers, evaluators, taskToWorker };
+}
+
+/**
+ * Non-destructive reconciliation: preserves existing nodes while adding unregistered threads,
+ * then scopes the worker/evaluator tree to the active trial.
+ * Called from the INIT action.
+ *
+ * @param activeManagerId Authoritative active trial id (state.managerThreadId,
+ *   sourced from epic.active_thread_id). When null, the active trial is derived
+ *   from the first non-archived manager in `threads`; if there is none either,
+ *   the tree has no active trial and worker/evaluator nodes are cleared.
+ */
+export function applyTreeInit(
+  tree: ThreadTreeState,
+  threads: ThreadEntry[],
+  activeManagerId: string | null = null,
+): ThreadTreeState {
   let manager: ManagerNodeState | null = tree.manager;
   const workers: Record<string, WorkerNodeState> = { ...tree.workers };
   const evaluators: Record<string, EvaluatorNodeState> = { ...tree.evaluators };
   const taskToWorker: Record<string, string> = { ...tree.taskToWorker };
+
+  // Track the first non-archived manager so it can serve as the scoping anchor
+  // when the authoritative active id is not yet known (managerThreadId null).
+  let resolvedManagerId: string | null = null;
 
   for (const t of threads) {
     if (t.role === "manager") {
@@ -42,6 +95,7 @@ export function applyTreeInit(tree: ThreadTreeState, threads: ThreadEntry[]): Th
       // Fixes the enumeration-order bug that depended on threads.yaml ordering (implicit assumption: last = newest).
       // By targeting only non-archived managers, the id is not overwritten with an old trial id after re-sorting.
       if (t.status === "archived") continue;
+      if (resolvedManagerId === null) resolvedManagerId = t.id;
       if (!manager) {
         manager = {
           role: "manager",
@@ -73,6 +127,8 @@ export function applyTreeInit(tree: ThreadTreeState, threads: ThreadEntry[]): Th
           taskTitle: t.title ?? null,
           status: workerStatus,
           isStreaming: t.status === "active",
+          // parent_thread_id = the manager trial this worker was dispatched by.
+          parentManagerId: t.parent_thread_id ?? null,
         };
         if (t.task) {
           taskToWorker[t.task] = t.id;
@@ -97,7 +153,11 @@ export function applyTreeInit(tree: ThreadTreeState, threads: ThreadEntry[]): Th
     }
   }
 
-  return { manager, workers, evaluators, taskToWorker };
+  // Scope to the authoritative active trial; fall back to the first non-archived
+  // manager when the authoritative id is unknown. If neither exists, there is no
+  // active trial and worker/evaluator nodes are cleared.
+  const filterId = activeManagerId ?? resolvedManagerId;
+  return scopeTreeToManager({ manager, workers, evaluators, taskToWorker }, filterId);
 }
 
 /**
@@ -126,7 +186,9 @@ export function handleTree(
 ): RunActivityState | null {
   switch (action.type) {
     case "INIT": {
-      const treeState = applyTreeInit(state.treeState, action.threads);
+      // Pass the authoritative active trial id so the tree is scoped to it
+      // (archived/inactive trials' workers + evaluators are pruned).
+      const treeState = applyTreeInit(state.treeState, action.threads, state.managerThreadId);
       return { ...state, treeState };
     }
 
@@ -197,6 +259,8 @@ export function handleTree(
             taskTitle: item.title ?? null,
             status: "pending",
             isStreaming: false,
+            // Delegation only happens for the active trial.
+            parentManagerId: state.managerThreadId,
           };
           newTaskToWorker[item.task_id] = pendingId;
         }
@@ -240,6 +304,8 @@ export function handleTree(
         taskTitle: prevPending?.taskTitle ?? null,
         status: "running",
         isStreaming: true,
+        // A started worker belongs to the active trial.
+        parentManagerId: state.managerThreadId ?? prevPending?.parentManagerId ?? null,
       };
 
       if (taskId) {

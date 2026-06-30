@@ -15,7 +15,7 @@ import { runAction, startRun } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { useT } from "@/lib/i18n/provider";
 import type { useRunActivity } from "@/lib/sse/use-run-activity";
-import { extractCloseError, useCloseEpic, useReopenEpic } from "./use-close-epic";
+import { extractCloseError, useApproveEpic, useCloseEpic, useReopenEpic } from "./use-close-epic";
 
 // ---------------------------------------------------------------------------
 // StopConfirmDialog
@@ -103,11 +103,14 @@ export function RunControlsBar({
   const qc = useQueryClient();
 
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [approveError, setApproveError] = useState<string | null>(null);
   const closeMutation = useCloseEpic(projectId);
   const reopenMutation = useReopenEpic(projectId);
+  const approveMutation = useApproveEpic(projectId);
 
   const isClosed = epicStatus === "closed";
   const isMerged = epicStatus === "merged";
+  const isInReview = epicStatus === "in_review";
 
   /**
    * Close button — shared across the isCompleted / isInterrupted / idle branches.
@@ -292,6 +295,49 @@ export function RunControlsBar({
           <Icon name="play_arrow" className="text-[16px]" />
           <span className="hidden sm:inline">
             {runMutation.isPending ? t("common.resuming") : t("common.resumeFromInterrupt")}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            router.push(`/projects/${projectId}/epics/${epicId}/threads/${managerThreadId}`)
+          }
+          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface"
+          title={t("common.requestFix")}
+        >
+          <Icon name="forum" className="text-[16px]" />
+          <span className="hidden sm:inline">{t("common.requestFix")}</span>
+        </button>
+        {renderCloseButton()}
+      </>
+    );
+  }
+
+  if (isInReview) {
+    // All tasks done — awaiting the user's review. The user approves (→ completed,
+    // e.g. an investigation epic) or merges from the Diff tab (→ merged). Request
+    // Fix reopens the conversation for a revision run.
+    return (
+      <>
+        {approveError && <span className="text-[11px] text-error">{approveError}</span>}
+        <button
+          type="button"
+          data-testid="approve-epic-btn"
+          onClick={() => {
+            setApproveError(null);
+            approveMutation.mutate(epicId, {
+              onError: (err) => {
+                setApproveError(extractCloseError(err, t("epic.closeRunActive")));
+              },
+            });
+          }}
+          disabled={approveMutation.isPending}
+          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          title={t("epic.approveTitle")}
+        >
+          <Icon name="check_circle" className="text-[16px]" />
+          <span className="hidden sm:inline">
+            {approveMutation.isPending ? "…" : t("epic.approve")}
           </span>
         </button>
         <button

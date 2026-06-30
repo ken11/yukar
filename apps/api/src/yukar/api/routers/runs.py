@@ -53,8 +53,9 @@ async def start_run(
     - If a run is currently active (is_running=True): return 409 Conflict.
     - Budget exhausted: return 409 Conflict.
 
-    ``completed`` and ``interrupted`` epics may be re-started freely — the
-    existing session history allows the Manager to resume context.
+    ``in_review`` (and ``completed`` / ``interrupted``) epics may be re-started
+    freely — the existing session history allows the Manager to resume context,
+    which is how the user requests a revision after reviewing the work.
 
     TOCTOU guard: reload the epic and register supervisor.start under
     epic_thread_lock so a concurrent run cannot start (and delete the worktree)

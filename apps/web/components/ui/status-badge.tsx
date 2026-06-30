@@ -13,6 +13,7 @@ export type StatusValue =
   | "paused"
   | "awaiting"
   | "interrupted"
+  | "in_review"
   | "completed"
   | "merged"
   | "closed"
@@ -88,6 +89,11 @@ const BADGE_MAP: Record<StatusValue, BadgeConfig> = {
     icon: "warning",
     colorClass: "text-on-surface-variant",
     labelKey: "epic.status.interrupted",
+  },
+  in_review: {
+    icon: "rate_review",
+    colorClass: "text-on-surface-variant",
+    labelKey: "epic.status.in_review",
   },
   completed: {
     icon: "check",

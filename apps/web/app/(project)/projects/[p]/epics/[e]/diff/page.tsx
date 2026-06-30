@@ -6,11 +6,12 @@ export default async function DiffPage({ params }: { params: Promise<{ p: string
 
   const epic = await getEpic(p, e).catch(() => null);
 
-  // Load diff for each touched repo (working mode as default)
+  // Load diff for each touched repo. "epic" (branch vs default) is the client's
+  // default mode, so prefetch the same mode to seed react-query initialData.
   const repos = epic?.touched_repos?.length ? epic.touched_repos : [];
 
   const initialDiffs = await Promise.all(
-    repos.map((repo) => getGitDiff(p, e, repo, "working").catch(() => null)),
+    repos.map((repo) => getGitDiff(p, e, repo, "epic").catch(() => null)),
   );
 
   const validDiffs = initialDiffs.filter(Boolean);

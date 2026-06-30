@@ -32,6 +32,7 @@ const ja = {
       paused: "一時停止",
       awaiting: "承認待ち",
       interrupted: "中断",
+      in_review: "レビュー待ち",
       completed: "完了",
       merged: "マージ済み",
       closed: "終了済み",
@@ -41,6 +42,8 @@ const ja = {
     },
     close: "終了",
     reopen: "再開",
+    approve: "完了として承認",
+    approveTitle: "マージ不要の調査エピックなどを完了として承認します",
     closeRunActive: "実行中のため終了できません。先に実行を停止してください。",
   },
   common: {

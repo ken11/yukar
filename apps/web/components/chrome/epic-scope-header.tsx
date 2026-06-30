@@ -31,22 +31,26 @@ import { useEpicRun } from "./epic-run-context";
 import { EpicSwitcher } from "./epic-switcher";
 
 function resolveStatus(epicStatus: string | undefined, runStatus: string): StatusValue {
-  // runStatus (from SSE) takes priority. epic.status is used only as the initial value.
+  // Active run states (from SSE) take priority — they reflect live execution.
   if (runStatus === "preparing") return "preparing";
   if (runStatus === "running") return "running";
   if (runStatus === "paused") return "paused";
   if (runStatus === "awaiting_input") return "awaiting";
   if (runStatus === "interrupted") return "interrupted";
-  if (runStatus === "completed") return "completed";
-  if (runStatus === "error") return "error";
-  // idle / unknown: fall back to epic status
-  if (epicStatus === "in_progress") return "in_progress";
-  if (epicStatus === "completed") return "completed";
+  // Persisted epic status is authoritative for terminal / review / idle states.
+  // A finished run leaves runStatus="completed", but the epic is only "in_review"
+  // (awaiting the user) until they merge or approve — so epic.status wins here.
+  if (epicStatus === "in_review") return "in_review";
   if (epicStatus === "merged") return "merged";
+  if (epicStatus === "completed") return "completed";
   if (epicStatus === "closed") return "closed";
   if (epicStatus === "failed") return "error";
+  if (epicStatus === "in_progress") return "in_progress";
   if (epicStatus === "planned") return "planned";
   if (epicStatus === "blocked") return "blocked";
+  // Remaining cases: fall back to the run status.
+  if (runStatus === "completed") return "completed";
+  if (runStatus === "error") return "error";
   return "idle";
 }
 

@@ -15,7 +15,7 @@
 import type { RunActivityAction } from "./actions";
 import { handleLifecycle } from "./reducer/lifecycle";
 import { handleLiveBuffer } from "./reducer/live-buffer";
-import { handleTree } from "./reducer/tree";
+import { handleTree, scopeTreeToManager } from "./reducer/tree";
 import type { RunActivityState, ThreadTreeState } from "./types";
 
 // ---- Initial state ----
@@ -52,13 +52,20 @@ export function runActivityReducer(
     // Live buffer key migration is not performed (SET_MANAGER_THREAD_ID arrives between turns, so
     // even if an existing buffer remains, MANAGER_TURN_STARTED after the threadId change will overwrite with the new id — no issue).
     const newManagerThreadId = action.threadId;
-    const treeState =
+    // Sync the manager node id (when switching to a known trial) and scope the
+    // worker/evaluator tree to the active trial, so a previous trial's agents
+    // don't bleed into this one. When the id is null there is NO active trial,
+    // so scoping clears any lingering nodes — this covers archiving the sole
+    // trial mid-session (active_thread_id → null) where no INIT follows to
+    // reconcile against the thread list.
+    const synced =
       state.treeState.manager && newManagerThreadId
         ? {
             ...state.treeState,
             manager: { ...state.treeState.manager, threadId: newManagerThreadId },
           }
         : state.treeState;
+    const treeState = scopeTreeToManager(synced, newManagerThreadId);
     return { ...state, managerThreadId: newManagerThreadId, treeState };
   }
 

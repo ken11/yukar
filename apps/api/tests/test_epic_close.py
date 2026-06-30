@@ -88,6 +88,18 @@ class TestEpicStatusWidening:
         req = PatchEpicRequest(status="merged")
         assert req.status == "merged"
 
+    def test_in_review_status_accepted(self) -> None:
+        from yukar.models.epic import Epic
+
+        e = Epic(id="EP-1", slug="s", title="T", status="in_review")
+        assert e.status == "in_review"
+
+    def test_patch_request_accepts_in_review(self) -> None:
+        from yukar.api.routers.epics import PatchEpicRequest
+
+        req = PatchEpicRequest(status="in_review")
+        assert req.status == "in_review"
+
 
 # ---------------------------------------------------------------------------
 # 2. POST /epics/{epic_id}/close — happy path
@@ -358,6 +370,80 @@ class TestPatchReopensClosedEpic:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "in_progress"
+
+
+# ---------------------------------------------------------------------------
+# 8b. In-review approval — the user-driven path to "completed" (P5)
+# ---------------------------------------------------------------------------
+
+
+class TestInReviewApproval:
+    async def test_approve_in_review_to_completed(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        """A user PATCH from in_review → completed (approve) succeeds and persists."""
+        root = str(tmp_workspace)
+        pid, eid = "proj", "EP-1"
+        await _write_project_epic(root, pid, eid, status="in_review")
+
+        resp = await app_client.patch(
+            f"/api/projects/{pid}/epics/{eid}",
+            json={"status": "completed"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "completed"
+
+        from yukar.storage.epic_repo import get_epic
+
+        loaded = await get_epic(root, pid, eid)
+        assert loaded is not None
+        assert loaded.status == "completed"
+
+    async def test_approve_completed_409_when_run_active(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        """Approving (→ completed) must 409 while a run is active, like close/merge."""
+        import asyncio
+
+        root = str(tmp_workspace)
+        pid, eid = "proj", "EP-1"
+        await _write_project_epic(root, pid, eid, status="in_review")
+
+        from yukar.runs.supervisor import get_supervisor
+
+        sv = get_supervisor()
+
+        async def _never_finishes() -> None:
+            await asyncio.sleep(9999)
+
+        fake_task: asyncio.Task[None] = asyncio.create_task(_never_finishes())
+        try:
+            from unittest.mock import MagicMock
+
+            from yukar.runs.supervisor import _RunHandle
+
+            sv._runs[(pid, eid)] = _RunHandle(
+                run_id="run-fake",
+                runner=MagicMock(),
+                task=fake_task,
+                root=root,
+                project_id=pid,
+                epic_id=eid,
+            )
+
+            resp = await app_client.patch(
+                f"/api/projects/{pid}/epics/{eid}",
+                json={"status": "completed"},
+            )
+            assert resp.status_code == 409
+            assert "run is active" in resp.json()["detail"].lower()
+        finally:
+            fake_task.cancel()
+            import contextlib
+
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await fake_task
+            sv._runs.pop((pid, eid), None)
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ const en = {
       paused: "Paused",
       awaiting: "Awaiting",
       interrupted: "Interrupted",
+      in_review: "In Review",
       completed: "Completed",
       merged: "Merged",
       closed: "Closed",
@@ -49,6 +50,8 @@ const en = {
     },
     close: "Close",
     reopen: "Reopen",
+    approve: "Approve",
+    approveTitle: "Approve as complete (for investigation epics with nothing to merge)",
     closeRunActive: "Cannot close while a run is active. Stop the run first.",
   },
   common: {

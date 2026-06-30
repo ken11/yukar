@@ -37,6 +37,26 @@ export function useReopenEpic(projectId: string) {
   });
 }
 
+/**
+ * useApproveEpic — user approval of an in_review epic → completed.
+ *
+ * This is the user-driven path to the truly-done "completed" state (e.g. an
+ * investigation epic with nothing to merge). For code work, the user merges
+ * instead (Diff tab → Merge → merged). The backend returns 409 if a run is
+ * active. Approving from in_review: PATCH /api/projects/{p}/epics/{id} { status: "completed" }.
+ */
+export function useApproveEpic(projectId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: (epicId: string) => patchEpic(projectId, epicId, { status: "completed" }),
+    onSuccess: (_data, epicId) => {
+      qc.invalidateQueries({ queryKey: queryKeys.epics.list(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
+    },
+  });
+}
+
 /** Extract human-readable error message from a closeEpic ApiError. */
 export function extractCloseError(err: unknown, fallbackMsg: string): string {
   if (err instanceof ApiError && err.status === 409) {

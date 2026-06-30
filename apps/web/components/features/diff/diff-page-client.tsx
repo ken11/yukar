@@ -481,7 +481,11 @@ function DiffToolbarActions({
 export function DiffPageClient({ projectId, epicId, epic, initialDiffs }: DiffPageClientProps) {
   const t = useT();
   const qc = useQueryClient();
-  const [mode, setMode] = useState<DiffMode>("working");
+  // Default to the branch ("epic") diff — the full change set of the epic
+  // branch vs the default branch. "working" (uncommitted) is usually empty
+  // because the host commits Worker changes automatically, so it is a poor
+  // default. Users can still switch to "working" via the toggle.
+  const [mode, setMode] = useState<DiffMode>("epic");
   const [activeRepo, setActiveRepo] = useState<string>(initialDiffs[0]?.repo ?? "");
   const [selectedFile, setSelectedFile] = useState<string>(initialDiffs[0]?.files[0]?.path ?? "");
   const [commitMsg, setCommitMsg] = useState("");

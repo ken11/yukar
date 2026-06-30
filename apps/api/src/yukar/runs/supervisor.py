@@ -9,7 +9,9 @@ Epic / state status transitions (architecture.md §3.2):
   - supervisor owns epic.yaml.status; orchestrator owns state.yaml.status.
   - epic.yaml:
       planned → in_progress  : on run start (before runner.start is awaited)
-      in_progress → completed: on successful run completion
+      in_progress → in_review: on successful run completion (awaits USER review;
+            the supervisor never auto-completes — only the user reaches
+            completed/merged via the API)
       in_progress → failed   : on run failure (unhandled exception)
       stop: epic.yaml stays in_progress — the run was interrupted and can be
             restarted by the user.
@@ -326,9 +328,15 @@ async def _transition_epic_status(
     root: str,
     project_id: str,
     epic_id: str,
-    status: Literal["planned", "in_progress", "completed", "failed"],
+    status: Literal["planned", "in_progress", "in_review", "failed"],
 ) -> None:
-    """Update epic.yaml.status atomically.  No-op if the epic cannot be loaded."""
+    """Update epic.yaml.status atomically.  No-op if the epic cannot be loaded.
+
+    Only the supervisor-driven transitions appear here. ``completed`` and
+    ``merged`` are deliberately absent: they are user-driven approval/merge
+    actions reached via the API (PATCH status / git merge), never set
+    automatically when a run finishes.
+    """
     epic = await get_epic(root, project_id, epic_id)
     if epic is not None:
         epic.status = status
@@ -501,7 +509,11 @@ class RunSupervisor:
 
                     try:
                         await runner.start(root, project_id, epic_id, run_id)
-                        await _transition_epic_status(root, project_id, epic_id, "completed")
+                        # The Manager finishing does NOT mean the epic is done. It
+                        # only means the work is ready for the USER to review. The
+                        # user then merges (→ merged) or approves (→ completed).
+                        # See models.epic.EpicStatus for the lifecycle rationale.
+                        await _transition_epic_status(root, project_id, epic_id, "in_review")
                     except Exception:
                         await _transition_epic_status(root, project_id, epic_id, "failed")
                         raise
@@ -885,7 +897,8 @@ class RunSupervisor:
         rather than starting a brand-new epic plan from scratch.
 
         epic.yaml.status is set to ``in_progress`` here (same as ``start``).
-        If it was ``completed`` this effectively reopens the epic for revision.
+        If it was ``in_review`` (or ``completed``) this effectively reopens the
+        epic for revision.
 
         Args:
             root: Workspace root.
@@ -920,7 +933,7 @@ class RunSupervisor:
                 seed_prompt, manager_thread_id=manager_thread_id
             )
 
-            # Reopen the epic for revision (completed → in_progress).
+            # Reopen the epic for revision (in_review/completed → in_progress).
             await _transition_epic_status(root, project_id, epic_id, "in_progress")
 
             _indexer_service_cont = self._indexer_service
@@ -971,7 +984,11 @@ class RunSupervisor:
 
                     try:
                         await runner.start(root, project_id, epic_id, run_id)
-                        await _transition_epic_status(root, project_id, epic_id, "completed")
+                        # The Manager finishing does NOT mean the epic is done. It
+                        # only means the work is ready for the USER to review. The
+                        # user then merges (→ merged) or approves (→ completed).
+                        # See models.epic.EpicStatus for the lifecycle rationale.
+                        await _transition_epic_status(root, project_id, epic_id, "in_review")
                     except Exception:
                         await _transition_epic_status(root, project_id, epic_id, "failed")
                         raise

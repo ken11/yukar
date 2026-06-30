@@ -8,7 +8,18 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 # Shared status literal — used by Epic.status and EpicStatusChangedEvent.status.
-EpicStatus = Literal["planned", "in_progress", "completed", "failed", "closed", "merged"]
+#
+# Lifecycle:
+#   planned → in_progress → in_review → {completed | merged}
+#                                ↘ in_progress (revision) / closed
+#
+# ``in_review`` means the Manager finished all tasks and the work now awaits
+# the USER's review. The Manager NEVER auto-completes: only the user reaches a
+# truly-done state — ``merged`` (code merged to the default branch) or
+# ``completed`` (user approval, e.g. for an investigation-only epic).
+EpicStatus = Literal[
+    "planned", "in_progress", "in_review", "completed", "failed", "closed", "merged"
+]
 
 
 class Epic(BaseModel):
