@@ -215,7 +215,7 @@ class TestFsToolsIgnoreIntegration:
 
         # Use production AgentContext.create — IgnoreRules wired automatically.
         ctx = await self._make_ctx(repo)
-        fs_read, _, _ = make_fs_tools(ctx)
+        fs_read, _, _, _ = make_fs_tools(ctx)
 
         # .env should appear as "not found" (gitignore blocks it)
         result = fs_read(path=".env")
@@ -237,7 +237,7 @@ class TestFsToolsIgnoreIntegration:
         secrets.mkdir()
 
         ctx = await self._make_ctx(repo)
-        _, fs_write, _ = make_fs_tools(ctx)
+        _, fs_write, _, _ = make_fs_tools(ctx)
 
         # Writing inside secrets/ should be rejected
         result = fs_write(path="secrets/key.txt", content="hack")
@@ -257,7 +257,7 @@ class TestFsToolsIgnoreIntegration:
         (repo / "main.py").write_text("")
 
         ctx = await self._make_ctx(repo)
-        _, _, fs_list = make_fs_tools(ctx)
+        _, _, fs_list, _ = make_fs_tools(ctx)
 
         result = fs_list(path=".")
         assert result["status"] == "success"
@@ -674,7 +674,7 @@ class TestM3ReviewFixes:
             worktree_path=repo,
             workspace_root=str(tmp_path),
         )
-        fs_read, fs_write, fs_list = make_fs_tools(ctx)
+        fs_read, fs_write, fs_list, _ = make_fs_tools(ctx)
 
         # .env must appear as "not found" (not a permission error — spec §6.6)
         result = fs_read(path=".env")

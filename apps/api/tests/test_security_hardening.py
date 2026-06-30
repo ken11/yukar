@@ -248,7 +248,7 @@ class TestFsReadBounded:
         (worktree / "hello.txt").write_text("hello world")
 
         ctx = self._make_ctx(worktree)
-        [fs_read, _, _] = make_fs_tools(ctx)
+        [fs_read, _, _, _] = make_fs_tools(ctx)
         result = fs_read(path="hello.txt")
         assert result["status"] == "success"
         assert "hello world" in result["content"][0]["text"]
@@ -263,7 +263,7 @@ class TestFsReadBounded:
         big.write_bytes(b"x" * (_MAX_READ_BYTES + 1))
 
         ctx = self._make_ctx(worktree)
-        [fs_read, _, _] = make_fs_tools(ctx)
+        [fs_read, _, _, _] = make_fs_tools(ctx)
         result = fs_read(path="big.bin")
         assert result["status"] == "error"
         assert "too large" in result["content"][0]["text"].lower()

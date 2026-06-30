@@ -554,7 +554,7 @@ class TestFsTools:
         wt.mkdir()
         (wt / "hello.txt").write_text("hello world")
         ctx = await self._make_ctx(wt)
-        fs_read, _, _ = make_fs_tools(ctx)
+        fs_read, _, _, _ = make_fs_tools(ctx)
         # @tool-decorated sync functions are called directly (not awaited)
         result = fs_read(path="hello.txt")
         assert result["status"] == "success"
@@ -566,7 +566,7 @@ class TestFsTools:
         wt = tmp_path / "wt"
         wt.mkdir()
         ctx = await self._make_ctx(wt)
-        fs_read, _, _ = make_fs_tools(ctx)
+        fs_read, _, _, _ = make_fs_tools(ctx)
         result = fs_read(path="../outside.txt")
         assert result["status"] == "error"
 
@@ -576,7 +576,7 @@ class TestFsTools:
         wt = tmp_path / "wt"
         wt.mkdir()
         ctx = await self._make_ctx(wt)
-        _, fs_write, _ = make_fs_tools(ctx)
+        _, fs_write, _, _ = make_fs_tools(ctx)
         result = fs_write(path="new_file.py", content="print('hi')")
         assert result["status"] == "success"
         assert (wt / "new_file.py").read_text() == "print('hi')"
@@ -587,7 +587,7 @@ class TestFsTools:
         wt = tmp_path / "wt"
         wt.mkdir()
         ctx = await self._make_ctx(wt)
-        _, fs_write, _ = make_fs_tools(ctx)
+        _, fs_write, _, _ = make_fs_tools(ctx)
         result = fs_write(path="a/b/c/file.txt", content="nested")
         assert result["status"] == "success"
         assert (wt / "a" / "b" / "c" / "file.txt").read_text() == "nested"
@@ -598,7 +598,7 @@ class TestFsTools:
         wt = tmp_path / "wt"
         wt.mkdir()
         ctx = await self._make_ctx(wt)
-        _, fs_write, _ = make_fs_tools(ctx)
+        _, fs_write, _, _ = make_fs_tools(ctx)
         result = fs_write(path="../evil.sh", content="rm -rf /")
         assert result["status"] == "error"
 
@@ -610,7 +610,7 @@ class TestFsTools:
         (wt / "a.py").write_text("")
         (wt / "b.py").write_text("")
         ctx = await self._make_ctx(wt)
-        _, _, fs_list = make_fs_tools(ctx)
+        _, _, fs_list, _ = make_fs_tools(ctx)
         result = fs_list(path=".")
         assert result["status"] == "success"
         assert "a.py" in result["entries"]
@@ -622,7 +622,7 @@ class TestFsTools:
         wt = tmp_path / "wt"
         wt.mkdir()
         ctx = await self._make_ctx(wt)
-        _, _, fs_list = make_fs_tools(ctx)
+        _, _, fs_list, _ = make_fs_tools(ctx)
         result = fs_list(path="..")
         assert result["status"] == "error"
 

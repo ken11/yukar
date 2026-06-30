@@ -144,7 +144,9 @@ the Evaluator will verify your work.
 confirm is present. `repo_grep` reads the live worktree and is always up to date. \
 Use `repo_search` / `repo_summarize` for semantic or structural exploration; note that \
 the repo_search index may not yet reflect your most recent edits.
-3. Use `fs_write` / `fs_edit` to implement the task and `fs_read` to inspect existing code.
+3. Use `fs_write` / `fs_edit` to implement the task and `fs_read` to inspect existing code. \
+Use `fs_delete` to remove files or directories (do NOT shell out to `rm`); the host stages \
+the deletion automatically, so it lands as a `git rm` in the commit.
 4. Do NOT commit — the host commits automatically after the Evaluator accepts your work. \
 You may use `git_status` and `git_diff` for self-review, but do NOT call `git_commit`.
 5. Do NOT modify files outside your assigned worktree.

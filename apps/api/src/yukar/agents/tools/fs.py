@@ -6,16 +6,20 @@
 
 Tools
 -----
-- ``fs_read``  — read the text content of a file
-- ``fs_write`` — write (create or overwrite) a file; parent dirs created automatically
-- ``fs_list``  — list the entries of a directory
+- ``fs_read``   — read the text content of a file
+- ``fs_write``  — write (create or overwrite) a file; parent dirs created automatically
+- ``fs_list``   — list the entries of a directory
+- ``fs_delete`` — delete a file or directory
 
-All three raise a ``PermissionError`` (via ``PathGuardError``) if a path
-resolves outside the worktree.
+All four raise a ``PermissionError`` (via ``PathGuardError``) if a path
+resolves outside the worktree.  ``fs_delete`` does not call git directly; the
+host stages the working tree with ``git add -A`` before commit, so a deleted
+path becomes the version-controlled equivalent of ``git rm`` automatically.
 """
 
 from __future__ import annotations
 
+import shutil
 from typing import Any
 
 from strands import tool
@@ -146,4 +150,56 @@ def make_fs_tools(ctx: AgentContext) -> list[Any]:
 
         return make_success("\n".join(all_entries), entries=all_entries, path=str(resolved))
 
-    return [fs_read, fs_write, fs_list]
+    @tool
+    def fs_delete(path: str, recursive: bool = False) -> dict[str, Any]:
+        """Delete a file or directory inside the worktree.
+
+        This is the version-controlled way to remove a path: the deletion is
+        applied to the working tree, and the host stages it with ``git add -A``
+        before committing, so the effect is equivalent to ``git rm`` within
+        yukar's flow.  Do not shell out to ``rm`` — use this tool.
+
+        Gitignored or outside-worktree paths are treated as non-existent
+        (spec §6.6), so this never reaches files outside the sandbox.
+
+        Args:
+            path: Path to delete (relative to worktree or absolute within it).
+            recursive: Must be ``True`` to delete a directory and its contents.
+                Ignored for regular files.  This guards against accidentally
+                removing a whole subtree, mirroring ``rm`` vs ``rm -r``.
+
+        Returns:
+            A dict with ``"path"`` (resolved absolute) on success.
+        """
+        try:
+            resolved = ctx.path_guard.resolve(path)
+        except PathGuardError:
+            # Treat outside-sandbox / gitignored as non-existent (spec §6.6),
+            # matching fs_read — a delete must never escape the worktree.
+            return make_error(f"Path not found: {path}")
+
+        # Never let an agent delete the sandbox root itself.
+        if resolved == ctx.path_guard.root:
+            return make_error("Refusing to delete the worktree root.")
+
+        if not resolved.exists():
+            return make_error(f"Path not found: {resolved}")
+
+        if resolved.is_dir():
+            if not recursive:
+                return make_error(
+                    f"{resolved} is a directory; pass recursive=true to delete it and its contents."
+                )
+            try:
+                shutil.rmtree(resolved)
+            except OSError as exc:
+                return make_error(f"Error deleting directory: {exc}")
+            return make_success(f"Deleted directory: {resolved}", path=str(resolved))
+
+        try:
+            resolved.unlink()
+        except OSError as exc:
+            return make_error(f"Error deleting file: {exc}")
+        return make_success(f"Deleted file: {resolved}", path=str(resolved))
+
+    return [fs_read, fs_write, fs_list, fs_delete]
