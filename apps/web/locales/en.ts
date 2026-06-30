@@ -272,7 +272,8 @@ const en = {
     allowLabel: "Allow",
     denyLabel: "Deny",
     onePerLine: "(one per line)",
-    allowEmptyNote: "Empty = Worker cannot run any command (fail-safe).",
+    allowEmptyNote:
+      "Each line matches the command prefix: `pytest` allows any pytest call; `pnpm test` allows only that subcommand. Empty = Worker cannot run any command (fail-safe).",
     denyPriorityNote: "Takes priority over allow.",
     saveCommandsLabel: "Save command settings for {repo}",
   },

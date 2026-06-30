@@ -18,9 +18,13 @@ Strands tool whose closure captures an ``AgentContext``.  Every invocation:
    wrapper and sh-c patterns receive an additional layer of inspection but are
    still best-effort; the primary gate is the fail-closed empty-default
    allowlist.
-3. Normalises the first token to its basename (e.g. ``/bin/rm`` → ``rm``)
-   and checks both the raw token and the basename against the allow/deny
-   lists in ``ctx.command_config``.
+3. Checks the command against the per-repo allow/deny lists in
+   ``ctx.command_config``.  Each allow/deny entry is matched as a command
+   prefix: a single-token entry (``pytest``) matches any invocation of that
+   command — by raw token or basename, so ``/bin/rm`` == ``rm`` — while a
+   multi-token entry (``make generate``, ``pnpm test``) additionally requires
+   the following argv tokens to match positionally, allowing a specific
+   subcommand without allowing the whole command.
 4. If the allow list is empty, rejects all commands (fail-safe default).
 5. Rejects absolute, home-relative, or parent-traversing path arguments that
    point outside the assigned worktree (``check_absolute_args``).  argv[0] is
@@ -558,16 +562,23 @@ def make_command_tools(
 
         first_token = tokens[0]
 
-        # Check allow/deny (RepoCommandConfig checks both raw token and basename).
-        if not ctx.command_config.is_allowed(first_token):
+        # Check allow/deny.  RepoCommandConfig matches each allow/deny entry as a
+        # command prefix against the full argv, so multi-token entries like
+        # ``make generate`` / ``pnpm test`` allow a specific subcommand while
+        # single-token entries (``pytest``) allow any invocation.
+        if not ctx.command_config.is_allowed(tokens):
             return {
                 "status": "error",
                 "content": [
                     {
                         "text": (
-                            f"Command {first_token!r} is not permitted in this "
+                            f"Command {' '.join(tokens)!r} is not permitted in this "
                             f"worktree (allow={list(ctx.command_config.allow)!r}, "
-                            f"deny={list(ctx.command_config.deny)!r})"
+                            f"deny={list(ctx.command_config.deny)!r}). "
+                            f"Allow/deny entries match the command prefix: add "
+                            f"{first_token!r} to allow any {first_token!r} command, "
+                            f"or a full line like {' '.join(tokens[:2])!r} to allow "
+                            f"just that subcommand."
                         )
                     }
                 ],

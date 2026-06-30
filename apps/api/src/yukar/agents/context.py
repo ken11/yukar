@@ -37,24 +37,67 @@ from pathlib import Path
 from yukar.sandbox.path_guard import PathGuard
 
 
+def _entry_matches(entry: str, tokens: list[str]) -> bool:
+    """Return ``True`` if an allow/deny *entry* matches the command *tokens*.
+
+    An entry is one or more whitespace-separated tokens (a single line of the
+    operator's allow/deny textarea).  Matching is **command-prefix** based:
+
+    - argv[0] (``tokens[0]``) matches the entry's first token either by its raw
+      value *or* by its ``Path.name`` basename, so ``/usr/bin/pytest`` is treated
+      the same as ``pytest``.
+    - For a **single-token** entry (e.g. ``"pytest"``) that is the whole test —
+      it matches *any* invocation of that command regardless of arguments.  This
+      preserves the historical command-name semantics.
+    - For a **multi-token** entry (e.g. ``"make generate"``, ``"pnpm test"``)
+      every token after the first must equal the command token at the same
+      position (literal positional match).  Trailing command arguments beyond the
+      entry are allowed, so ``"pnpm test"`` matches ``pnpm test --filter x`` but
+      ``"make generate"`` does *not* match ``make build``.
+
+    A multi-token entry is therefore strictly **more restrictive** than its first
+    token alone — it can only narrow what a bare command name would permit, never
+    widen it.  Empty/blank entries never match.
+    """
+    entry_tokens = entry.split()
+    if not entry_tokens or len(entry_tokens) > len(tokens):
+        return False
+
+    # argv[0]: match by raw value or basename (mirrors legacy single-token rule).
+    cmd0, e0 = tokens[0], entry_tokens[0]
+    if e0 != cmd0 and e0 != Path(cmd0).name:
+        return False
+
+    # Remaining entry tokens must match the command positionally (literal).
+    # entry_tokens[1:] is no longer than tokens[1:] (length guard above), so
+    # zip stops at the entry length — trailing command args are allowed.
+    return all(e == c for e, c in zip(entry_tokens[1:], tokens[1:], strict=False))
+
+
 @dataclass(frozen=True, slots=True)
 class RepoCommandConfig:
     """Allow/deny lists for ``run_command`` inside a worktree.
 
     Evaluation order:
-      1. Deny is checked first (by raw token and by basename).  Any match
-         → rejected regardless of the allow list.
-      2. If the allow list is **non-empty**, the basename must appear in it
-         for the command to be permitted.
+      1. Deny is checked first.  Any entry that command-prefix matches → rejected
+         regardless of the allow list.
+      2. If the allow list is **non-empty**, some allow entry must command-prefix
+         match for the command to be permitted.
       3. If the allow list is **empty**, the command is **denied** (explicit
          allowlist required — fail-safe default).
 
-    Both lists contain command names (first token / basename) to check against.
-    The distinction between an empty allow list meaning "allow all" vs.
-    "deny all" was a security bug: the new behaviour is deny-by-default.
+    Each entry is a command line of one or more whitespace-separated tokens, as
+    typed one-per-line in the operator UI (e.g. ``pytest``, ``pnpm test``,
+    ``make generate``).  A single-token entry matches any invocation of that
+    command (by raw token or basename, so ``/bin/rm`` == ``rm``); a multi-token
+    entry additionally requires the following tokens to match positionally, which
+    lets operators allow a specific subcommand (``make generate``) without
+    allowing the whole command (``make``).  See ``_entry_matches`` for the exact
+    rule.  The distinction between an empty allow list meaning "allow all" vs.
+    "deny all" was a security bug: the behaviour is deny-by-default.
 
-    To allow all commands (not recommended), use ``allow=("*",)`` is NOT
-    supported — instead explicitly list every command the repo needs.
+    To allow all commands (not recommended), ``allow=("*",)`` is NOT supported —
+    instead explicitly list every command the repo needs.
 
     Shell wrappers (sh/bash/env) are intentionally given no special treatment.
     They are subject to the same allowlist rules.  If the operator does not
@@ -65,34 +108,35 @@ class RepoCommandConfig:
     allow: tuple[str, ...] = field(default_factory=tuple)
     deny: tuple[str, ...] = field(default_factory=tuple)
 
-    def is_allowed(self, first_token: str) -> bool:
-        """Return ``True`` if ``first_token`` may be executed.
+    def is_allowed(self, tokens: list[str]) -> bool:
+        """Return ``True`` if the command *tokens* may be executed.
 
-        Deny is checked first (deny takes priority over allow).  Both the raw
-        token and its ``Path.name`` basename are checked against deny and allow
-        lists so that absolute paths like ``/bin/rm`` are treated identically
-        to ``rm``.
+        Deny is checked first (deny takes priority over allow).  Both allow and
+        deny entries are matched against the full argv with ``_entry_matches`` so
+        that multi-token entries (``make generate``, ``pnpm test``) match a
+        specific subcommand while single-token entries (``pytest``) match any
+        invocation of that command.
 
         Args:
-            first_token: The first whitespace-delimited token of the command
-                as passed by the caller (may be a bare name or an absolute
-                path, e.g. ``"pytest"``, ``"/usr/bin/python"``).
+            tokens: The shlex-split command argv (``tokens[0]`` is the binary,
+                which may be a bare name or an absolute path).
 
         Returns:
             ``True`` if the command is permitted.
         """
-        basename = Path(first_token).name
+        if not tokens:
+            return False
 
-        # Deny check — either the raw token or its basename triggers a block.
-        if first_token in self.deny or basename in self.deny:
+        # Deny check — any matching deny entry blocks the command.
+        if any(_entry_matches(entry, tokens) for entry in self.deny):
             return False
 
         # Empty allow list → all commands denied (fail-safe / explicit allowlist).
         if not self.allow:
             return False
 
-        # Non-empty allow list: basename or raw token must appear.
-        return first_token in self.allow or basename in self.allow
+        # Non-empty allow list: some allow entry must command-prefix match.
+        return any(_entry_matches(entry, tokens) for entry in self.allow)
 
 
 @dataclass(frozen=True, slots=True)

@@ -244,7 +244,8 @@ export function NewProjectModal({ trigger }: NewProjectModalProps = {}) {
                           className="w-full rounded border border-outline-variant bg-surface-container px-2 py-1 font-mono text-code-sm text-on-surface placeholder:text-outline focus:border-[var(--color-light)] focus:outline-none focus:ring-1 focus:ring-[var(--color-light)] resize-none"
                         />
                         <p className="mt-0.5 text-[10px] text-outline">
-                          Empty = no commands allowed.
+                          Each line matches the command prefix (e.g. `pnpm test` allows only that
+                          subcommand). Empty = no commands allowed.
                         </p>
                       </div>
                       <div>

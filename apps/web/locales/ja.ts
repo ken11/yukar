@@ -263,7 +263,8 @@ const ja = {
     allowLabel: "許可",
     denyLabel: "拒否",
     onePerLine: "（1行ずつ）",
-    allowEmptyNote: "空欄 = Worker はコマンドを実行できません（フェイルセーフ）。",
+    allowEmptyNote:
+      "各行はコマンドの先頭部分と照合されます。「pytest」と書くと pytest を使うすべての呼び出しを許可し、「pnpm test」と書くとそのサブコマンドだけを許可します。空欄のときは Worker はコマンドを実行できません（フェイルセーフ）。",
     denyPriorityNote: "Allow より優先されます。",
     saveCommandsLabel: "{repo} のコマンド設定を保存",
   },
