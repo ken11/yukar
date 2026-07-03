@@ -42,7 +42,6 @@ def make_agent_profile_tools(
 
     from yukar.agents.tools.response_builder import make_error, make_success
     from yukar.models.agent_profile import AgentProfile
-    from yukar.models.project import RepoCommands
     from yukar.storage import agent_profiles_repo
 
     @tool
@@ -88,13 +87,12 @@ def make_agent_profile_tools(
     @tool
     async def write_agent_profile(
         name: str,
-        description: str,
-        base_role: str,
-        instructions: str = "",
+        description: str | None = None,
+        base_role: str | None = None,
+        instructions: str | None = None,
         skills: list[str] | None = None,
         mcp_servers: list[str] | None = None,
-        command_allow: list[str] | None = None,
-        command_deny: list[str] | None = None,
+        allowed_commands: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create or update a named agent profile for this project.
 
@@ -104,50 +102,89 @@ def make_agent_profile_tools(
         ``backend-worker`` profile with backend-specific instructions, then
         assign the right profile to each task via ``task_update(agent=...)``.
 
+        PARTIAL UPDATE (read-merge): any argument you leave unset (``None``) is
+        left UNCHANGED on an existing profile.  So to tweak only the
+        instructions, pass ``name`` and ``instructions`` — the skills, MCP
+        servers and allowed_commands are preserved, never wiped.  To clear a
+        list field, pass an explicit empty list ``[]``.
+
+        Do NOT re-write a profile you have already created unless its
+        configuration genuinely needs to change; if nothing changed the write
+        is skipped and reported as ``unchanged``.
+
         Args:
             name: Unique kebab-case profile name, e.g. ``"frontend-worker"``.
             description: Short description so the Manager can choose the right profile.
-            base_role: Must be ``"worker"`` or ``"evaluator"``.
+            base_role: ``"worker"`` or ``"evaluator"``.  Required only when
+                       creating a new profile; omit to keep an existing one.
             instructions: Extra system-prompt text appended to the role's base prompt.
-                          Use Markdown. Leave empty to use only the base prompt.
-            skills: List of skill names to activate for this profile.
-                    Empty list (default) means all project skills are available.
-            mcp_servers: List of MCP server names to activate.
-                         Empty list (default) means all project MCP servers.
-            command_allow: Shell command prefixes that the Worker may run
-                           (e.g. ``["pytest", "npm test"]``).
-                           Empty = defer to repo-level allow list.
-            command_deny:  Shell command prefixes that are always blocked,
-                           regardless of the allow list.
+                          Use Markdown. Empty string = base prompt only.
+            skills: Skill names to activate.  ``[]`` = all project skills.
+            mcp_servers: MCP server names to activate.  ``[]`` = all project MCP servers.
+            allowed_commands: Shell command prefixes the Worker may run
+                              (e.g. ``["pytest", "npm test"]``).  This is a
+                              SUBSET of the repo-level allow list — a command not
+                              already allowed by the repo has no effect (it is
+                              intersected at dispatch).  ``[]`` = inherit the
+                              repo allow list unchanged.  There is no deny list;
+                              the repo deny + baseline denylist are the hard gate.
 
         Returns:
-            ``{"status": "success"|"error", "content": [...], "ok": bool, "name": name}``.
+            ``{"status": "success"|"error", "content": [...], "ok": bool,
+            "name": name, "unchanged": bool}``.
         """
         try:
-            if base_role not in {"worker", "evaluator"}:
+            existing = agent_profiles_repo.get_profile(root, project_id, name)
+            if existing is None and base_role is None:
                 return make_error(
-                    f"base_role must be 'worker' or 'evaluator', got {base_role!r}",
+                    "base_role is required when creating a new profile "
+                    "('worker' or 'evaluator').",
                     ok=False,
                 )
-            _base_role = cast(Literal["worker", "evaluator"], base_role)
+            # Read-merge: provided value wins; otherwise keep existing (or the
+            # model default for a brand-new profile).  None means "unchanged".
+            resolved_base_role = base_role if base_role is not None else (
+                existing.base_role if existing is not None else None
+            )
+            if resolved_base_role not in {"worker", "evaluator"}:
+                return make_error(
+                    f"base_role must be 'worker' or 'evaluator', got {resolved_base_role!r}",
+                    ok=False,
+                )
+            _base_role = cast(Literal["worker", "evaluator"], resolved_base_role)
+
+            def _pick(provided: Any, current: Any, default: Any) -> Any:
+                if provided is not None:
+                    return provided
+                return current if existing is not None else default
+
             profile = AgentProfile(
                 name=name,
-                description=description,
+                description=_pick(description, existing.description if existing else None, ""),
                 base_role=_base_role,
-                instructions=instructions,
-                skills=skills or [],
-                mcp_servers=mcp_servers or [],
-                commands=RepoCommands(
-                    allow=command_allow or [],
-                    deny=command_deny or [],
+                instructions=_pick(instructions, existing.instructions if existing else None, ""),
+                skills=_pick(skills, existing.skills if existing else None, []),
+                mcp_servers=_pick(mcp_servers, existing.mcp_servers if existing else None, []),
+                allowed_commands=_pick(
+                    allowed_commands, existing.allowed_commands if existing else None, []
                 ),
             )
+
+            # Anti-churn: skip the write (and the event) when nothing changed.
+            if existing is not None and profile == existing:
+                return make_success(
+                    f"Profile {name!r} already matches; no write performed.",
+                    ok=True,
+                    name=name,
+                    unchanged=True,
+                )
+
             await agent_profiles_repo.save_profile(root, project_id, profile)
         except Exception as exc:
             return make_error(str(exc), ok=False)
         if pub_event is not None:
             pub_event("agent_profile", name)
-        return make_success(f"Saved profile {name!r}.", ok=True, name=name)
+        return make_success(f"Saved profile {name!r}.", ok=True, name=name, unchanged=False)
 
     @tool
     def delete_agent_profile(name: str) -> dict[str, Any]:

@@ -4,7 +4,8 @@ Covers:
 1. instructions: profile overlay stacks on top of project-role overlay
 2. skills: profile.skills non-empty → AgentSkills receives only those skill dirs
 3. MCP: profile.mcp_servers non-empty → only matching server tools forwarded
-4. run_command: effective allow = repo ∩ profile; effective deny = repo ∪ profile
+4. run_command: effective allow = repo ∩ profile.allowed_commands; deny = repo deny
+   (a profile has no deny list of its own)
 5. Unassigned task (task.agent=None) → no change (backward compat)
 6. Missing profile → warning logged, fallback to defaults
 7. base_role mismatch (worker profile on evaluator call) → warning, fallback
@@ -299,16 +300,15 @@ class TestMergeCommands:
         assert deny == ["rm"]
 
     def test_profile_allow_intersects_with_repo(self) -> None:
-        """effective_allow = repo_allow ∩ profile_allow when profile.allow non-empty."""
+        """effective_allow = repo_allow ∩ profile.allowed_commands when non-empty."""
         from yukar.agents.dispatch_attempt import _merge_commands
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
 
         # profile allows ["pytest"] — a subset of repo's ["pytest", "npm", "git"]
         profile = AgentProfile(
             name="be-worker",
             base_role="worker",
-            commands=RepoCommands(allow=["pytest"], deny=[]),
+            allowed_commands=["pytest"],
         )
         allow, deny = _merge_commands(profile, ["pytest", "npm", "git"], [])
         # Intersection: only "pytest" is in both repo and profile
@@ -316,46 +316,45 @@ class TestMergeCommands:
         assert deny == []
 
     def test_profile_allow_empty_uses_repo_allow(self) -> None:
-        """When profile.allow is empty, repo.allow is used unchanged."""
+        """When profile.allowed_commands is empty, repo.allow is used unchanged."""
         from yukar.agents.dispatch_attempt import _merge_commands
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
 
         profile = AgentProfile(
             name="no-filter",
             base_role="worker",
-            commands=RepoCommands(allow=[], deny=[]),
+            allowed_commands=[],
         )
         allow, deny = _merge_commands(profile, ["pytest", "git"], ["rm"])
         assert allow == ["pytest", "git"]
         assert deny == ["rm"]
 
-    def test_profile_deny_unions_with_repo(self) -> None:
-        """effective_deny = repo_deny ∪ profile_deny."""
+    def test_profile_has_no_deny_of_its_own(self) -> None:
+        """A profile has no deny list — effective_deny is always exactly repo_deny."""
         from yukar.agents.dispatch_attempt import _merge_commands
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
 
         profile = AgentProfile(
             name="strict-worker",
             base_role="worker",
-            commands=RepoCommands(allow=["pytest"], deny=["curl", "wget"]),
+            allowed_commands=["pytest"],
         )
         allow, deny = _merge_commands(profile, ["pytest", "npm"], ["rm"])
-        # deny = union of ["rm"] and ["curl", "wget"]
-        assert set(deny) == {"rm", "curl", "wget"}
+        # Profile narrows allow to the intersection…
+        assert allow == ["pytest"]
+        # …but cannot add to (or change) the repo deny list.
+        assert deny == ["rm"]
 
     def test_profile_cannot_grant_beyond_repo(self) -> None:
         """Profile allow that is not in repo.allow produces empty effective_allow."""
         from yukar.agents.dispatch_attempt import _merge_commands
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
 
         # Profile tries to grant "bash" — repo does not allow it.
         profile = AgentProfile(
             name="escalate",
             base_role="worker",
-            commands=RepoCommands(allow=["bash", "sh"], deny=[]),
+            allowed_commands=["bash", "sh"],
         )
         allow, deny = _merge_commands(profile, ["pytest"], [])
         # "bash" and "sh" are not in repo.allow → intersection is empty
@@ -369,22 +368,18 @@ class TestMergeCommands:
         assert allow == ["pytest"]
         assert deny == ["rm"]
 
-    def test_deny_deduplication(self) -> None:
-        """Commands already in repo.deny are not duplicated in effective_deny."""
+    def test_repo_deny_is_preserved_regardless_of_profile(self) -> None:
+        """The repo deny list passes through unchanged; a profile cannot alter it."""
         from yukar.agents.dispatch_attempt import _merge_commands
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
 
-        # Both repo and profile deny "rm"
         profile = AgentProfile(
-            name="dup-deny",
+            name="narrowed",
             base_role="worker",
-            commands=RepoCommands(allow=[], deny=["rm", "curl"]),
+            allowed_commands=["pytest"],
         )
-        allow, deny = _merge_commands(profile, ["pytest"], ["rm"])
-        # "rm" should not appear twice
-        assert deny.count("rm") == 1
-        assert "curl" in deny
+        _, deny = _merge_commands(profile, ["pytest"], ["rm", "curl"])
+        assert deny == ["rm", "curl"]
 
 
 class TestResolveProfile:
@@ -480,7 +475,6 @@ class TestMergeCommandsBaseRoleConsistency:
         """
         from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
         from yukar.storage.agent_profiles_repo import save_profile
 
         root = str(tmp_path)
@@ -492,7 +486,7 @@ class TestMergeCommandsBaseRoleConsistency:
                 name="eval-profile",
                 base_role="evaluator",
                 instructions="Evaluator only.",
-                commands=RepoCommands(allow=["pytest"], deny=["curl"]),
+                allowed_commands=["pytest"],
             ),
         )
         task = self._make_task(agent="eval-profile")
@@ -513,7 +507,6 @@ class TestMergeCommandsBaseRoleConsistency:
         """Evaluator profile deny must not extend repo deny when assigned to worker task."""
         from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
         from yukar.storage.agent_profiles_repo import save_profile
 
         root = str(tmp_path)
@@ -523,7 +516,7 @@ class TestMergeCommandsBaseRoleConsistency:
             AgentProfile(
                 name="eval-deny-heavy",
                 base_role="evaluator",
-                commands=RepoCommands(allow=[], deny=["curl", "wget", "ssh"]),
+                allowed_commands=[],
             ),
         )
         task = self._make_task(agent="eval-deny-heavy")
@@ -906,7 +899,6 @@ class TestEvaluatorDedicatedCtx:
         """Evaluator profile's commands take effect; worker profile commands do not leak."""
         from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
         from yukar.storage.agent_profiles_repo import save_profile
 
         root = str(tmp_path)
@@ -919,7 +911,7 @@ class TestEvaluatorDedicatedCtx:
             AgentProfile(
                 name="worker-profile",
                 base_role="worker",
-                commands=RepoCommands(allow=["pytest"], deny=[]),
+                allowed_commands=["pytest"],
             ),
         )
         # Evaluator profile allows ["pytest", "npm"] (wider)
@@ -929,7 +921,7 @@ class TestEvaluatorDedicatedCtx:
             AgentProfile(
                 name="eval-profile",
                 base_role="evaluator",
-                commands=RepoCommands(allow=["pytest", "npm"], deny=[]),
+                allowed_commands=["pytest", "npm"],
             ),
         )
 
@@ -962,7 +954,6 @@ class TestEvaluatorDedicatedCtx:
         """
         from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
         from yukar.storage.agent_profiles_repo import save_profile
 
         root = str(tmp_path)
@@ -975,7 +966,7 @@ class TestEvaluatorDedicatedCtx:
             AgentProfile(
                 name="strict-worker",
                 base_role="worker",
-                commands=RepoCommands(allow=["pytest"], deny=[]),
+                allowed_commands=["pytest"],
             ),
         )
 

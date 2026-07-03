@@ -70,7 +70,7 @@ test.describe
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("completed");
+        .toBe("in_review");
 
       // Discover the worker thread id for the hand-off assertion.
       const tRes = await page.request.get(

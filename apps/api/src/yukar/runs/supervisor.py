@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -53,6 +54,20 @@ from yukar.storage.epic_repo import get_epic, save_epic
 MERGE_SENTINEL = "__merge__"
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_require_plan_approval() -> bool:
+    """Whether the Manager needs the user's approval before dispatching Workers.
+
+    Enabled by default (the human review gate is a safety feature).  It can be
+    disabled by setting ``YUKAR_REQUIRE_PLAN_APPROVAL`` to ``0``/``false`` — an
+    ops/test escape hatch used by the fully-scripted E2E scenarios that pre-date
+    the gate, and by fully-autonomous deployments that opt out deliberately.
+    """
+    env = os.environ.get("YUKAR_REQUIRE_PLAN_APPROVAL")
+    if env is not None:
+        return env.strip().lower() not in ("0", "false", "no", "off")
+    return True
 
 
 class IndexNotReadyError(RuntimeError):
@@ -681,6 +696,7 @@ class RunSupervisor:
                 mcp_settings=cfg.mcp if cfg is not None else None,
                 embedding_settings=cfg.embedding if cfg is not None else None,
                 manager_thread_id=manager_thread_id,
+                require_plan_approval=_resolve_require_plan_approval(),
             )
         return DummyRunner()
 
@@ -1036,6 +1052,7 @@ class RunSupervisor:
                 mcp_settings=cfg.mcp if cfg is not None else None,
                 embedding_settings=cfg.embedding if cfg is not None else None,
                 manager_thread_id=manager_thread_id,
+                require_plan_approval=_resolve_require_plan_approval(),
             )
         return DummyRunner()
 

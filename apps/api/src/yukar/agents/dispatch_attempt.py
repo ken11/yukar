@@ -105,15 +105,16 @@ def _merge_commands(
     repo_allow: list[str],
     repo_deny: list[str],
 ) -> tuple[list[str], list[str]]:
-    """Merge repo-level and profile-level run_command allow/deny lists.
+    """Merge the repo-level allow/deny lists with the profile's allowlist.
 
     The repo is the security boundary: a profile cannot grant commands that the
-    repo does not allow.
+    repo does not allow.  A profile has no deny list of its own — the repo deny
+    (plus the always-on baseline denylist) is the hard gate.
 
     Merging rules:
-      effective_allow = repo_allow ∩ profile_allow   (when profile.allow non-empty)
-                      = repo_allow                    (when profile absent / allow empty)
-      effective_deny  = repo_deny ∪ profile_deny
+      effective_allow = repo_allow ∩ profile.allowed_commands  (when non-empty)
+                      = repo_allow                              (profile absent / empty)
+      effective_deny  = repo_deny                               (profile cannot widen deny)
 
     The caller is responsible for resolving ``resolved_profile`` (including
     base_role validation) before calling this function.  Passing ``None``
@@ -125,17 +126,31 @@ def _merge_commands(
     if resolved_profile is None:
         return repo_allow, repo_deny
 
-    # Profile allow — restrict (intersect) only when non-empty.
-    if resolved_profile.commands.allow:
+    # Profile allowlist — restrict (intersect) only when non-empty.
+    if resolved_profile.allowed_commands:
         repo_allow_set = set(repo_allow)
-        effective_allow = [cmd for cmd in resolved_profile.commands.allow if cmd in repo_allow_set]
+        effective_allow = [
+            cmd for cmd in resolved_profile.allowed_commands if cmd in repo_allow_set
+        ]
+        if not effective_allow:
+            # None of the profile's selected commands are in the repo allow list
+            # (e.g. a stale selection after the repo allow list was edited).  An
+            # empty allow list is deny-all downstream, which would silently block
+            # every command for this task — surface it loudly instead of failing
+            # closed without a trace.
+            logger.warning(
+                "dispatch_attempt: profile %r allowed_commands=%s are all disjoint from "
+                "the repo allow list %s; the effective allow list is EMPTY (deny-all). "
+                "The assigned agent will be unable to run any command.",
+                resolved_profile.name,
+                resolved_profile.allowed_commands,
+                repo_allow,
+            )
     else:
         effective_allow = list(repo_allow)
 
-    # Profile deny — extend (union).
-    effective_deny = list(repo_deny) + [
-        cmd for cmd in resolved_profile.commands.deny if cmd not in repo_deny
-    ]
+    # No profile-level deny: the repo deny list is the boundary.
+    effective_deny = list(repo_deny)
 
     logger.debug(
         "dispatch_attempt: merged commands profile=%r allow=%s deny=%s",

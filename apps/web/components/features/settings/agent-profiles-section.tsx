@@ -10,11 +10,12 @@ import {
 import { Icon } from "@/components/icon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import type { AgentProfile, McpConfig, RepoCommands, SkillMeta } from "@/lib/api/endpoints";
+import type { AgentProfile, McpConfig, Repo, SkillMeta } from "@/lib/api/endpoints";
 import {
   deleteAgentProfile,
   getMcpConfig,
   listAgentProfiles,
+  listRepos,
   listSkills,
   putAgentProfile,
 } from "@/lib/api/endpoints";
@@ -23,7 +24,6 @@ import { cn } from "@/lib/cn";
 import { useResetTimer } from "@/lib/hooks/use-reset-timer";
 import { useSaveState } from "@/lib/hooks/use-save-state";
 import { useDict } from "@/lib/i18n/provider";
-import { arrayToLines, linesToArray } from "@/lib/text";
 
 // ---- Form state ----------------------------------------------------
 
@@ -34,8 +34,7 @@ interface ProfileDraft {
   instructions: string;
   skills: string[];
   mcp_servers: string[];
-  commandsAllow: string;
-  commandsDeny: string;
+  allowedCommands: string[];
 }
 
 function profileToDraft(p: AgentProfile): ProfileDraft {
@@ -46,8 +45,7 @@ function profileToDraft(p: AgentProfile): ProfileDraft {
     instructions: p.instructions,
     skills: p.skills ?? [],
     mcp_servers: p.mcp_servers ?? [],
-    commandsAllow: arrayToLines(p.commands?.allow),
-    commandsDeny: arrayToLines(p.commands?.deny),
+    allowedCommands: p.allowed_commands ?? [],
   };
 }
 
@@ -59,16 +57,11 @@ function emptyDraft(): ProfileDraft {
     instructions: "",
     skills: [],
     mcp_servers: [],
-    commandsAllow: "",
-    commandsDeny: "",
+    allowedCommands: [],
   };
 }
 
 function draftToProfile(d: ProfileDraft): AgentProfile {
-  const commands: RepoCommands = {
-    allow: linesToArray(d.commandsAllow),
-    deny: linesToArray(d.commandsDeny),
-  };
   return {
     name: d.name,
     description: d.description,
@@ -76,7 +69,8 @@ function draftToProfile(d: ProfileDraft): AgentProfile {
     instructions: d.instructions,
     skills: d.skills.length > 0 ? d.skills : undefined,
     mcp_servers: d.mcp_servers.length > 0 ? d.mcp_servers : undefined,
-    commands,
+    // empty = inherit the repo allow list unchanged
+    allowed_commands: d.allowedCommands,
   };
 }
 
@@ -105,9 +99,15 @@ function MultiSelect({
     }
   }
 
-  if (items.length === 0) {
+  // Selected entries that are no longer offered (e.g. a repo allow-list command
+  // was renamed/removed after this profile was saved). Render them as removable
+  // "stale" chips so they stay visible and clearable instead of silently
+  // persisting — a disjoint allow list otherwise blocks every command at dispatch.
+  const staleSelected = selected.filter((s) => !items.includes(s));
+
+  if (items.length === 0 && staleSelected.length === 0) {
     return (
-      <p className="text-[11px] text-outline italic">
+      <p data-testid={testId} className="text-[11px] text-outline italic">
         No {label.toLowerCase()} defined for this project.
       </p>
     );
@@ -130,6 +130,17 @@ function MultiSelect({
           {item}
         </button>
       ))}
+      {staleSelected.map((item) => (
+        <button
+          key={`stale-${item}`}
+          type="button"
+          onClick={() => toggle(item)}
+          title="No longer available for this project — click to remove"
+          className="rounded border border-error/40 bg-error/10 px-2 py-0.5 font-mono text-[11px] text-error line-through transition-colors hover:bg-error/20 focus:outline-none focus:ring-1 focus:ring-white/20"
+        >
+          {item} ✕
+        </button>
+      ))}
     </div>
   );
 }
@@ -141,6 +152,7 @@ export interface AgentProfilesSectionProps {
   initialProfiles: AgentProfile[];
   initialSkills: SkillMeta[];
   initialMcpConfig: McpConfig;
+  initialRepos: Repo[];
 }
 
 export function AgentProfilesSection({
@@ -148,6 +160,7 @@ export function AgentProfilesSection({
   initialProfiles,
   initialSkills,
   initialMcpConfig,
+  initialRepos,
 }: AgentProfilesSectionProps) {
   const t = useDict();
   const ps = t.projectSettings ?? ({} as NonNullable<(typeof t)["projectSettings"]>);
@@ -175,6 +188,13 @@ export function AgentProfilesSection({
     staleTime: 30_000,
   });
 
+  const { data: repos = initialRepos } = useQuery({
+    queryKey: queryKeys.repos.list(projectId),
+    queryFn: () => listRepos(projectId),
+    initialData: initialRepos,
+    staleTime: 30_000,
+  });
+
   const [selectedName, setSelectedName] = useState<string | null>(profiles[0]?.name ?? null);
   const [isCreating, setIsCreating] = useState(false);
   const [draft, setDraft] = useState<ProfileDraft>(emptyDraft);
@@ -192,6 +212,11 @@ export function AgentProfilesSection({
 
   const skillNames = skills.map((s) => s.name);
   const mcpServerNames = (mcpConfig.servers ?? []).map((s) => s.name);
+  // Union of every repo's allow list — the universe a profile may pick a subset from.
+  // (A profile can only narrow the repo allow list; it can never widen it.)
+  const repoAllowedCommands = Array.from(
+    new Set(repos.flatMap((r) => r.commands?.allow ?? [])),
+  ).sort();
 
   const saveMutation = useMutation({
     mutationFn: ({ name, profile }: { name: string; profile: AgentProfile }) =>
@@ -434,52 +459,26 @@ export function AgentProfilesSection({
                 />
               </div>
 
-              {/* Commands allow / deny */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label
-                    htmlFor="profile-commands-allow"
-                    className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline"
-                  >
-                    Commands — Allow{" "}
-                    <span className="normal-case tracking-normal text-outline/60">
-                      (one per line)
-                    </span>
-                  </label>
-                  <textarea
-                    id="profile-commands-allow"
-                    data-testid="profile-commands-allow-textarea"
-                    value={draft.commandsAllow}
-                    onChange={(e) => patchDraft({ commandsAllow: e.target.value })}
-                    rows={4}
-                    placeholder={"pnpm test\npnpm lint"}
-                    className={textareaClass}
-                  />
-                  <p className="mt-1 text-[11px] text-outline">
-                    Empty = use repo-level allow list.
-                  </p>
-                </div>
-                <div>
-                  <label
-                    htmlFor="profile-commands-deny"
-                    className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline"
-                  >
-                    Commands — Deny{" "}
-                    <span className="normal-case tracking-normal text-outline/60">
-                      (one per line)
-                    </span>
-                  </label>
-                  <textarea
-                    id="profile-commands-deny"
-                    data-testid="profile-commands-deny-textarea"
-                    value={draft.commandsDeny}
-                    onChange={(e) => patchDraft({ commandsDeny: e.target.value })}
-                    rows={4}
-                    placeholder={"rm -rf"}
-                    className={textareaClass}
-                  />
-                  <p className="mt-1 text-[11px] text-outline">Takes priority over allow.</p>
-                </div>
+              {/* Allowed commands — a subset of the repo allow list (toggle on/off) */}
+              <div>
+                <p className="mb-1.5 text-[11px] uppercase tracking-wider text-outline">
+                  Allowed Commands{" "}
+                  <span className="normal-case tracking-normal text-outline/60">
+                    (subset of repo allow list; empty = all repo-allowed)
+                  </span>
+                </p>
+                <MultiSelect
+                  label="Repo-allowed commands"
+                  items={repoAllowedCommands}
+                  selected={draft.allowedCommands}
+                  onChange={(next) => patchDraft({ allowedCommands: next })}
+                  data-testid="profile-commands-multiselect"
+                />
+                <p className="mt-1.5 text-[11px] text-outline">
+                  Only commands already allowed at the repo level can be selected. A profile narrows
+                  this list; it can never grant a command the repo does not allow. There is no
+                  per-profile deny — the repo deny list is the hard gate.
+                </p>
               </div>
 
               {/* Actions */}

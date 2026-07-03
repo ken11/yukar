@@ -4,8 +4,11 @@ Layout:
   <yukar_dir>/agent_profiles/<name>.md
 
 Frontmatter keys:
-  name, description, base_role, skills, mcp_servers,
-  commands.allow, commands.deny  (stored as commands: {allow: [], deny: []})
+  name, description, base_role, skills, mcp_servers, allowed_commands
+
+Legacy files may still carry ``commands: {allow: [], deny: []}`` instead of
+``allowed_commands``; those are migrated on read (allow → allowed_commands,
+deny dropped) so old profiles keep working.
 
 Body text = instructions (the system-prompt overlay).
 
@@ -22,7 +25,6 @@ from typing import Any
 
 from yukar.config import paths as p
 from yukar.models.agent_profile import AgentProfile
-from yukar.models.project import RepoCommands
 from yukar.storage.frontmatter_io import parse_frontmatter
 from yukar.storage.markdown_io import read_markdown, write_markdown
 from yukar.storage.yaml_io import load_validated_dir
@@ -46,10 +48,7 @@ def _build_frontmatter(profile: AgentProfile) -> str:
         "base_role": profile.base_role,
         "skills": list(profile.skills),
         "mcp_servers": list(profile.mcp_servers),
-        "commands": {
-            "allow": list(profile.commands.allow),
-            "deny": list(profile.commands.deny),
-        },
+        "allowed_commands": list(profile.allowed_commands),
     }
 
     buf = StringIO()
@@ -64,14 +63,17 @@ def _build_frontmatter(profile: AgentProfile) -> str:
 
 def _profile_from_parts(meta: dict[str, Any], body: str, fallback_name: str) -> AgentProfile:
     """Construct an AgentProfile from parsed frontmatter and body text."""
-    commands_raw = meta.get("commands", {})
-    if isinstance(commands_raw, dict):
-        commands = RepoCommands(
-            allow=list(commands_raw.get("allow", [])),
-            deny=list(commands_raw.get("deny", [])),
-        )
+    allowed_raw = meta.get("allowed_commands")
+    if allowed_raw is not None:
+        allowed_commands = list(allowed_raw)
     else:
-        commands = RepoCommands()
+        # Legacy format: commands: {allow: [...], deny: [...]}.  Migrate the
+        # allow list; the deprecated deny list is dropped (the repo-level deny
+        # and the baseline denylist remain the hard gate).
+        commands_raw = meta.get("commands", {})
+        allowed_commands = (
+            list(commands_raw.get("allow", [])) if isinstance(commands_raw, dict) else []
+        )
 
     return AgentProfile(
         name=str(meta.get("name", fallback_name)),
@@ -80,7 +82,7 @@ def _profile_from_parts(meta: dict[str, Any], body: str, fallback_name: str) -> 
         instructions=body,
         skills=list(meta.get("skills", [])),
         mcp_servers=list(meta.get("mcp_servers", [])),
-        commands=commands,
+        allowed_commands=allowed_commands,
     )
 
 

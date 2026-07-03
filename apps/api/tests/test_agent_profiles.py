@@ -35,12 +35,10 @@ class TestAgentProfileModel:
         assert p.instructions == ""
         assert p.skills == []
         assert p.mcp_servers == []
-        assert p.commands.allow == []
-        assert p.commands.deny == []
+        assert p.allowed_commands == []
 
     def test_full_construction(self) -> None:
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
 
         p = AgentProfile(
             name="be",
@@ -49,11 +47,10 @@ class TestAgentProfileModel:
             instructions="Use pytest.",
             skills=["pytest-patterns"],
             mcp_servers=["github-mcp"],
-            commands=RepoCommands(allow=["pytest"], deny=["rm"]),
+            allowed_commands=["pytest"],
         )
         assert p.base_role == "worker"
-        assert p.commands.allow == ["pytest"]
-        assert p.commands.deny == ["rm"]
+        assert p.allowed_commands == ["pytest"]
 
     def test_evaluator_base_role(self) -> None:
         from yukar.models.agent_profile import AgentProfile
@@ -147,7 +144,6 @@ class TestAgentProfilesRepo:
     @pytest.mark.asyncio
     async def test_save_and_get(self, tmp_path: Path) -> None:
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
         from yukar.storage.agent_profiles_repo import get_profile, save_profile
 
         root = str(tmp_path)
@@ -158,7 +154,7 @@ class TestAgentProfilesRepo:
             instructions="Use pytest.",
             skills=["pytest-patterns"],
             mcp_servers=["github-mcp"],
-            commands=RepoCommands(allow=["pytest"], deny=["rm"]),
+            allowed_commands=["pytest"],
         )
         await save_profile(root, "proj", p)
         loaded = get_profile(root, "proj", "backend-worker")
@@ -167,8 +163,7 @@ class TestAgentProfilesRepo:
         assert loaded.instructions == "Use pytest."
         assert loaded.skills == ["pytest-patterns"]
         assert loaded.mcp_servers == ["github-mcp"]
-        assert loaded.commands.allow == ["pytest"]
-        assert loaded.commands.deny == ["rm"]
+        assert loaded.allowed_commands == ["pytest"]
 
     def test_get_missing_returns_none(self, tmp_path: Path) -> None:
         from yukar.storage.agent_profiles_repo import get_profile
@@ -197,7 +192,6 @@ class TestAgentProfilesRepo:
     async def test_frontmatter_roundtrip(self, tmp_path: Path) -> None:
         """All frontmatter fields survive a write→read cycle."""
         from yukar.models.agent_profile import AgentProfile
-        from yukar.models.project import RepoCommands
         from yukar.storage.agent_profiles_repo import get_profile, save_profile
 
         root = str(tmp_path)
@@ -208,7 +202,7 @@ class TestAgentProfilesRepo:
             instructions="Be strict.\n\nAlways check tests.",
             skills=["skill-a", "skill-b"],
             mcp_servers=["server-1"],
-            commands=RepoCommands(allow=["pytest", "npm test"], deny=["curl"]),
+            allowed_commands=["pytest", "npm test"],
         )
         await save_profile(root, "proj", original)
         loaded = get_profile(root, "proj", "full-profile")
@@ -220,8 +214,7 @@ class TestAgentProfilesRepo:
         assert "Always check tests." in loaded.instructions
         assert loaded.skills == original.skills
         assert loaded.mcp_servers == original.mcp_servers
-        assert loaded.commands.allow == original.commands.allow
-        assert loaded.commands.deny == original.commands.deny
+        assert loaded.allowed_commands == original.allowed_commands
 
     @pytest.mark.asyncio
     async def test_empty_instructions(self, tmp_path: Path) -> None:
@@ -646,13 +639,87 @@ class TestAgentProfileTools:
             name="cmd-worker",
             description="",
             base_role="worker",
-            command_allow=["pytest"],
-            command_deny=["rm"],
+            allowed_commands=["pytest"],
         )
         profile = get_profile(root, "proj", "cmd-worker")
         assert profile is not None
-        assert profile.commands.allow == ["pytest"]
-        assert profile.commands.deny == ["rm"]
+        assert profile.allowed_commands == ["pytest"]
+
+    @pytest.mark.asyncio
+    async def test_partial_update_preserves_unspecified_fields(self, tmp_path: Path) -> None:
+        """Read-merge: omitting a field on update must NOT wipe it (the clobber bug)."""
+        from yukar.agents.tools.agent_profile_tools import make_agent_profile_tools
+        from yukar.storage.agent_profiles_repo import get_profile
+
+        root = str(tmp_path)
+        tools = make_agent_profile_tools(root, "proj")
+        write_fn = self._unwrap(tools[2])
+
+        # Create a profile with commands + skills.
+        await write_fn(
+            name="fe-worker",
+            description="Frontend",
+            base_role="worker",
+            allowed_commands=["pnpm test"],
+            skills=["react"],
+        )
+        # Update ONLY the instructions — omit allowed_commands and skills.
+        result = await write_fn(name="fe-worker", instructions="Prefer TypeScript.")
+        assert result["ok"] is True
+        assert result["unchanged"] is False
+
+        profile = get_profile(root, "proj", "fe-worker")
+        assert profile is not None
+        assert profile.instructions == "Prefer TypeScript."
+        # The omitted fields survive (previously they were clobbered to []).
+        assert profile.allowed_commands == ["pnpm test"]
+        assert profile.skills == ["react"]
+        assert profile.base_role == "worker"
+        assert profile.description == "Frontend"
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_list_clears_commands(self, tmp_path: Path) -> None:
+        """Passing an explicit [] (not None) clears the allowlist."""
+        from yukar.agents.tools.agent_profile_tools import make_agent_profile_tools
+        from yukar.storage.agent_profiles_repo import get_profile
+
+        root = str(tmp_path)
+        tools = make_agent_profile_tools(root, "proj")
+        write_fn = self._unwrap(tools[2])
+
+        await write_fn(name="w", description="", base_role="worker", allowed_commands=["pytest"])
+        await write_fn(name="w", allowed_commands=[])
+        profile = get_profile(root, "proj", "w")
+        assert profile is not None
+        assert profile.allowed_commands == []
+
+    @pytest.mark.asyncio
+    async def test_noop_update_is_skipped(self, tmp_path: Path) -> None:
+        """Re-writing an identical profile is reported as unchanged (anti-churn)."""
+        from yukar.agents.tools.agent_profile_tools import make_agent_profile_tools
+
+        root = str(tmp_path)
+        tools = make_agent_profile_tools(root, "proj")
+        write_fn = self._unwrap(tools[2])
+
+        await write_fn(name="w", description="d", base_role="worker", allowed_commands=["pytest"])
+        # Same values again → no-op.
+        result = await write_fn(
+            name="w", description="d", base_role="worker", allowed_commands=["pytest"]
+        )
+        assert result["ok"] is True
+        assert result["unchanged"] is True
+
+    @pytest.mark.asyncio
+    async def test_create_requires_base_role(self, tmp_path: Path) -> None:
+        """Creating a brand-new profile without base_role is an error."""
+        from yukar.agents.tools.agent_profile_tools import make_agent_profile_tools
+
+        tools = make_agent_profile_tools(str(tmp_path), "proj")
+        write_fn = self._unwrap(tools[2])
+
+        result = await write_fn(name="new-one", description="x")
+        assert result["ok"] is False
 
     @pytest.mark.asyncio
     async def test_write_invalid_base_role_returns_error(self, tmp_path: Path) -> None:

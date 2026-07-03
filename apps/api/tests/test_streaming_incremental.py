@@ -296,6 +296,7 @@ class TestOrchestratorIncrementalStreaming:
             orch = EpicOrchestrator(
                 llm_settings=llm,
                 git_author_name="yukar",
+                require_plan_approval=False,
                 git_author_email="yukar@localhost",
             )
             await orch.start(root, project_id, epic_id, "run-streaming")

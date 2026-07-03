@@ -222,6 +222,7 @@ class TestParallelDifferentRepos:
             orch = EpicOrchestrator(
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
+                require_plan_approval=False,
                 git_author_email="yukar@localhost",
                 max_parallel_workers=4,
             )
@@ -329,6 +330,7 @@ class TestSerialSameRepo:
             orch = EpicOrchestrator(
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
+                require_plan_approval=False,
                 git_author_email="yukar@localhost",
                 max_parallel_workers=4,
             )
@@ -644,6 +646,7 @@ class TestStopWhilePaused:
         orch = EpicOrchestrator(
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
+            require_plan_approval=False,
             git_author_email="yukar@localhost",
         )
 

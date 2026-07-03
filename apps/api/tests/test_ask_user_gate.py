@@ -1182,3 +1182,82 @@ class TestSingleWriterUserMessages:
         assert first_text == seed, f"FSM recorded {first_text!r} instead of seed {seed!r}"
         assert "task state" not in first_text.lower()
         assert "dispatch" not in first_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Plan-approval gate: dispatch is host-rejected until the user approves the plan
+# ---------------------------------------------------------------------------
+
+
+class TestPlanApprovalGate:
+    """The host refuses `dispatch` until the current task plan is approved.
+
+    A task_update (plan change) invalidates approval; a genuine user turn grants
+    it.  The gate is disabled via ``require_plan_approval=False`` for the scripted
+    orchestration tests that pre-date it.
+    """
+
+    def _orch(self, *, require: bool = True, is_continuation: bool = False) -> Any:
+        from yukar.agents.orchestrator import EpicOrchestrator
+        from yukar.config.settings import LLMSettings
+
+        return EpicOrchestrator(
+            llm_settings=LLMSettings(provider="fake"),
+            git_author_name="Test",
+            git_author_email="test@example.com",
+            is_continuation=is_continuation,
+            require_plan_approval=require,
+        )
+
+    async def test_fresh_run_starts_unapproved(self) -> None:
+        orch = self._orch()
+        assert orch._plan_approved is False
+
+    async def test_continuation_starts_approved(self) -> None:
+        orch = self._orch(is_continuation=True)
+        assert orch._plan_approved is True
+
+    async def test_dispatch_rejected_when_not_approved(self) -> None:
+        orch = self._orch()
+        assert orch._plan_approved is False
+        dispatch = orch._make_dispatch_tool()
+        result = await dispatch(items=[{"task_id": "T1"}, {"task_id": "T2"}])
+        assert [r["task_id"] for r in result] == ["T1", "T2"]
+        assert all(r["accepted"] is False and r["status"] == "rejected" for r in result)
+        assert "approved" in result[0]["reason"].lower()
+
+    async def test_dispatch_allowed_when_approved(self) -> None:
+        orch = self._orch()
+        orch._plan_approved = True
+
+        captured: dict[str, Any] = {}
+
+        async def fake_run_dispatch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            captured["items"] = items
+            return [{"task_id": items[0]["task_id"], "accepted": True, "status": "done"}]
+
+        orch._run_dispatch = fake_run_dispatch  # type: ignore[method-assign]
+        dispatch = orch._make_dispatch_tool()
+        result = await dispatch(items=[{"task_id": "T1"}])
+        assert captured["items"] == [{"task_id": "T1"}]
+        assert result[0]["accepted"] is True
+
+    async def test_task_update_invalidates_approval(self) -> None:
+        orch = self._orch()
+        orch._plan_approved = True
+        orch._invalidate_plan_approval()
+        assert orch._plan_approved is False
+
+    async def test_gate_disabled_never_blocks(self) -> None:
+        orch = self._orch(require=False)
+        orch._plan_approved = False
+        # Invalidation is a no-op while the gate is off.
+        orch._invalidate_plan_approval()
+
+        async def fake_run_dispatch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [{"task_id": "T1", "accepted": True, "status": "done"}]
+
+        orch._run_dispatch = fake_run_dispatch  # type: ignore[method-assign]
+        dispatch = orch._make_dispatch_tool()
+        result = await dispatch(items=[{"task_id": "T1"}])
+        assert result[0]["accepted"] is True

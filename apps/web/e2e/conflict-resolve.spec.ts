@@ -100,7 +100,7 @@ test.describe
       await expect(page).toHaveURL(/\/threads\//, { timeout: 15_000 });
 
       // Wait until completed (per_call[0]: writes conflict.txt with EPIC version)
-      await waitForEpicStatus(page, "completed");
+      await waitForEpicStatus(page, "in_review");
       console.log("[conflict-resolve] Epic run completed");
 
       // Retrieve epic branch name (used to verify the resolve run)

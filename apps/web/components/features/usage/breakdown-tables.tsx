@@ -17,11 +17,11 @@ export function BreakdownTable({ data }: { data: UsageSummaryResponse }) {
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="max-h-[420px] overflow-x-auto overflow-y-auto">
       <table className="w-full border-collapse">
         <thead>
           <tr
-            className="text-left"
+            className="sticky top-0 z-10 bg-surface-container-high text-left"
             style={{
               boxShadow: "0 1px 0 0 var(--color-outline-variant, #444748)",
             }}
@@ -147,11 +147,11 @@ export function ModelTable({ data }: { data: UsageSummaryResponse }) {
   if (byModel.length === 0) return null;
 
   return (
-    <div className="overflow-x-auto">
+    <div className="max-h-[420px] overflow-x-auto overflow-y-auto">
       <table className="w-full border-collapse">
         <thead>
           <tr
-            className="text-left"
+            className="sticky top-0 z-10 bg-surface-container-high text-left"
             style={{
               boxShadow: "0 1px 0 0 var(--color-outline-variant, #444748)",
             }}

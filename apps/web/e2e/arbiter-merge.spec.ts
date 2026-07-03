@@ -102,7 +102,7 @@ test.describe
       await startRun(page, state.epicId1);
 
       // Wait for completed (1st run uses per_call[0] = writes epic1.py)
-      await waitForEpicStatus(page, state.epicId1, "completed");
+      await waitForEpicStatus(page, state.epicId1, "in_review");
       console.log(`[arbiter-merge] Epic 1 completed`);
     });
 
@@ -143,7 +143,7 @@ test.describe
       await startRun(page, state.epicId2);
 
       // Wait for completed (2nd run uses per_call[1] = writes epic2.py)
-      await waitForEpicStatus(page, state.epicId2, "completed");
+      await waitForEpicStatus(page, state.epicId2, "in_review");
       console.log(`[arbiter-merge] Epic 2 completed`);
     });
 

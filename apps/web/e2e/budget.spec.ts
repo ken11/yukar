@@ -116,7 +116,7 @@ test.describe
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toMatch(/^(completed|interrupted|idle)$/);
+        .toMatch(/^(completed|interrupted|idle|in_review)$/);
 
       // Check usage state via GET /api/usage
       const usageRes = await page.request.get("/api/usage");

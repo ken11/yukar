@@ -76,7 +76,7 @@ test.describe
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("completed");
+        .toBe("in_review");
 
       // Record the manager thread id immediately after the run
       const tRes = await page.request.get(

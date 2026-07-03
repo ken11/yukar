@@ -498,6 +498,26 @@ class TokenUsageTracker:
         total_embed = g["embedding_tokens"]
         total_tokens = g["total_tokens"]
 
+        # Breakdowns (by_project / by_model) are scoped to the CURRENT JST month
+        # so the per-run list the UI renders cannot grow without bound.  The
+        # all-time totals above (total_*) and the today/this_month/daily blocks
+        # below are unaffected.
+        #
+        # A run is included when it was ACTIVE this month, i.e. its last usage
+        # increment (updated_at) falls in the current JST month.  updated_at is
+        # bumped on every record() (ledger add()), so this surfaces exactly the
+        # runs still accumulating cost this month and drops stale ones.  Note:
+        # a RunTotals aggregates a run's whole lifetime, so a run that straddles
+        # a month boundary shows its full total here; that total can therefore
+        # differ slightly from the strictly month-scoped this_month figure.
+        now_jst = datetime.now(_JST)
+        month_prefix = now_jst.strftime("%Y-%m")
+        month_runs = [
+            rt
+            for rt in self._runs.values()
+            if rt.updated_at.astimezone(_JST).strftime("%Y-%m") == month_prefix
+        ]
+
         # Build by_project:
         #   epic_map:    project_id → epic_id → list[RunTotals]  (real epics only)
         #   arbiter_map: project_id → list[RunTotals]            (arbiter sentinel runs)
@@ -505,7 +525,7 @@ class TokenUsageTracker:
             lambda: defaultdict(list)
         )
         arbiter_map: dict[str, list[RunTotals]] = defaultdict(list)
-        for rt in self._runs.values():
+        for rt in month_runs:
             if rt.epic_id == ARBITER_EPIC_SENTINEL:
                 arbiter_map[rt.project_id].append(rt)
             else:
@@ -613,7 +633,7 @@ class TokenUsageTracker:
         # Build by_model: aggregate across all runs, keyed by model_id only
         # (role breakdown is available at the run level via by_model on RunTotals).
         model_agg: dict[str, ModelUsageSummary] = {}
-        for rt in self._runs.values():
+        for rt in month_runs:
             for mb in rt.by_model:
                 entry = model_agg.get(mb.model_id)
                 if entry is None:
@@ -640,9 +660,8 @@ class TokenUsageTracker:
                 # If run has no USD cost, cost_jpy stays 0 for this model entry.
 
         # Compute today / this_month / daily from the daily buckets.
-        now_jst = datetime.now(_JST)
+        # now_jst / month_prefix were computed above for the breakdown scope.
         today_str = now_jst.date().isoformat()
-        month_prefix = now_jst.strftime("%Y-%m")
         as_of_date = today_str
 
         today_totals = PeriodTotals()

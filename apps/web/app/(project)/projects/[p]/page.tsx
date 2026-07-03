@@ -14,7 +14,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
 
   const [project, epics, locale] = await Promise.all([
     getProject(p).catch(() => null),
-    // include_closed=false (default) — server omits closed/merged epics already.
+    // include_closed=false (default) — server omits closed epics (merged/completed ARE returned).
     // We pass false explicitly to document intent.
     listEpics(p, false).catch(() => [] as Epic[]),
     getLocale(),
@@ -23,7 +23,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
   const t = getDictionary(locale);
 
   // active = running (in_progress) + planned, sorted by updated_at descending
-  // closed/merged are excluded at the server (include_closed=false) — filter defensively client-side too.
+  // terminal states (closed/merged/completed/failed) are excluded from "active" client-side.
   const byUpdatedDesc = (a: Epic, b: Epic) =>
     (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
 
@@ -39,11 +39,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
   // active epics other than featured (remaining running + all planned)
   const activeListEpics = [...runningEpics.slice(1), ...plannedEpics];
 
-  // Recent epics = non-active only (completed/failed). closed/merged are not shown in the overview.
+  // Recent epics = non-active, non-closed (completed / failed / merged).
+  // merged epics ARE surfaced here so recently-merged work stays visible;
+  // closed epics have their own tab on the /epics board and stay hidden here.
   const activeIds = new Set([...runningEpics.map((e) => e.id), ...plannedEpics.map((e) => e.id)]);
   const recentEpics = epics
-    // #5: use isTerminalStatus() uniformly to detect closed/merged
-    .filter((e) => !activeIds.has(e.id) && !isTerminalStatus(e.status))
+    .filter((e) => !activeIds.has(e.id) && e.status !== "closed")
     .sort(byUpdatedDesc)
     .slice(0, 5);
 

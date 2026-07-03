@@ -192,7 +192,7 @@ test.describe
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("completed");
+        .toBe("in_review");
     });
 
     // ---- 5. Confirm whether duplicate rendering occurs & take element screenshot ----

@@ -90,6 +90,9 @@ export default defineConfig({
         ...process.env,
         YUKAR_CONFIG_DIR: PAUSE_RESUME_SEED.configDir,
         YUKAR_FAKE_SCRIPT: PAUSE_RESUME_FAKE_SCRIPT,
+        // Pre-dates the plan-approval gate; scripted Manager dispatches without
+        // a simulated user approval, so disable the gate for this scenario.
+        YUKAR_REQUIRE_PLAN_APPROVAL: "0",
         // 6.0s sleep per chunk (> supervisor's 5s cancel timeout).
         // When supervisor.stop() fires from "running" state, the manager task is
         // inside asyncio.sleep(6.0).  The supervisor waits 5s then cancels the

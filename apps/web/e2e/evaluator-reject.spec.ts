@@ -98,7 +98,7 @@ test.describe
           },
           { timeout: 120_000, intervals: [500, 1000, 2000] },
         )
-        .toBe("completed");
+        .toBe("in_review");
 
       // Confirm run/state status is also completed
       const runStateRes = await page.request.get(

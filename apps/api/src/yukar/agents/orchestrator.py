@@ -238,6 +238,7 @@ class EpicOrchestrator:
         mcp_settings: McpSettings | None = None,
         embedding_settings: EmbeddingSettings | None = None,
         manager_thread_id: str = "manager",
+        require_plan_approval: bool = True,
     ) -> None:
         self._llm = llm_settings
         self._git_author_name = git_author_name
@@ -284,6 +285,16 @@ class EpicOrchestrator:
         self._awaiting_user: bool = False
         # The question/plan text the Manager wants to present to the user.
         self._pending_question: str = ""
+
+        # Plan-approval gate (prevents the Manager from dispatching Workers
+        # before the user has approved the current task plan).
+        #   - dispatch is REJECTED by the host while the plan is not approved.
+        #   - task_update (a plan change) invalidates approval → must re-ask.
+        #   - a genuine user turn (ask_user reply / HITL / seed_prompt) grants it.
+        # A continuation run resumes an already-approved plan; a fresh run must
+        # earn approval via ask_user before its first dispatch.
+        self._require_plan_approval: bool = require_plan_approval
+        self._plan_approved: bool = is_continuation
 
         # HITL: pending messages queued from threads router.
         # Maps thread_id → list of text strings.
@@ -580,6 +591,19 @@ class EpicOrchestrator:
         tasks_file = await tasks_repo.get_tasks(root, project_id, epic_id)
         self._tasks_holder = [tasks_file]
 
+        # Refine the plan-approval gate for a continuation now that tasks are
+        # known.  A continuation optimistically starts approved so an in-flight
+        # epic can resume dispatching without re-asking.  But if NO work has
+        # started yet (every task still todo/blocked — e.g. the Manager planned
+        # and asked the user, then the run was stopped before approval), the
+        # plan was never actually approved: require a fresh approval so a later
+        # unrelated resume message cannot auto-dispatch an unapproved plan.
+        if self._require_plan_approval and self._is_continuation:
+            work_started = any(
+                t.status in ("in_progress", "done") for t in tasks_file.tasks
+            )
+            self._plan_approved = work_started
+
         # FileSessionManager — orchestrator owns it exclusively (invariant §6.4).
         fsm = FileSessionManager(
             session_id=epic_id,
@@ -588,7 +612,12 @@ class EpicOrchestrator:
 
         # Build effector tools.
         task_update_tool = _make_task_update_tool(
-            root, project_id, epic_id, run_id, self._tasks_holder
+            root,
+            project_id,
+            epic_id,
+            run_id,
+            self._tasks_holder,
+            on_change=self._invalidate_plan_approval,
         )
         dispatch_tool = self._make_dispatch_tool()
         complete_epic_tool = self._make_complete_epic_tool()
@@ -887,6 +916,16 @@ class EpicOrchestrator:
                 if self._seed_prompt:
                     prompt = self._seed_prompt
                     _human_authored = True
+                elif self._require_plan_approval and not self._plan_approved:
+                    # Resuming a plan that was never approved (planned, then the
+                    # run ended before the user approved — no work has started).
+                    # Do NOT tell the Manager to dispatch: the gate would reject it.
+                    prompt = (
+                        "The previous run ended before the plan was approved. "
+                        "Review the existing task state and session history, then call "
+                        "`ask_user` to present the plan and wait for the user's approval "
+                        "before dispatching."
+                    )
                 else:
                     prompt = (
                         "The previous run ended. Review the existing task state and "
@@ -894,6 +933,20 @@ class EpicOrchestrator:
                         "tasks, replan if needed, or call `complete_epic` if all work "
                         "is done. Call `ask_user` if you need human input."
                     )
+            elif self._require_plan_approval and not self._plan_approved:
+                # Plan not yet approved by the user — do NOT nudge toward
+                # dispatch (it would be rejected by the host gate).  Instead
+                # steer the Manager to present the plan and wait for approval.
+                # This replaces the old auto-nudge that read like a synthetic
+                # "proceed with the work" user message.
+                task_summary = _summarise_tasks(tf)
+                prompt = (
+                    f"Current task state:\n{task_summary}\n\n"
+                    "The user has NOT approved this plan yet, so `dispatch` will be "
+                    "rejected. Call `ask_user` to present the current plan (and any "
+                    "changes you just made) and wait for the user's approval. "
+                    "Do NOT call `dispatch` until the user approves."
+                )
             else:
                 task_summary = _summarise_tasks(tf)
                 prompt = (
@@ -906,6 +959,13 @@ class EpicOrchestrator:
 
             # Set the hook flag so the FSM hook publishes only human-authored turns.
             _human_turn_flag[0] = _human_authored
+
+            # A genuine user turn (ask_user reply, unsolicited HITL, or a
+            # continuation seed_prompt) grants approval of the current plan.
+            # If the Manager then changes the plan via task_update this turn,
+            # the on_change hook re-invalidates it before dispatch is reached.
+            if _human_authored:
+                self._plan_approved = True
 
             # Emit turn-started before streaming so the UI shows "Manager is thinking".
             pub(
@@ -1078,6 +1138,16 @@ class EpicOrchestrator:
 
         return ask_user
 
+    def _invalidate_plan_approval(self) -> None:
+        """Mark the current task plan as no longer approved.
+
+        Called after any ``task_update`` so that a plan change forces the
+        Manager to re-present the plan via ``ask_user`` before it may dispatch.
+        A no-op when the approval gate is disabled.
+        """
+        if self._require_plan_approval:
+            self._plan_approved = False
+
     def _make_dispatch_tool(self) -> Any:
         """Return the ``dispatch`` Strands tool bound to this orchestrator."""
         from strands import tool
@@ -1095,6 +1165,11 @@ class EpicOrchestrator:
             Items assigned to *different* repos run in parallel; items assigned
             to the *same* repo are serialised by the host scheduler.
 
+            IMPORTANT: the host REJECTS this call until the user has approved the
+            current task plan.  Present the plan via ``ask_user`` and wait for the
+            user's reply first; any change to the plan (``task_update``) requires
+            a fresh approval before dispatching.
+
             Args:
                 items: List of dispatch items.
 
@@ -1102,6 +1177,24 @@ class EpicOrchestrator:
                 Per-item result list, each with:
                 ``{task_id, accepted, status, feedback, worker_id, eval_id, reason?}``.
             """
+            if self._require_plan_approval and not self._plan_approved:
+                # Host-enforced approval gate: refuse dispatch and tell the
+                # Manager to get the user's approval first.  Returned as a
+                # per-item rejection so the Manager sees exactly what was blocked.
+                reason = (
+                    "Dispatch blocked: the current task plan has not been approved by "
+                    "the user. Call `ask_user` to present the plan (and any changes you "
+                    "just made) and wait for the user's reply before dispatching."
+                )
+                return [
+                    {
+                        "task_id": (item.get("task_id") if isinstance(item, dict) else None),
+                        "accepted": False,
+                        "status": "rejected",
+                        "reason": reason,
+                    }
+                    for item in items
+                ]
             return await self._run_dispatch(items)
 
         return dispatch

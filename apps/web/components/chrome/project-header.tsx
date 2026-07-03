@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSelectedLayoutSegments } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 import { NotificationsPopover } from "@/components/features/notifications/notifications-popover";
@@ -254,6 +255,42 @@ interface ProjectHeaderProps {
 export function ProjectHeader({ projectId, projectName }: ProjectHeaderProps) {
   const t = useT();
 
+  // On project sub-routes (Epics / Docs / Repos / Settings), append a section
+  // segment and make the project name a link back to the project top. On the
+  // bare Overview route (no sub-segment), the project name IS the current page,
+  // so it stays as a plain active segment.
+  const segments = useSelectedLayoutSegments();
+  const section = segments[0];
+  let sectionLabel: string | undefined;
+  switch (section) {
+    case "epics":
+      sectionLabel = t("project.tabs.epics");
+      break;
+    case "docs":
+      sectionLabel = t("project.tabs.docs");
+      break;
+    case "repos":
+      sectionLabel = t("project.tabs.repos");
+      break;
+    case "settings":
+      sectionLabel = t("project.tabs.settings");
+      break;
+    default:
+      // undefined on the Overview route; an unmapped segment falls back to its raw name.
+      sectionLabel = section;
+  }
+
+  const addressSegments = sectionLabel
+    ? [
+        { label: "yukar", href: "/projects" },
+        { label: projectName, href: `/projects/${projectId}` },
+        { label: sectionLabel, active: true },
+      ]
+    : [
+        { label: "yukar", href: "/projects" },
+        { label: projectName, active: true },
+      ];
+
   return (
     <header
       className="sticky top-0 z-20 flex min-h-14 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 edge-h px-4 py-2 md:h-16 md:flex-nowrap md:px-6 md:py-0"
@@ -261,12 +298,7 @@ export function ProjectHeader({ projectId, projectName }: ProjectHeaderProps) {
     >
       {/* Left: address — truncate prevents overflow on mobile */}
       <div className="min-w-0 flex-1">
-        <AddressLine
-          segments={[
-            { label: "yukar", href: "/projects" },
-            { label: projectName, active: true },
-          ]}
-        />
+        <AddressLine segments={addressSegments} />
       </div>
       {/* Right: action buttons — shrink-0 prevents collapsing */}
       <div className="flex shrink-0 items-center gap-2 md:gap-3">

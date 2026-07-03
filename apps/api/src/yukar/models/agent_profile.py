@@ -17,8 +17,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from yukar.models.project import RepoCommands
-
 
 class AgentProfile(BaseModel):
     """Named agent profile — stored as Markdown+YAML-frontmatter per profile."""
@@ -41,5 +39,12 @@ class AgentProfile(BaseModel):
     mcp_servers: list[str] = Field(default_factory=list)
     """MCP server names to activate.  Empty list = use all project MCP servers."""
 
-    commands: RepoCommands = Field(default_factory=RepoCommands)
-    """Profile-level run_command allow/deny.  Merged with repo-level at dispatch time."""
+    allowed_commands: list[str] = Field(default_factory=list)
+    """Profile-level run_command allowlist — a SUBSET of the repo-level allow list.
+
+    Empty list = inherit the repo allow list unchanged.  A non-empty list is
+    intersected with the repo allow list at dispatch time, so a profile can only
+    NARROW what the repo already permits — it can never grant a command the repo
+    does not allow.  There is intentionally no profile-level deny list: the
+    repo-level deny plus the always-on baseline denylist are the hard gate.
+    """

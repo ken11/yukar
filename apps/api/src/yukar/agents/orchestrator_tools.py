@@ -15,6 +15,7 @@ resolvable regardless of which module calls the factory.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal
 
 from yukar.events import bus as event_bus
@@ -40,12 +41,18 @@ def _make_task_update_tool(
     epic_id: str,
     run_id: str,
     _tasks_holder: list[TasksFile],
+    on_change: Callable[[], None] | None = None,
 ) -> Any:
     """Return a Strands tool that lets the Manager update tasks.yaml.
 
     The tool writes through to disk via tasks_repo and also updates the
     in-memory ``_tasks_holder[0]`` so the orchestrator loop can see changes.
     ``_tasks_holder`` is a one-element list so the closure can mutate it.
+
+    ``on_change`` (optional) is invoked after every successful task mutation so
+    the orchestrator can react to a plan change — e.g. invalidate the
+    plan-approval gate so the Manager must re-confirm with the user before
+    dispatching.
     """
     from strands import tool
 
@@ -113,6 +120,9 @@ def _make_task_update_tool(
         _tasks_holder[0] = tf
         # Persist.
         await tasks_repo.save_tasks(root, project_id, epic_id, tf)
+        # Notify the orchestrator that the plan changed (invalidates approval).
+        if on_change is not None:
+            on_change()
         # Publish task_update event.
         event_bus.publish(
             project_id,

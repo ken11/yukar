@@ -103,7 +103,7 @@ test.describe
           },
           { timeout: 90_000, intervals: [500, 1000, 2000] },
         )
-        .toBe("completed");
+        .toBe("in_review");
 
       // Wait for the run_completed SSE event to arrive and update the badge
       // The notification button must become visible with "(N unread)" in its aria-label

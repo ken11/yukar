@@ -730,6 +730,11 @@ class TestEpicOrchestrator:
                 llm_settings=llm,
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                # These scripted-Manager runs pre-date the plan-approval gate and
+                # dispatch directly without a simulated user approval; keep the
+                # gate off here so they exercise dispatch mechanics. The gate
+                # itself is covered by dedicated tests in test_ask_user_gate.py.
+                require_plan_approval=False,
             )
             run_id = "test-run"
             await orch.start(root, project_id, epic_id, run_id)
@@ -1209,6 +1214,7 @@ class TestEpicOrchestrator:
                 llm_settings=llm,
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-retry-test")
 
@@ -1303,6 +1309,7 @@ class TestEpicOrchestrator:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-blocked")
 
@@ -1379,6 +1386,7 @@ class TestEpicOrchestrator:
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
             git_author_email="yukar@localhost",
+            require_plan_approval=False,
         )
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
@@ -1473,6 +1481,7 @@ class TestEpicOrchestrator:
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
             git_author_email="yukar@localhost",
+            require_plan_approval=False,
         )
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
@@ -1525,6 +1534,7 @@ class TestEpicOrchestrator:
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
             git_author_email="yukar@localhost",
+            require_plan_approval=False,
         )
 
         orch.inject_message("th-abc", "Hello agent!")
@@ -1966,6 +1976,7 @@ class TestThreadStatusLifecycle:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-thread-test")
 
@@ -2073,6 +2084,7 @@ class TestThreadStatusLifecycle:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-blocked-threads")
 
@@ -2157,6 +2169,7 @@ class TestStopSetsIdleState:
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
             git_author_email="yukar@localhost",
+            require_plan_approval=False,
         )
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
@@ -2196,6 +2209,7 @@ class TestStopSetsIdleState:
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
             git_author_email="yukar@localhost",
+            require_plan_approval=False,
         )
 
         with (
@@ -2275,6 +2289,7 @@ class TestTaskRollbackOnStop:
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
             git_author_email="yukar@localhost",
+            require_plan_approval=False,
         )
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
@@ -2437,6 +2452,7 @@ class TestDependencyResolutionLoop:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-dep-order")
 
@@ -2502,6 +2518,7 @@ class TestDependencyResolutionLoop:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-unresolvable")
 
@@ -2615,6 +2632,7 @@ class TestManagerAutonomy:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-parallel")
 
@@ -2712,6 +2730,7 @@ class TestManagerAutonomy:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-early-complete")
 
@@ -2819,6 +2838,7 @@ class TestManagerMultiTurn:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-multi-turn")
 
@@ -2880,6 +2900,7 @@ class TestDispatchRejections:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-dispatch-not-found")
 
@@ -2932,6 +2953,7 @@ class TestDispatchRejections:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-dispatch-dep")
 
@@ -3001,6 +3023,7 @@ class TestDispatchRejections:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             await orch.start(root, project_id, epic_id, "run-attempt-limit")
 
@@ -3076,6 +3099,7 @@ class TestManagerTurnLimit:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             # start() raises _ManagerTurnLimitError; catch it here.
             with pytest.raises(Exception, match="turn limit"):
@@ -3141,6 +3165,7 @@ class TestManagerTurnLimit:
                 llm_settings=LLMSettings(provider="fake"),
                 git_author_name="yukar",
                 git_author_email="yukar@localhost",
+                require_plan_approval=False,
             )
             with pytest.raises(Exception, match="turn limit"):
                 await orch.start(root, project_id, epic_id, "run-turn-limit-event")
@@ -3229,6 +3254,7 @@ class TestHITLEndToEnd:
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="yukar",
             git_author_email="yukar@localhost",
+            require_plan_approval=False,
         )
         # Inject a HITL message for the manager BEFORE the run starts; it must be
         # drained into turn 0's prompt.

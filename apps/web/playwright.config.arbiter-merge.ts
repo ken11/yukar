@@ -87,6 +87,9 @@ export default defineConfig({
         ...process.env,
         YUKAR_CONFIG_DIR: ARBITER_MERGE_SEED.configDir,
         YUKAR_FAKE_SCRIPT: ARBITER_MERGE_FAKE_SCRIPT,
+        // Pre-dates the plan-approval gate; scripted Manager dispatches without
+        // a simulated user approval, so disable the gate for this scenario.
+        YUKAR_REQUIRE_PLAN_APPROVAL: "0",
         YUKAR_FAKE_SLEEP: "0",
       },
     },

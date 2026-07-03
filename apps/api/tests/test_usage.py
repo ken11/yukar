@@ -484,6 +484,48 @@ class TestTracker:
         # by_project is a list — find the entry for "p1"
         assert any(p.project_id == "p1" for p in summary.by_project)
 
+    async def test_breakdown_scoped_to_current_month(self, tmp_path: Path) -> None:
+        """by_project / by_model include only runs active in the current JST month;
+        the all-time totals still include prior-month runs."""
+        from datetime import UTC, datetime, timedelta
+
+        from yukar.usage.tracker import UsageDelta
+
+        tracker = self._make_tracker(tmp_path)
+        with (
+            patch.object(tracker, "_get_jpy_rate", AsyncMock(return_value=150.0)),
+            patch("yukar.usage.tracker.TokenUsageTracker._publish_sse"),
+        ):
+            await tracker.record(
+                project_id="p-cur",
+                epic_id="e1",
+                run_id="r-cur",
+                role="worker",
+                model_id="sonnet-4-6",
+                delta=UsageDelta(input_tokens=1_000_000),
+            )
+            await tracker.record(
+                project_id="p-old",
+                epic_id="e2",
+                run_id="r-old",
+                role="worker",
+                model_id="sonnet-4-6",
+                delta=UsageDelta(input_tokens=2_000_000),
+            )
+
+        # Backdate the old run's activity to ~40 days ago — always a prior month.
+        old_rt = next(rt for rt in tracker._runs.values() if rt.run_id == "r-old")
+        past = datetime.now(UTC) - timedelta(days=40)
+        old_rt.updated_at = past
+        old_rt.started_at = past
+
+        summary = tracker.get_global_summary()
+        proj_ids = {p.project_id for p in summary.by_project}
+        assert "p-cur" in proj_ids  # active this month → in the breakdown
+        assert "p-old" not in proj_ids  # last active last month → excluded
+        # …but the all-time totals still count both runs.
+        assert summary.total_input_tokens == 3_000_000
+
     async def test_global_summary_by_project_structure(self, tmp_path: Path) -> None:
         """by_project contains typed ProjectUsageSummary with nested epics and runs."""
         tracker = self._make_tracker(tmp_path)
