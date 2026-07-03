@@ -22,9 +22,11 @@ Endpoints:
     PUT    /api/projects/{pid}/agent-profiles/{name}
     DELETE /api/projects/{pid}/agent-profiles/{name}
 
-  Repo commands (Wave 5 BE-A):
-    GET /api/projects/{pid}/repos
-    PUT /api/projects/{pid}/repos/{repo}/commands
+  Repos (Wave 5 BE-A):
+    GET    /api/projects/{pid}/repos
+    POST   /api/projects/{pid}/repos
+    PUT    /api/projects/{pid}/repos/{repo}/commands
+    DELETE /api/projects/{pid}/repos/{repo}
 
 All routes validate project existence (404) before delegating to storage.
 Path segment safety is enforced by config/paths.py (_validate_segment /
@@ -33,13 +35,19 @@ _ALLOWED_ROLES) — PathSegmentError maps to 422 in app.py.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import shutil
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import get_args
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel, Field
 
 from yukar.api.routers import get_project_or_404
-from yukar.deps import WorkspaceRootDep
+from yukar.config import paths
+from yukar.deps import IndexerServiceDep, WorkspaceRootDep
 from yukar.models.agent_config import AgentConfig
 from yukar.models.agent_profile import AgentProfile
 from yukar.models.mcp import McpConfig
@@ -47,7 +55,17 @@ from yukar.models.project import Repo, RepoCommands
 from yukar.models.roles import ConfigurableAgentRole
 from yukar.models.skill import Skill, SkillMeta
 from yukar.storage import agent_config_repo, agent_profiles_repo, mcp_repo, skills_repo
-from yukar.storage.project_repo import list_repos, update_repo_commands
+from yukar.storage.project_repo import (
+    delete_repo,
+    get_repo,
+    list_repos,
+    resolve_git_repo,
+    save_project,
+    save_repo,
+    update_repo_commands,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["project-settings"])
 
@@ -216,8 +234,21 @@ async def delete_agent_profile(project_id: str, name: str, root: WorkspaceRootDe
 
 
 # ---------------------------------------------------------------------------
-# Repo commands (Wave 5 BE-A)
+# Repos (Wave 5 BE-A)
 # ---------------------------------------------------------------------------
+
+
+class AddRepoRequest(BaseModel):
+    """Body for adding a repo to an existing project.
+
+    Mirrors ``projects.RepoInput`` — a local git repo already on disk.
+    ``name`` defaults to the last path segment when left blank.
+    """
+
+    name: str = ""
+    path: str
+    default_branch: str = "main"
+    commands: RepoCommands = Field(default_factory=RepoCommands)
 
 
 @router.get("/{project_id}/repos", response_model=list[Repo])
@@ -225,6 +256,61 @@ async def list_project_repos(project_id: str, root: WorkspaceRootDep) -> list[Re
     """Return all repos for this project including their commands config."""
     await get_project_or_404(root, project_id)
     return await list_repos(root, project_id)
+
+
+@router.post("/{project_id}/repos", response_model=Repo, status_code=201)
+async def add_project_repo(
+    project_id: str,
+    body: AddRepoRequest,
+    root: WorkspaceRootDep,
+    indexer: IndexerServiceDep,
+    background_tasks: BackgroundTasks,
+) -> Repo:
+    """Register an existing local git repo with a project and index it.
+
+    Validates the path is a git repo (422) and rejects a name that already
+    exists (409). Adds the name to ``project.repos`` and kicks off an initial
+    index in the background (does not block the 201).
+    """
+    project = await get_project_or_404(root, project_id)
+
+    name = body.name.strip() or body.path.rstrip("/").split("/")[-1]
+    if not name:
+        raise HTTPException(status_code=422, detail="Repo name could not be derived from path")
+
+    # PathSegmentError (bad name) → 422 via app.py handler; check that first so a
+    # malformed name never reaches the git-path probe.
+    if await get_repo(root, project_id, name) is not None:
+        raise HTTPException(status_code=409, detail=f"Repo already exists: {name}")
+
+    try:
+        resolve_git_repo(body.path)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    repo = Repo(
+        name=name,
+        path=body.path,
+        default_branch=body.default_branch,
+        commands=body.commands,
+    )
+    await save_repo(root, project_id, repo)
+
+    if name not in project.repos:
+        project.repos.append(name)
+    project.updated_at = datetime.now(UTC)
+    await save_project(root, project)
+
+    async def _initial_index() -> None:
+        try:
+            n = await indexer.reindex_repo(project_id, name, Path(body.path))
+            logger.info("Initial index %s/%s: %d chunks", project_id, name, n)
+        except Exception:
+            logger.exception("Initial index %s/%s failed", project_id, name)
+
+    background_tasks.add_task(_initial_index)
+
+    return repo
 
 
 @router.put(
@@ -243,3 +329,31 @@ async def put_repo_commands(
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
     return updated
+
+
+@router.delete("/{project_id}/repos/{repo_name}", status_code=204)
+async def remove_project_repo(
+    project_id: str,
+    repo_name: str,
+    root: WorkspaceRootDep,
+) -> None:
+    """Unregister a repo: drop its YAML, its project.repos entry, and its index.
+
+    yukar never touches the local git repo itself — only the registration.
+    Purging the search index is best-effort; a failure there does not block
+    the removal.
+    """
+    project = await get_project_or_404(root, project_id)
+
+    deleted = await delete_repo(root, project_id, repo_name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
+
+    if repo_name in project.repos:
+        project.repos.remove(repo_name)
+        project.updated_at = datetime.now(UTC)
+        await save_project(root, project)
+
+    # Best-effort: purge the FAISS index cache for this repo.
+    index_dir = paths.index_dir(root, project_id, repo_name)
+    await asyncio.to_thread(shutil.rmtree, index_dir, ignore_errors=True)

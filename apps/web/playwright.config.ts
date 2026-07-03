@@ -39,6 +39,7 @@ export default defineConfig({
     "**/lifecycle-buttons.spec.ts",
     "**/notifications.spec.ts",
     "**/reindex.spec.ts",
+    "**/repos-crud.spec.ts",
   ],
   /* Run tests in files in parallel */
   fullyParallel: false,

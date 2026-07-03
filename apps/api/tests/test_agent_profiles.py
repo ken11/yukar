@@ -560,6 +560,165 @@ class TestReposCommandsAPI:
 
 
 # ---------------------------------------------------------------------------
+# 8b. API: add (POST) / remove (DELETE) repos on an existing project
+# ---------------------------------------------------------------------------
+
+
+class TestReposAddDeleteAPI:
+    @pytest.mark.asyncio
+    async def test_add_repo_success(
+        self, app_client: Any, tmp_workspace: Path, tmp_path: Path
+    ) -> None:
+        from tests._helpers import make_git_repo
+        from yukar.models.project import Project
+        from yukar.storage.project_repo import get_project, get_repo, save_project
+
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p"))
+        repo_path = make_git_repo(tmp_path, "svc")
+
+        resp = await app_client.post(
+            "/api/projects/p/repos",
+            json={"name": "svc", "path": str(repo_path), "default_branch": "main"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["name"] == "svc"
+
+        # Repo yaml persisted and project.repos updated in sync.
+        assert await get_repo(root, "p", "svc") is not None
+        project = await get_project(root, "p")
+        assert project is not None
+        assert "svc" in project.repos
+
+    @pytest.mark.asyncio
+    async def test_add_repo_derives_name_from_path(
+        self, app_client: Any, tmp_workspace: Path, tmp_path: Path
+    ) -> None:
+        from tests._helpers import make_git_repo
+        from yukar.models.project import Project
+        from yukar.storage.project_repo import save_project
+
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p"))
+        repo_path = make_git_repo(tmp_path, "derived")
+
+        resp = await app_client.post(
+            "/api/projects/p/repos",
+            json={"name": "", "path": str(repo_path)},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["name"] == "derived"
+
+    @pytest.mark.asyncio
+    async def test_add_repo_duplicate_name_409(
+        self, app_client: Any, tmp_workspace: Path, tmp_path: Path
+    ) -> None:
+        from tests._helpers import make_git_repo
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p", repos=["svc"]))
+        await save_repo(root, "p", Repo(name="svc", path="/tmp/old"))
+        repo_path = make_git_repo(tmp_path, "svc")
+
+        resp = await app_client.post(
+            "/api/projects/p/repos",
+            json={"name": "svc", "path": str(repo_path)},
+        )
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_add_repo_non_git_path_422(
+        self, app_client: Any, tmp_workspace: Path, tmp_path: Path
+    ) -> None:
+        from yukar.models.project import Project
+        from yukar.storage.project_repo import save_project
+
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p"))
+        # A real directory that is NOT a git repo.
+        not_git = tmp_path / "plain"
+        not_git.mkdir()
+
+        resp = await app_client.post(
+            "/api/projects/p/repos",
+            json={"name": "plain", "path": str(not_git)},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_add_repo_missing_project_404(
+        self, app_client: Any, tmp_path: Path
+    ) -> None:
+        from tests._helpers import make_git_repo
+
+        repo_path = make_git_repo(tmp_path, "svc")
+        resp = await app_client.post(
+            "/api/projects/noexist/repos",
+            json={"name": "svc", "path": str(repo_path)},
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_repo_success(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import get_project, get_repo, save_project, save_repo
+
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p", repos=["svc"]))
+        await save_repo(root, "p", Repo(name="svc", path="/tmp/svc"))
+
+        resp = await app_client.delete("/api/projects/p/repos/svc")
+        assert resp.status_code == 204
+
+        # Repo yaml gone and project.repos entry dropped.
+        assert await get_repo(root, "p", "svc") is None
+        project = await get_project(root, "p")
+        assert project is not None
+        assert "svc" not in project.repos
+
+    @pytest.mark.asyncio
+    async def test_delete_repo_purges_index(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        from yukar.config import paths
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p", repos=["svc"]))
+        await save_repo(root, "p", Repo(name="svc", path="/tmp/svc"))
+
+        # Simulate a pre-existing index cache for the repo.
+        index_dir = paths.index_dir(root, "p", "svc")
+        index_dir.mkdir(parents=True, exist_ok=True)
+        (index_dir / "faiss.index").write_text("stub")
+
+        resp = await app_client.delete("/api/projects/p/repos/svc")
+        assert resp.status_code == 204
+        assert not index_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_repo_missing_404(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        from yukar.models.project import Project
+        from yukar.storage.project_repo import save_project
+
+        await save_project(str(tmp_workspace), Project(id="p", name="p"))
+        resp = await app_client.delete("/api/projects/p/repos/ghost")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_repo_missing_project_404(self, app_client: Any) -> None:
+        resp = await app_client.delete("/api/projects/noexist/repos/svc")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # 9. Manager tools: make_agent_profile_tools
 # ---------------------------------------------------------------------------
 

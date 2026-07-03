@@ -502,9 +502,20 @@ export function deleteAgentProfile(projectId: string, name: string): Promise<voi
 // ---- Repos / run_command ----
 
 export type Repo = components["schemas"]["Repo"];
+export type AddRepoRequest = components["schemas"]["AddRepoRequest"];
 
 export function listRepos(projectId: string): Promise<Repo[]> {
   return apiFetch(`/api/projects/${projectId}/repos`);
+}
+
+export function addRepo(projectId: string, body: AddRepoRequest): Promise<Repo> {
+  return apiFetch(`/api/projects/${projectId}/repos`, { method: "POST", body });
+}
+
+export function deleteRepo(projectId: string, repoName: string): Promise<void> {
+  return apiFetch(`/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}`, {
+    method: "DELETE",
+  });
 }
 
 export function putRepoCommands(

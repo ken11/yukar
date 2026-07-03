@@ -4,7 +4,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  addRepo,
   deleteAgentProfile,
+  deleteRepo,
   getAgentProfile,
   listAgentProfiles,
   listRepos,
@@ -192,5 +194,47 @@ describe("putRepoCommands", () => {
     mockFetch.mockResolvedValueOnce(mockResponse(200, repo));
     await putRepoCommands("proj1", "my repo", { allow: [], deny: [] });
     expect(mockFetch.mock.calls[0][0]).toContain("my%20repo");
+  });
+});
+
+describe("addRepo", () => {
+  it("POSTs the repo body and returns the created Repo", async () => {
+    const repo = {
+      name: "svc",
+      path: "/Users/you/git/svc",
+      default_branch: "main",
+      commands: { allow: [], deny: [] },
+    };
+    mockFetch.mockResolvedValueOnce(mockResponse(201, repo));
+
+    const result = await addRepo("proj1", {
+      name: "svc",
+      path: "/Users/you/git/svc",
+      default_branch: "main",
+    });
+    expect(result.name).toBe("svc");
+
+    const call = mockFetch.mock.calls[0];
+    expect(call[0]).toContain("/api/projects/proj1/repos");
+    expect(call[1].method).toBe("POST");
+    const body = JSON.parse(call[1].body);
+    expect(body.path).toBe("/Users/you/git/svc");
+  });
+
+  it("surfaces a 422 for a non-git path as ApiError", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse(422, { detail: "Not a git repository: /p" }));
+    await expect(
+      addRepo("proj1", { name: "x", path: "/p", default_branch: "main" }),
+    ).rejects.toThrow(ApiError);
+  });
+});
+
+describe("deleteRepo", () => {
+  it("DELETEs the repo and URL-encodes the name", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse(204, null));
+    await deleteRepo("proj1", "my repo");
+    const call = mockFetch.mock.calls[0];
+    expect(call[0]).toContain("/api/projects/proj1/repos/my%20repo");
+    expect(call[1].method).toBe("DELETE");
   });
 });

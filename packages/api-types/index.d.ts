@@ -972,7 +972,15 @@ export interface paths {
          */
         get: operations["list_project_repos_api_projects__project_id__repos_get"];
         put?: never;
-        post?: never;
+        /**
+         * Add Project Repo
+         * @description Register an existing local git repo with a project and index it.
+         *
+         *     Validates the path is a git repo (422) and rejects a name that already
+         *     exists (409). Adds the name to ``project.repos`` and kicks off an initial
+         *     index in the background (does not block the 201).
+         */
+        post: operations["add_project_repo_api_projects__project_id__repos_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -994,6 +1002,30 @@ export interface paths {
         put: operations["put_repo_commands_api_projects__project_id__repos__repo_name__commands_put"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/repos/{repo_name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Project Repo
+         * @description Unregister a repo: drop its YAML, its project.repos entry, and its index.
+         *
+         *     yukar never touches the local git repo itself — only the registration.
+         *     Purging the search index is best-effort; a failure there does not block
+         *     the removal.
+         */
+        delete: operations["remove_project_repo_api_projects__project_id__repos__repo_name__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1106,6 +1138,28 @@ export interface components {
             task_id?: string | null;
             /** Repo */
             repo?: string | null;
+        };
+        /**
+         * AddRepoRequest
+         * @description Body for adding a repo to an existing project.
+         *
+         *     Mirrors ``projects.RepoInput`` — a local git repo already on disk.
+         *     ``name`` defaults to the last path segment when left blank.
+         */
+        AddRepoRequest: {
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /** Path */
+            path: string;
+            /**
+             * Default Branch
+             * @default main
+             */
+            default_branch: string;
+            commands?: components["schemas"]["RepoCommands"];
         };
         /**
          * AgentConfig
@@ -5367,6 +5421,41 @@ export interface operations {
             };
         };
     };
+    add_project_repo_api_projects__project_id__repos_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddRepoRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Repo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     put_repo_commands_api_projects__project_id__repos__repo_name__commands_put: {
         parameters: {
             query?: never;
@@ -5391,6 +5480,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Repo"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_project_repo_api_projects__project_id__repos__repo_name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
