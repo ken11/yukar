@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -n web,api -c cyan,green \"pnpm --filter web dev\" \"uv run --directory apps/api uvicorn yukar.app:create_app --factory --reload --host 127.0.0.1 --port 8000\"",
     "build": "pnpm --filter web build",
+    "typecheck": "pnpm --filter web typecheck",
     "gen:types": "pnpm --filter @yukar/api-types generate",
     "lint": "pnpm --filter web lint",
     "test": "pnpm --filter web test"
