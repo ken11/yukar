@@ -335,7 +335,13 @@ class TestStartOrInject:
             )
         assert result is False
         mock_cont.assert_awaited_once_with(
-            str(tmp_path), "p", "EP-1", seed_prompt="please revise T1", manager_thread_id="manager"
+            str(tmp_path),
+            "p",
+            "EP-1",
+            seed_prompt="please revise T1",
+            manager_thread_id="manager",
+            agent_role="manager",
+            review_context="",
         )
 
     async def test_start_continuation_sets_epic_in_progress(self, tmp_path: Path) -> None:

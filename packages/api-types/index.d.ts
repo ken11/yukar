@@ -268,6 +268,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/epics/{epic_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Review
+         * @description Start a read-only Reviewer run for this epic.
+         *
+         *     Creates a fresh ``reviewer`` conversation, seeds it with the active Manager↔
+         *     user conversation, and starts a reviewer run bound to that thread.  The
+         *     reviewer independently checks the active trial's branch against the epic's
+         *     intent and reports to the USER via ``ask_user``.
+         *
+         *     The reviewer runs while the Manager is idle (it is mutually exclusive with a
+         *     manager run — only one run per epic).  It does NOT change ``epic.status`` or
+         *     ``epic.active_thread_id``: the manager trial remains the active trial, and the
+         *     reviewer's ``read_branch_diff`` reads that trial's branch via ``epic.branch``.
+         *
+         *     Raises:
+         *         409: If a run is already active for this epic, an arbiter merge is in
+         *             progress, or the budget is exhausted.
+         */
+        post: operations["start_review_api_projects__project_id__epics__epic_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/epics/{epic_id}/threads/{thread_id}": {
         parameters: {
             query?: never;
@@ -1170,7 +1204,7 @@ export interface components {
              * Role
              * @enum {string}
              */
-            role: "manager" | "worker" | "evaluator";
+            role: "manager" | "worker" | "evaluator" | "reviewer";
             /**
              * Instructions
              * @default
@@ -1443,7 +1477,7 @@ export interface components {
              * @default user
              * @enum {string}
              */
-            role: "manager" | "worker" | "evaluator" | "user";
+            role: "manager" | "worker" | "evaluator" | "user" | "reviewer";
             /** Repo */
             repo?: string | null;
             /** Task */
@@ -1973,13 +2007,14 @@ export interface components {
         };
         /**
          * LLMRolesSettings
-         * @description Optional per-role model overrides (manager / worker / evaluator / arbiter).
+         * @description Optional per-role model overrides (manager / worker / evaluator / arbiter / reviewer).
          */
         LLMRolesSettings: {
             manager?: components["schemas"]["LLMRoleSettings"];
             worker?: components["schemas"]["LLMRoleSettings"];
             evaluator?: components["schemas"]["LLMRoleSettings"];
             arbiter?: components["schemas"]["LLMRoleSettings"];
+            reviewer?: components["schemas"]["LLMRoleSettings"];
         };
         /** LLMSettings */
         LLMSettings: {
@@ -2859,6 +2894,14 @@ export interface components {
              */
             status: string;
         };
+        /** StartReviewRequest */
+        StartReviewRequest: {
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
         /** StopMergeResponse */
         StopMergeResponse: {
             /**
@@ -2960,7 +3003,7 @@ export interface components {
              * @default user
              * @enum {string}
              */
-            role: "manager" | "worker" | "evaluator" | "arbiter" | "user";
+            role: "manager" | "worker" | "evaluator" | "arbiter" | "user" | "reviewer";
             /** Repo */
             repo?: string | null;
             /** Task */
@@ -4043,6 +4086,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateThreadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_review_api_projects__project_id__epics__epic_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartReviewRequest"];
             };
         };
         responses: {

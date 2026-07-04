@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from yukar.config.settings import Settings
+from yukar.models.roles import AgentRole
 from yukar.runs.runner import DummyRunner, RunnerProtocol
 from yukar.storage.epic_repo import get_epic, save_epic
 
@@ -425,6 +426,8 @@ class RunSupervisor:
         project_id: str,
         epic_id: str,
         manager_thread_id: str = "manager",
+        agent_role: AgentRole = "manager",
+        review_context: str = "",
     ) -> str:
         """Start a new run. Returns the run_id.
 
@@ -432,9 +435,19 @@ class RunSupervisor:
         Epic status: planned → in_progress (here, before runner starts).
 
         Args:
-            manager_thread_id: The manager-trial thread_id this run will drive.
+            manager_thread_id: The thread_id this run drives.  For a manager run
+                this is the manager-trial thread; for a reviewer run it is the
+                reviewer's own thread (its conversation is stored there).
                 Defaults to "manager" (single-trial, backward-compatible case).
+            agent_role: ``"manager"`` (default) or ``"reviewer"``.  A reviewer
+                run is read-only and does NOT drive the epic lifecycle: none of
+                the epic.yaml status transitions below fire for it, and the fatal
+                index guard is skipped (the reviewer reads the branch diff, which
+                is git-based, so a missing/stale index must not block it).
+            review_context: For a reviewer run, the Manager↔user conversation used
+                to seed the reviewer's turn-0 prompt.  Ignored for manager runs.
         """
+        _is_manager = agent_role == "manager"
         async with self._start_lock:
             key = self._key(project_id, epic_id)
             if self.is_running(project_id, epic_id):
@@ -464,10 +477,17 @@ class RunSupervisor:
                 raise RuntimeError("Epic is closed")
 
             run_id = f"run-{uuid.uuid4().hex}"
-            runner = self._make_runner(manager_thread_id=manager_thread_id)
+            runner = self._make_runner(
+                manager_thread_id=manager_thread_id,
+                agent_role=agent_role,
+                review_context=review_context,
+            )
 
             # Transition epic status to in_progress before the runner task starts.
-            await _transition_epic_status(root, project_id, epic_id, "in_progress")
+            # A reviewer run must NOT touch the epic lifecycle (it runs while the
+            # epic is in_review and leaves it there).
+            if _is_manager:
+                await _transition_epic_status(root, project_id, epic_id, "in_progress")
 
             _indexer_service = self._indexer_service
             # Mutable flag shared between this closure and the _RunHandle so that
@@ -490,7 +510,11 @@ class RunSupervisor:
                         ),
                     )
                     try:
-                        await _ensure_repos_indexed(root, project_id, _indexer_service)
+                        # Reviewer runs skip the fatal index guard: their ground
+                        # truth is the git branch diff (read_branch_diff), so a
+                        # missing/stale index must not block the review.
+                        if _is_manager:
+                            await _ensure_repos_indexed(root, project_id, _indexer_service)
                     except IndexNotReadyError as idx_err:
                         await _transition_epic_status(root, project_id, epic_id, "failed")
                         event_bus.publish(
@@ -528,9 +552,12 @@ class RunSupervisor:
                         # only means the work is ready for the USER to review. The
                         # user then merges (→ merged) or approves (→ completed).
                         # See models.epic.EpicStatus for the lifecycle rationale.
-                        await _transition_epic_status(root, project_id, epic_id, "in_review")
+                        # A reviewer run leaves the epic status untouched.
+                        if _is_manager:
+                            await _transition_epic_status(root, project_id, epic_id, "in_review")
                     except Exception:
-                        await _transition_epic_status(root, project_id, epic_id, "failed")
+                        if _is_manager:
+                            await _transition_epic_status(root, project_id, epic_id, "failed")
                         raise
 
             task: asyncio.Task[None] = asyncio.create_task(
@@ -676,8 +703,18 @@ class RunSupervisor:
         git_email = cfg.git.author_email if cfg is not None else "yukar@localhost"
         return llm, git_name, git_email
 
-    def _make_runner(self, manager_thread_id: str = "manager") -> RunnerProtocol:
-        """Instantiate the appropriate runner using settings resolved right now."""
+    def _make_runner(
+        self,
+        manager_thread_id: str = "manager",
+        agent_role: AgentRole = "manager",
+        review_context: str = "",
+    ) -> RunnerProtocol:
+        """Instantiate the appropriate runner using settings resolved right now.
+
+        ``agent_role`` selects the orchestrator's mode: ``"manager"`` drives the
+        full plan/dispatch loop; ``"reviewer"`` runs the read-only reviewer loop
+        seeded with ``review_context`` (the Manager↔user conversation).
+        """
         llm, git_name, git_email = self._resolve_settings()
 
         if llm is not None:
@@ -697,6 +734,8 @@ class RunSupervisor:
                 embedding_settings=cfg.embedding if cfg is not None else None,
                 manager_thread_id=manager_thread_id,
                 require_plan_approval=_resolve_require_plan_approval(),
+                agent_role=agent_role,
+                review_context=review_context,
             )
         return DummyRunner()
 
@@ -900,6 +939,8 @@ class RunSupervisor:
         epic_id: str,
         seed_prompt: str | None = None,
         manager_thread_id: str = "manager",
+        agent_role: AgentRole = "manager",
+        review_context: str = "",
     ) -> str:
         """Start a continuation run for an epic that has no active run.
 
@@ -912,9 +953,10 @@ class RunSupervisor:
         (the user's message) so the Manager treats it as an incoming request
         rather than starting a brand-new epic plan from scratch.
 
-        epic.yaml.status is set to ``in_progress`` here (same as ``start``).
-        If it was ``in_review`` (or ``completed``) this effectively reopens the
-        epic for revision.
+        epic.yaml.status is set to ``in_progress`` here (same as ``start``) for a
+        manager run.  If it was ``in_review`` (or ``completed``) this effectively
+        reopens the epic for revision.  A reviewer continuation leaves the epic
+        status untouched (same read-only contract as ``start``).
 
         Args:
             root: Workspace root.
@@ -922,6 +964,11 @@ class RunSupervisor:
             epic_id: Epic identifier.
             seed_prompt: The user's message that triggered this continuation.
                 When ``None``, the orchestrator uses a generic "resume" prompt.
+            manager_thread_id: The thread whose session the continuation resumes.
+            agent_role: ``"manager"`` (default) or ``"reviewer"`` — a reviewer
+                continuation resumes a prior reviewer conversation read-only.
+            review_context: Manager↔user conversation re-seed for a reviewer
+                continuation.  Ignored for manager runs.
 
         Returns:
             The new run_id.
@@ -930,6 +977,7 @@ class RunSupervisor:
             RuntimeError: If a run is already active for this epic, or budget
                 is exhausted.
         """
+        _is_manager = agent_role == "manager"
         async with self._start_lock:
             key = self._key(project_id, epic_id)
             if self.is_running(project_id, epic_id):
@@ -946,11 +994,16 @@ class RunSupervisor:
 
             run_id = f"run-{uuid.uuid4().hex}"
             runner = self._make_continuation_runner(
-                seed_prompt, manager_thread_id=manager_thread_id
+                seed_prompt,
+                manager_thread_id=manager_thread_id,
+                agent_role=agent_role,
+                review_context=review_context,
             )
 
             # Reopen the epic for revision (in_review/completed → in_progress).
-            await _transition_epic_status(root, project_id, epic_id, "in_progress")
+            # A reviewer continuation is read-only and leaves the status alone.
+            if _is_manager:
+                await _transition_epic_status(root, project_id, epic_id, "in_progress")
 
             _indexer_service_cont = self._indexer_service
             # Same stop_flag mechanism as start(): shared between the closure and
@@ -972,9 +1025,12 @@ class RunSupervisor:
                         ),
                     )
                     try:
-                        await _ensure_repos_indexed(
-                            root, project_id, _indexer_service_cont
-                        )
+                        # Reviewer continuations skip the fatal index guard for
+                        # the same reason as start(): the branch diff is git-based.
+                        if _is_manager:
+                            await _ensure_repos_indexed(
+                                root, project_id, _indexer_service_cont
+                            )
                     except IndexNotReadyError as idx_err:
                         await _transition_epic_status(root, project_id, epic_id, "failed")
                         event_bus.publish(
@@ -1004,9 +1060,12 @@ class RunSupervisor:
                         # only means the work is ready for the USER to review. The
                         # user then merges (→ merged) or approves (→ completed).
                         # See models.epic.EpicStatus for the lifecycle rationale.
-                        await _transition_epic_status(root, project_id, epic_id, "in_review")
+                        # A reviewer continuation leaves the epic status untouched.
+                        if _is_manager:
+                            await _transition_epic_status(root, project_id, epic_id, "in_review")
                     except Exception:
-                        await _transition_epic_status(root, project_id, epic_id, "failed")
+                        if _is_manager:
+                            await _transition_epic_status(root, project_id, epic_id, "failed")
                         raise
 
             task: asyncio.Task[None] = asyncio.create_task(
@@ -1029,9 +1088,18 @@ class RunSupervisor:
             return run_id
 
     def _make_continuation_runner(
-        self, seed_prompt: str | None, manager_thread_id: str = "manager"
+        self,
+        seed_prompt: str | None,
+        manager_thread_id: str = "manager",
+        agent_role: AgentRole = "manager",
+        review_context: str = "",
     ) -> RunnerProtocol:
-        """Instantiate a continuation-mode runner using settings resolved right now."""
+        """Instantiate a continuation-mode runner using settings resolved right now.
+
+        ``agent_role="reviewer"`` continues a prior reviewer conversation (the
+        FSM restores its session history); ``review_context`` re-seeds the
+        Manager↔user conversation in case the reviewer needs it.
+        """
         llm, git_name, git_email = self._resolve_settings()
 
         if llm is not None:
@@ -1053,6 +1121,8 @@ class RunSupervisor:
                 embedding_settings=cfg.embedding if cfg is not None else None,
                 manager_thread_id=manager_thread_id,
                 require_plan_approval=_resolve_require_plan_approval(),
+                agent_role=agent_role,
+                review_context=review_context,
             )
         return DummyRunner()
 
@@ -1063,11 +1133,16 @@ class RunSupervisor:
         epic_id: str,
         thread_id: str,
         content: str,
+        agent_role: AgentRole = "manager",
+        review_context: str = "",
     ) -> bool:
-        """Route a manager-thread user message: inject if running, else start continuation.
+        """Route a thread user message: inject if running, else start continuation.
 
         This is the single entry-point called by the threads POST handler when a
-        ``role=user`` message arrives on the manager thread.
+        ``role=user`` message arrives on the active manager trial OR on a reviewer
+        thread.  ``agent_role`` selects which kind of continuation to start when no
+        run is active (``review_context`` re-seeds a reviewer continuation).  The
+        inject path is role-agnostic — it forwards to whatever run is active.
 
         Behaviour:
         - If a run is currently active AND the active run is for the same
@@ -1123,9 +1198,16 @@ class RunSupervisor:
                     "epic and cannot receive messages; please retry once it finishes."
                 )
             return self.inject_hitl_message(project_id, epic_id, thread_id, content)
-        # No active run — start continuation bound to this thread_id as the manager trial.
+        # No active run — start a continuation bound to this thread_id, in the
+        # requested role (manager trial or reviewer conversation).
         await self.start_continuation(
-            root, project_id, epic_id, seed_prompt=content, manager_thread_id=thread_id
+            root,
+            project_id,
+            epic_id,
+            seed_prompt=content,
+            manager_thread_id=thread_id,
+            agent_role=agent_role,
+            review_context=review_context,
         )
         return False
 

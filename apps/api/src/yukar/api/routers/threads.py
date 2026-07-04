@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from yukar.api.routers import get_epic_or_404
-from yukar.deps import WorkspaceRootDep
+from yukar.deps import UsageTrackerDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
 from yukar.events.sse import format_keepalive, run_event_to_sse, sse_response
 from yukar.git.worktree import remove_worktree
@@ -75,6 +75,12 @@ class CreateThreadRequest(BaseModel):
 class PostMessageRequest(BaseModel):
     content: str
     role: Literal["user", "assistant"] = "user"
+
+
+class StartReviewRequest(BaseModel):
+    # Optional title for the reviewer conversation; a default ("Review N") is
+    # assigned when blank.
+    title: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +186,25 @@ async def _remove_trial_worktrees(
         removed, err = await remove_worktree(Path(repo_obj.path), wt_path, force=True)
         if not removed:
             _log.warning("%s: failed to remove worktree %s: %s", log_prefix, wt_path, err)
+
+
+async def _build_review_context(root: str, project_id: str, epic_id: str, epic: Epic) -> str:
+    """Render the active Manager↔user conversation as the Reviewer's seed.
+
+    The reviewer reviews the currently-active manager trial
+    (``epic.active_thread_id``, falling back to ``"manager"`` for single-trial
+    epics).  Its conversation — the original request, the plan the user approved,
+    any decisions, and the Manager's final report — is the authoritative intent
+    the reviewer checks the branch against.  Returns "" when the trial has no
+    messages yet (the reviewer then works from the epic description + diff alone).
+    """
+    from yukar.agents.prompts import format_manager_conversation
+
+    manager_thread_id = epic.active_thread_id or "manager"
+    messages = await asyncio.to_thread(
+        session_store.list_messages, root, project_id, epic_id, manager_thread_id
+    )
+    return format_manager_conversation(messages)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +450,117 @@ async def create_thread(
         return entry
 
 
+@router.post("/review", response_model=ThreadEntry, status_code=201)
+async def start_review(
+    project_id: str,
+    epic_id: str,
+    body: StartReviewRequest,
+    root: WorkspaceRootDep,
+    supervisor: SupervisorDep,
+    usage_tracker: UsageTrackerDep,
+) -> ThreadEntry:
+    """Start a read-only Reviewer run for this epic.
+
+    Creates a fresh ``reviewer`` conversation, seeds it with the active Manager↔
+    user conversation, and starts a reviewer run bound to that thread.  The
+    reviewer independently checks the active trial's branch against the epic's
+    intent and reports to the USER via ``ask_user``.
+
+    The reviewer runs while the Manager is idle (it is mutually exclusive with a
+    manager run — only one run per epic).  It does NOT change ``epic.status`` or
+    ``epic.active_thread_id``: the manager trial remains the active trial, and the
+    reviewer's ``read_branch_diff`` reads that trial's branch via ``epic.branch``.
+
+    Raises:
+        409: If a run is already active for this epic, an arbiter merge is in
+            progress, the epic is closed, or the budget is exhausted.
+    """
+    from yukar.storage.epic_repo import get_epic
+    from yukar.storage.thread_locks import epic_thread_lock
+
+    epic_pre = await get_epic_or_404(root, project_id, epic_id)
+
+    # Pre-checks (outside the lock) so we never create an orphan reviewer thread
+    # for a request that supervisor.start would reject anyway.  These mirror every
+    # RuntimeError supervisor.start can raise (running / arbiter / budget / closed);
+    # supervisor.start re-checks them under its own lock, but doing it here first
+    # means a rejected request never leaves a persisted-but-unrunnable reviewer
+    # thread behind (reviewer threads cannot be archived).
+    if supervisor.is_running(project_id, epic_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A run is already active for this epic. Stop it before starting a review.",
+        )
+    if supervisor.is_arbiter_running(project_id):
+        raise HTTPException(
+            status_code=409, detail="A merge (arbiter) is in progress for this project"
+        )
+    if epic_pre.status == "closed":
+        raise HTTPException(status_code=409, detail="Epic is closed")
+    if usage_tracker.is_over_budget():
+        raise HTTPException(status_code=409, detail="Budget limit reached")
+
+    async with epic_thread_lock(project_id, epic_id):
+        epic = await get_epic(root, project_id, epic_id)
+        if epic is None:
+            raise HTTPException(status_code=404, detail=f"Epic not found: {epic_id!r}")
+        # Re-check under the lock (serialises against a concurrent run start / close).
+        if supervisor.is_running(project_id, epic_id):
+            raise HTTPException(
+                status_code=409,
+                detail="A run is already active for this epic. Stop it before starting a review.",
+            )
+        if epic.status == "closed":
+            raise HTTPException(status_code=409, detail="Epic is closed")
+
+        review_context = await _build_review_context(root, project_id, epic_id, epic)
+
+        # Assign an ordinal-based default title among reviewer threads.
+        tf_existing = await threads_repo.get_threads(root, project_id, epic_id)
+        title = body.title.strip()
+        if not title:
+            n = len([t for t in tf_existing.threads if t.role == "reviewer"]) + 1
+            title = f"Review {n}"
+
+        thread_id = f"th-{uuid.uuid4().hex[:8]}"
+        entry = ThreadEntry(
+            id=thread_id,
+            title=title,
+            role="reviewer",
+            status="active",
+            # Reviewer threads have no branch/trial of their own — read_branch_diff
+            # resolves the manager trial's branch via epic.branch.
+            branch=None,
+            trial_id=None,
+            parent_thread_id=None,
+            created_at=datetime.now(UTC),
+        )
+        await session_store.ensure_agent(
+            root,
+            project_id,
+            epic_id,
+            thread_id,
+            {"title": title, "role": "reviewer", "status": "active"},
+        )
+        await threads_repo.add_thread(root, project_id, epic_id, entry)
+
+        # Start the reviewer run bound to this thread.  supervisor.start acquires
+        # its own _start_lock (inner); lock order epic_thread_lock → _start_lock.
+        try:
+            await supervisor.start(
+                root,
+                project_id,
+                epic_id,
+                manager_thread_id=thread_id,
+                agent_role="reviewer",
+                review_context=review_context,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return entry
+
+
 @router.get("/threads/{thread_id}", response_model=list[Message])
 async def get_thread_messages(
     project_id: str, epic_id: str, thread_id: str, root: WorkspaceRootDep
@@ -569,6 +705,42 @@ async def post_message(
                 f"Thread '{thread_id}' is archived and no longer accepts messages. "
                 "Create a new manager trial to continue."
             ),
+        )
+
+    # Reviewer thread (non-archived, checked above): route like the manager thread
+    # through start_or_inject, but in reviewer mode:
+    #   - active reviewer run → inject the reply (unblocks its awaiting_input)
+    #   - no active run       → start a reviewer continuation (FSM restores the
+    #                           prior review from its session history)
+    # The FSM is the sole writer, so (like the manager path) we do NOT persist the
+    # message here and return a synthetic 201 ack.
+    #
+    # No review_context is rebuilt here: it seeds only the FRESH turn-0 reviewer
+    # prompt (orchestrator.py _build_reviewer_prompt).  A reply is always an inject
+    # (ignores it) or a continuation (turn-0 uses the seed_prompt, and the prior
+    # review is restored from the FSM session), so it would be wasted work.
+    if entry is not None and entry.role == "reviewer":
+        from yukar.storage.thread_locks import epic_thread_lock
+
+        try:
+            async with epic_thread_lock(project_id, epic_id):
+                await supervisor.start_or_inject(
+                    root,
+                    project_id,
+                    epic_id,
+                    thread_id,
+                    body.content,
+                    agent_role="reviewer",
+                )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return Message(
+            message=MessagePayload(
+                role="user",
+                content=[ContentPart(text=body.content)],
+            ),
+            message_id=-1,
+            created_at=datetime.now(UTC),
         )
 
     # HITL: for user messages on the active manager thread, use start_or_inject:

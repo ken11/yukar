@@ -639,21 +639,27 @@ class EpicOrchestrator:
         read_branch_diff_tool = self._make_read_branch_diff_tool()
         ask_user_tool = self._make_ask_user_tool()
 
-        # Register manager in threads.yaml index (UI listing only).
-        # parent_thread_id=None — manager is the root of the agent tree (A2).
+        # Register this run's root thread in threads.yaml index (UI listing only).
+        # parent_thread_id=None — the manager/reviewer is the root of the agent tree (A2).
         # Use self._manager_thread_id (parameterised) instead of "manager" literal.
+        # Normally the thread already exists (the manager trial is created on demand;
+        # a reviewer thread is created by POST /review before the run starts), so this
+        # lazy registration is a fallback.  It MUST honour self._agent_role: registering
+        # a reviewer run's thread as role="manager" would mint a phantom manager trial.
         manager_thread_id = self._manager_thread_id
+        _is_manager_run = self._agent_role == "manager"
         tf_threads = await threads_repo.get_threads(root, project_id, epic_id)
         if not any(t.id == manager_thread_id for t in tf_threads.threads):
             tf_threads.threads.append(
                 ThreadEntry(
                     id=manager_thread_id,
-                    title="Trial 1",
-                    role="manager",
+                    title="Trial 1" if _is_manager_run else "Review",
+                    role=self._agent_role,
                     status="active",
-                    # Lazily-registered legacy trial anchors trial_id to its own id
-                    # so the worktree resolves to the pre-decoupling path.
-                    trial_id=manager_thread_id,
+                    # A manager trial anchors trial_id to its own id so the worktree
+                    # resolves to the pre-decoupling path; a reviewer has no trial /
+                    # worktree of its own (read_branch_diff uses epic.branch).
+                    trial_id=manager_thread_id if _is_manager_run else None,
                     parent_thread_id=None,
                 )
             )
@@ -1080,37 +1086,42 @@ class EpicOrchestrator:
                     _turn_limit_reached = False
                     break
 
-        # Post-loop: mark any remaining non-done/blocked tasks as blocked.
-        tf = self._tasks_holder[0]
-        async with self._state_lock:
-            pending_tasks = [t for t in tf.tasks if t.status not in ("done", "blocked")]
-            if pending_tasks:
-                for stuck in pending_tasks:
-                    logger.warning(
-                        "Task %s not completed after manager loop; marking blocked", stuck.id
-                    )
-                    stuck.status = "blocked"
-                    _publish_task_update(
-                        pub, project_id, epic_id, run_id, stuck.id, "blocked", stuck.title
-                    )
-                done_count = sum(1 for t in tf.tasks if t.status == "done")
-                tf.progress = TaskProgress(done=done_count, total=len(tf.tasks))
-                await tasks_repo.save_tasks(root, project_id, epic_id, tf)
+        # Post-loop task bookkeeping is Manager-only.  A reviewer run has no
+        # task/dispatch machinery — it must never mark tasks blocked or (below)
+        # fabricate a default task, which would overwrite the Manager trial's
+        # tasks.yaml with a phantom task for the epic under review.
+        if self._agent_role == "manager":
+            # Mark any remaining non-done/blocked tasks as blocked.
+            tf = self._tasks_holder[0]
+            async with self._state_lock:
+                pending_tasks = [t for t in tf.tasks if t.status not in ("done", "blocked")]
+                if pending_tasks:
+                    for stuck in pending_tasks:
+                        logger.warning(
+                            "Task %s not completed after manager loop; marking blocked", stuck.id
+                        )
+                        stuck.status = "blocked"
+                        _publish_task_update(
+                            pub, project_id, epic_id, run_id, stuck.id, "blocked", stuck.title
+                        )
+                    done_count = sum(1 for t in tf.tasks if t.status == "done")
+                    tf.progress = TaskProgress(done=done_count, total=len(tf.tasks))
+                    await tasks_repo.save_tasks(root, project_id, epic_id, tf)
 
-        # Fallback: if manager produced no tasks at all, create default.
-        if not self._tasks_holder[0].tasks:
-            logger.warning("Manager produced no tasks; creating single default task")
-            default_task = Task(
-                id="T1",
-                title=epic.title,
-                status="blocked",
-                repo=None,
-            )
-            default_tf = TasksFile(
-                tasks=[default_task],
-                progress=TaskProgress(done=0, total=1),
-            )
-            await tasks_repo.save_tasks(root, project_id, epic_id, default_tf)
+            # Fallback: if manager produced no tasks at all, create default.
+            if not self._tasks_holder[0].tasks:
+                logger.warning("Manager produced no tasks; creating single default task")
+                default_task = Task(
+                    id="T1",
+                    title=epic.title,
+                    status="blocked",
+                    repo=None,
+                )
+                default_tf = TasksFile(
+                    tasks=[default_task],
+                    progress=TaskProgress(done=0, total=1),
+                )
+                await tasks_repo.save_tasks(root, project_id, epic_id, default_tf)
 
         # Spec §6.2: if the loop was exhausted (not stopped, not complete_epic)
         # signal the caller to set run state to "error".
