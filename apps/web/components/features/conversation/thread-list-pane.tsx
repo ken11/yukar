@@ -44,12 +44,15 @@ export function ThreadListPane({
     staleTime: 30_000,
   });
 
-  // The thread list shows only user-facing trial threads (manager) and any
-  // human "user" threads. Worker / evaluator / arbiter threads are system-
-  // generated and already fully represented — with live status and hierarchy —
-  // in the Agent State tree (ThreadTreePanel) below, so listing them here is
-  // redundant. They remain reachable via the Agent State tree links and by URL.
-  const listed = threads.filter((t) => t.role === "manager" || t.role === "user");
+  // The thread list shows user-facing conversation threads: manager trials, any
+  // human "user" threads, and reviewer conversations (the user replies to the
+  // Reviewer here). Worker / evaluator / arbiter threads are system-generated and
+  // already fully represented — with live status and hierarchy — in the Agent
+  // State tree (ThreadTreePanel) below, so listing them here is redundant. They
+  // remain reachable via the Agent State tree links and by URL.
+  const listed = threads.filter(
+    (t) => t.role === "manager" || t.role === "user" || t.role === "reviewer",
+  );
   const activeThreads = listed.filter((t) => t.status !== "archived");
   const archivedThreads = listed.filter((t) => t.status === "archived");
 

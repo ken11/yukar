@@ -11,7 +11,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Icon } from "@/components/icon";
-import { runAction, startRun } from "@/lib/api/endpoints";
+import { runAction, startReview, startRun } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { useT } from "@/lib/i18n/provider";
 import type { useRunActivity } from "@/lib/sse/use-run-activity";
@@ -104,6 +104,7 @@ export function RunControlsBar({
 
   const [closeError, setCloseError] = useState<string | null>(null);
   const [approveError, setApproveError] = useState<string | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const closeMutation = useCloseEpic(projectId);
   const reopenMutation = useReopenEpic(projectId);
   const approveMutation = useApproveEpic(projectId);
@@ -167,6 +168,19 @@ export function RunControlsBar({
       if (action === "stop") {
         // caller (parent) closes dialog
       }
+    },
+  });
+
+  // Start a read-only Reviewer run and jump to its conversation.
+  const reviewMutation = useMutation({
+    mutationFn: () => startReview(projectId, epicId),
+    onSuccess: (thread) => {
+      qc.invalidateQueries({ queryKey: queryKeys.threads.list(projectId, epicId) });
+      qc.invalidateQueries({ queryKey: queryKeys.runState.get(projectId, epicId) });
+      router.push(`/projects/${projectId}/epics/${epicId}/threads/${thread.id}`);
+    },
+    onError: (err) => {
+      setReviewError(err instanceof Error ? err.message : t("epic.reviewFailed"));
     },
   });
 
@@ -320,6 +334,7 @@ export function RunControlsBar({
     return (
       <>
         {approveError && <span className="text-[11px] text-error">{approveError}</span>}
+        {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
         <button
           type="button"
           data-testid="approve-epic-btn"
@@ -338,6 +353,22 @@ export function RunControlsBar({
           <Icon name="check_circle" className="text-[16px]" />
           <span className="hidden sm:inline">
             {approveMutation.isPending ? "…" : t("epic.approve")}
+          </span>
+        </button>
+        <button
+          type="button"
+          data-testid="start-review-btn"
+          onClick={() => {
+            setReviewError(null);
+            reviewMutation.mutate();
+          }}
+          disabled={reviewMutation.isPending}
+          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+          title={t("epic.reviewCheckTitle")}
+        >
+          <Icon name="fact_check" className="text-[16px]" />
+          <span className="hidden sm:inline">
+            {reviewMutation.isPending ? "…" : t("epic.reviewCheck")}
           </span>
         </button>
         <button

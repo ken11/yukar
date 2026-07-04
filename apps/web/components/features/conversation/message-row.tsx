@@ -13,6 +13,7 @@ export const roleIcon: Record<string, string> = {
   worker: "smart_toy",
   evaluator: "rate_review",
   arbiter: "balance",
+  reviewer: "fact_check",
   user: "person",
 };
 

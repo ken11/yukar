@@ -45,6 +45,10 @@ const ja = {
     approve: "完了として承認",
     approveTitle: "マージ不要の調査エピックなどを完了として承認します",
     closeRunActive: "実行中のため終了できません。先に実行を停止してください。",
+    reviewCheck: "Reviewer に確認",
+    reviewCheckTitle:
+      "独立した Reviewer にこのブランチを Epic と突き合わせて検証させ、あなたに報告させます",
+    reviewFailed: "Reviewer を開始できませんでした",
   },
   common: {
     newProject: "新規プロジェクト",
@@ -155,6 +159,7 @@ const ja = {
     manager: "Manager",
     worker: "Worker",
     evaluator: "Eval",
+    reviewer: "Reviewer",
     userRole: "ユーザー",
     statusThinking: "考え中…",
     statusDelegating: "委譲中",
@@ -458,12 +463,15 @@ const ja = {
       manager: "Manager",
       worker: "Worker",
       evaluator: "Evaluator",
+      reviewer: "Reviewer",
       managerDescription:
         "タスク計画・Worker への委譲・統合を担います。プロジェクト固有のオーケストレーション指針を追記できます。",
       workerDescription:
         "割当 worktree でコード変更を実装します。プロジェクト固有のコーディング規約や制約を追記できます。",
       evaluatorDescription:
         "Worker の成果物をレビュー・採点します。プロジェクト固有の受入基準を追記できます。",
+      reviewerDescription:
+        "ブランチを Epic と突き合わせて独立にレビューし、あなたに報告します（読み取り専用）。プロジェクト固有のレビュー観点を追記できます。",
     },
     mcp: {
       savedAll: "全サーバを一括で保存します",

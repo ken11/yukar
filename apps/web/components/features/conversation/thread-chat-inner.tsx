@@ -101,10 +101,15 @@ export function ThreadChatInner({
     manager: t("conversation.manager"),
     worker: `${t("conversation.worker")}${thread?.repo ? ` · ${thread.repo}` : ""}`,
     evaluator: t("conversation.evaluator"),
+    reviewer: t("conversation.reviewer"),
     user: t("conversation.userRole"),
   };
 
   const threadRole = thread?.role ?? "manager";
+
+  // The composer is shown for the active manager trial OR a (non-archived) reviewer
+  // conversation — both are threads the user can reply to (backend post_message).
+  const canCompose = isActiveTrial || (thread?.role === "reviewer" && !isArchived);
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -278,7 +283,7 @@ export function ThreadChatInner({
               )}
             </div>
           </div>
-        ) : isActiveTrial ? (
+        ) : canCompose ? (
           <div className="shrink-0" style={{ borderTop: "1px solid var(--color-outline-variant)" }}>
             <div className="mx-auto max-w-[var(--measure-read)] px-6 py-4">
               {/* Recess surface + shadow datum */}

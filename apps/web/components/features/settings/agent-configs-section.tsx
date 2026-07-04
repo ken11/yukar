@@ -13,7 +13,7 @@ import { useResetTimer } from "@/lib/hooks/use-reset-timer";
 import { useSaveState } from "@/lib/hooks/use-save-state";
 import { useDict } from "@/lib/i18n/provider";
 
-const ROLES = ["manager", "worker", "evaluator"] as const;
+const ROLES = ["manager", "worker", "evaluator", "reviewer"] as const;
 type Role = (typeof ROLES)[number];
 
 interface AgentConfigsSectionProps {
@@ -35,6 +35,7 @@ export function AgentConfigsSection({ projectId, initialConfigs }: AgentConfigsS
       manager: map.manager ?? "",
       worker: map.worker ?? "",
       evaluator: map.evaluator ?? "",
+      reviewer: map.reviewer ?? "",
     };
   });
   const [savedRole, setSavedRole] = useState<Role | null>(null);
@@ -60,6 +61,7 @@ export function AgentConfigsSection({ projectId, initialConfigs }: AgentConfigsS
     manager: "managerDescription",
     worker: "workerDescription",
     evaluator: "evaluatorDescription",
+    reviewer: "reviewerDescription",
   };
 
   return (

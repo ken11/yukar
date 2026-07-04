@@ -53,6 +53,10 @@ const en = {
     approve: "Approve",
     approveTitle: "Approve as complete (for investigation epics with nothing to merge)",
     closeRunActive: "Cannot close while a run is active. Stop the run first.",
+    reviewCheck: "Ask Reviewer",
+    reviewCheckTitle:
+      "Have an independent Reviewer verify this branch against the epic and report back to you",
+    reviewFailed: "Failed to start the reviewer",
   },
   common: {
     newProject: "New Project",
@@ -162,6 +166,7 @@ const en = {
     manager: "Manager",
     worker: "Worker",
     evaluator: "Eval",
+    reviewer: "Reviewer",
     userRole: "User",
     statusThinking: "Thinking…",
     statusDelegating: "Delegating",
@@ -469,12 +474,15 @@ const en = {
       manager: "Manager",
       worker: "Worker",
       evaluator: "Evaluator",
+      reviewer: "Reviewer",
       managerDescription:
         "Handles task planning, delegation to workers, and integration. Add project-specific orchestration guidance here.",
       workerDescription:
         "Implements code changes in assigned worktrees. Add project-specific coding conventions or constraints here.",
       evaluatorDescription:
         "Reviews and scores worker outputs. Add project-specific acceptance criteria here.",
+      reviewerDescription:
+        "Independently reviews a branch against the epic and reports to you (read-only). Add project-specific review priorities here.",
     },
     mcp: {
       savedAll: "Saves all server configurations at once",

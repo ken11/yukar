@@ -28,6 +28,7 @@ export type ConversationSummarySettings = components["schemas"]["ConversationSum
 export type CreateProjectRequest = components["schemas"]["CreateProjectRequest"];
 export type CreateEpicRequest = components["schemas"]["CreateEpicRequest"];
 export type CreateThreadRequest = components["schemas"]["CreateThreadRequest"];
+export type StartReviewRequest = components["schemas"]["StartReviewRequest"];
 export type PostMessageRequest = components["schemas"]["PostMessageRequest"];
 export type CommitRequest = components["schemas"]["CommitRequest"];
 export type MergeRequest = components["schemas"]["MergeRequest"];
@@ -257,6 +258,23 @@ export function archiveThread(
   });
 }
 
+/**
+ * Start a read-only Reviewer run: creates a fresh reviewer conversation, seeds it
+ * from the active Manager↔user conversation, and starts a reviewer run bound to it.
+ * Returns the new reviewer ThreadEntry. Navigate to it and invalidate:
+ *   - queryKeys.threads.list(projectId, epicId)
+ */
+export function startReview(
+  projectId: string,
+  epicId: string,
+  body: StartReviewRequest = { title: "" },
+): Promise<ThreadEntry> {
+  return apiFetch(`/api/projects/${projectId}/epics/${epicId}/review`, {
+    method: "POST",
+    body,
+  });
+}
+
 export function getThreadMessages(
   projectId: string,
   epicId: string,
@@ -426,14 +444,14 @@ export function listAgentConfigs(projectId: string): Promise<Record<string, stri
 
 export function getAgentConfig(
   projectId: string,
-  role: "manager" | "worker" | "evaluator",
+  role: "manager" | "worker" | "evaluator" | "reviewer",
 ): Promise<AgentConfig> {
   return apiFetch(`/api/projects/${projectId}/agent-configs/${role}`);
 }
 
 export function putAgentConfig(
   projectId: string,
-  role: "manager" | "worker" | "evaluator",
+  role: "manager" | "worker" | "evaluator" | "reviewer",
   instructions: string,
 ): Promise<AgentConfig> {
   return apiFetch(`/api/projects/${projectId}/agent-configs/${role}`, {
