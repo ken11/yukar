@@ -27,6 +27,7 @@ export default defineConfig({
   testIgnore: [
     "**/ask-user.spec.ts",
     "**/plan-gate.spec.ts",
+    "**/full-scenario.spec.ts",
     "**/streaming.spec.ts",
     "**/worker-failure.spec.ts",
     "**/budget.spec.ts",

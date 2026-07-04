@@ -527,3 +527,104 @@ class TestReviewerWorktreeTools:
         # Read-only: none of the mutating fs tools leak in.
         assert "fs_write" not in names
         assert "fs_delete" not in names
+
+
+class TestReviewerLegacyEpic:
+    """A legacy epic (created before the trial/session decoupling and its new
+    branch-naming) must not become inconsistent, and the Reviewer must launch on
+    it.  Legacy shape: epic.active_thread_id is None, the single manager thread
+    is 'manager' with trial_id=None, and the worktree lives at the pre-decoupling
+    path worktrees/manager/{repo} (which resolve_active_trial_id → 'manager' →
+    worktree_dir(..., 'manager', ...) still points at)."""
+
+    @pytest.mark.asyncio
+    async def test_reviewer_launches_on_legacy_session(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from unittest.mock import AsyncMock, patch
+
+        from yukar.agents.trials import resolve_active_trial_id
+        from yukar.api.routers import threads as threads_router
+        from yukar.api.routers.threads import StartReviewRequest
+        from yukar.config import paths as p
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo
+        from yukar.models.thread import ThreadEntry
+        from yukar.runs.supervisor import RunSupervisor
+        from yukar.storage import threads_repo
+        from yukar.storage.epic_repo import get_epic, save_epic
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-legacy", "EP-legacy"
+        await save_project(root, Project(id=pid, name=pid))
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        await save_repo(root, pid, Repo(name="myrepo", path=str(repo_dir)))
+
+        # Legacy epic on disk: old-style branch, NO active_thread_id, in_review.
+        await save_epic(
+            root,
+            pid,
+            Epic(
+                id=eid,
+                slug="legacy",
+                title="Legacy",
+                status="in_review",
+                branch="yukar/ep-legacy-legacy",
+                touched_repos=["myrepo"],
+                active_thread_id=None,
+            ),
+        )
+        # Legacy single manager thread: trial_id=None (pre-decoupling).
+        await threads_repo.add_thread(
+            root,
+            pid,
+            eid,
+            ThreadEntry(id="manager", title="Trial 1", role="manager", status="resolved"),
+        )
+        # Legacy worktree at the pre-decoupling path (keyed by "manager").
+        p.worktree_dir(root, pid, eid, "manager", "myrepo").mkdir(parents=True)
+        # A legacy Manager↔user conversation under the "manager" thread.
+        await _seed_manager_conversation(root, pid, eid)
+
+        epic = await get_epic(root, pid, eid)
+        assert epic is not None
+
+        # 1) No branch-naming inconsistency: the trial resolves to the legacy
+        #    "manager" worktree id (the same path the pre-decoupling code used).
+        assert await resolve_active_trial_id(root, pid, eid, epic) == "manager"
+
+        # 2) The Reviewer's worktree tools bind to the legacy worktree.
+        orch = _reviewer_orchestrator()
+        orch._epic = epic
+        tools = await orch._build_reviewer_ctx_tools(root, pid, eid)
+        assert {getattr(t, "tool_name", None) for t in tools} == {
+            "run_tests",
+            "fs_read",
+            "repo_grep",
+        }
+
+        # 3) POST /review launches on the legacy session: a reviewer thread is
+        #    created, seeded from the legacy "manager" conversation, and the run
+        #    starts in reviewer mode — without touching the legacy epic.
+        sup = RunSupervisor()
+        mock_start = AsyncMock(return_value="run-rev")
+        with patch.object(sup, "start", mock_start):
+            entry = await threads_router.start_review(
+                project_id=pid,
+                epic_id=eid,
+                body=StartReviewRequest(),
+                root=root,
+                supervisor=sup,
+                usage_tracker=_fake_tracker(),
+            )
+        assert entry.role == "reviewer"
+        call = mock_start.await_args
+        assert call is not None
+        assert call.kwargs["agent_role"] == "reviewer"
+        assert "use OAuth, not passwords" in call.kwargs["review_context"]
+
+        # The legacy epic is untouched: active_thread_id stays None, status in_review.
+        loaded = await get_epic(root, pid, eid)
+        assert loaded is not None
+        assert loaded.active_thread_id is None
+        assert loaded.status == "in_review"
