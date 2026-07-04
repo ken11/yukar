@@ -139,6 +139,13 @@ test.describe
       );
       const messages: unknown[] = await mRes.json();
       expect(messages.length, "Reviewer produced a conversation").toBeGreaterThan(0);
+      // The reviewer's worktree-backed fs_read read hello.py from the active
+      // manager trial's worktree — its content ("greet") appears in the tool
+      // result, proving the read-only worktree tools are wired end-to-end.
+      expect(
+        JSON.stringify(messages),
+        "Reviewer's fs_read returned hello.py content from the manager trial worktree",
+      ).toContain("greet");
 
       const sRes = await page.request.get(
         `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,

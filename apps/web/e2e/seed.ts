@@ -108,13 +108,20 @@ export const FAKE_SCRIPT = JSON.stringify({
     },
     { type: "text", text: "Accepted." },
   ],
-  // Reviewer (read-only): inspect the branch diff, then report to the user via
-  // ask_user (which parks the run at awaiting_input). Only used by reviewer.spec.
+  // Reviewer (read-only): inspect the branch diff (git-based) AND read a file
+  // from the active manager trial's worktree via fs_read (proves the worktree-
+  // backed read-only tools are wired), then report to the user via ask_user
+  // (which parks the run at awaiting_input). Only used by reviewer.spec.
   reviewer: [
     {
       type: "tool_use",
       tool_name: "read_branch_diff",
       tool_input: {},
+    },
+    {
+      type: "tool_use",
+      tool_name: "fs_read",
+      tool_input: { path: "hello.py" },
     },
     {
       type: "tool_use",

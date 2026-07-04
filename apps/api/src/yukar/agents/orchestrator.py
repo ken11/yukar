@@ -806,14 +806,19 @@ class EpicOrchestrator:
         remember_tool = _make_remember_tool(mem_store, epic_id, _pub_sensitive)
 
         if self._agent_role == "reviewer":
-            # Read-only reviewer: inspect the branch diff, search the code, and
-            # report to the user.  No task/dispatch/complete/authoring tools, no
-            # memory-write (remember).  read_branch_diff already resolves the
-            # active trial's branch (via epic.branch), so it needs no worktree.
+            # Read-only reviewer: inspect the branch diff, search the code, run the
+            # tests, and report to the user.  No task/dispatch/complete/authoring
+            # tools, no memory-write (remember).  read_branch_diff resolves the
+            # active trial's branch (via epic.branch) and needs no worktree; the
+            # worktree-backed read-only tools (run_tests / fs_read / repo_grep) are
+            # bound to the active MANAGER trial's worktree so the reviewer can
+            # verify first-hand (single-repo only — see _build_reviewer_ctx_tools).
+            reviewer_ctx_tools = await self._build_reviewer_ctx_tools(root, project_id, epic_id)
             agent_tools: list[Any] = [
                 read_branch_diff_tool,
                 ask_user_tool,
                 *manager_repo_tools,
+                *reviewer_ctx_tools,
             ]
         else:
             agent_tools = [
@@ -1464,6 +1469,85 @@ class EpicOrchestrator:
             manager_branch=_manager_branch,
         )
         return await run_dispatch(ctx_d, items)
+
+    # ------------------------------------------------------------------
+    # reviewer read-only worktree tools
+    # ------------------------------------------------------------------
+
+    async def _build_reviewer_ctx_tools(
+        self, root: str, project_id: str, epic_id: str
+    ) -> list[Any]:
+        """Read-only worktree tools for the reviewer: run_tests / fs_read / repo_grep.
+
+        Bound to the ACTIVE MANAGER TRIAL's worktree (NOT the reviewer's own
+        thread — a reviewer has no worktree).  The reviewer thus runs the epic's
+        tests and reads files in the exact tree the Manager produced, verifying
+        claims first-hand.  Safe because a reviewer run is mutually exclusive with
+        the manager run, so nothing else is writing that worktree.
+
+        First cut — single-repo epics only.  The tool names (run_tests / fs_read /
+        repo_grep) are fixed, so a multi-repo epic would need one set per repo and
+        the names would collide; there the reviewer falls back to
+        ``read_branch_diff`` + ``repo_search``.  Epics whose active trial has no
+        worktree yet (e.g. an investigation that changed no files) also skip.
+        Returns ``[]`` in every skip case.
+        """
+        from yukar.agents.tools.evaluator_tools import make_evaluator_tools
+        from yukar.agents.tools.fs import make_fs_tools
+        from yukar.agents.tools.grep_tools import make_grep_tools
+        from yukar.agents.trials import resolve_active_trial_id
+        from yukar.storage.project_repo import get_repo
+
+        assert self._epic is not None
+        touched = self._epic.touched_repos
+        if len(touched) != 1:
+            if len(touched) > 1:
+                logger.info(
+                    "reviewer: %d touched repos — skipping worktree tools (fixed tool "
+                    "names would collide); using read_branch_diff + repo_search",
+                    len(touched),
+                )
+            return []
+        repo_name = touched[0]
+
+        trial_id = await resolve_active_trial_id(root, project_id, epic_id, self._epic)
+        if trial_id is None:
+            return []
+        worktree_path = p.worktree_dir(root, project_id, epic_id, trial_id, repo_name)
+        if not await asyncio.to_thread(worktree_path.exists):
+            logger.info(
+                "reviewer: active trial worktree %s missing — skipping worktree tools",
+                worktree_path,
+            )
+            return []
+
+        repo_obj = await get_repo(root, project_id, repo_name)
+        if repo_obj is None:
+            return []
+
+        # Read-only context anchored to the manager trial's worktree.  Command
+        # allow/deny is the repo-level config (the same security boundary the
+        # Evaluator's run_tests uses); the reviewer has no profile of its own.
+        rev_ctx = await AgentContext.create(
+            project_id=project_id,
+            epic_id=epic_id,
+            repo_name=repo_name,
+            worktree_path=worktree_path,
+            workspace_root=root,
+            allow=list(repo_obj.commands.allow),
+            deny=list(repo_obj.commands.deny),
+        )
+
+        def _named(tools: list[Any], name: str) -> list[Any]:
+            return [t for t in tools if getattr(t, "tool_name", None) == name]
+
+        # run_tests only from the evaluator toolset (read_diff is redundant with
+        # read_branch_diff); fs_read only from the fs toolset (no write/list/delete);
+        # repo_grep from the grep toolset.
+        run_tests = _named(make_evaluator_tools(rev_ctx), "run_tests")
+        fs_read = _named(make_fs_tools(rev_ctx), "fs_read")
+        repo_grep = make_grep_tools(rev_ctx)
+        return [*run_tests, *fs_read, *repo_grep]
 
     # ------------------------------------------------------------------
     # complete_epic implementation

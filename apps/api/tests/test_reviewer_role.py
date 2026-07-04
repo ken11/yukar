@@ -450,3 +450,80 @@ class TestReviewerRunLifecycle:
         loaded = await get_epic(root, pid, eid)
         assert loaded is not None
         assert loaded.status == "in_review"  # unchanged by the reviewer run
+
+
+def _reviewer_orchestrator():  # type: ignore[no-untyped-def]
+    """A minimal reviewer-mode EpicOrchestrator for testing pure helpers."""
+    from yukar.agents.orchestrator import EpicOrchestrator
+    from yukar.config.settings import LLMSettings
+
+    return EpicOrchestrator(
+        llm_settings=LLMSettings(provider="fake"),
+        git_author_name="x",
+        git_author_email="y@z",
+        agent_role="reviewer",
+    )
+
+
+class TestReviewerWorktreeTools:
+    """_build_reviewer_ctx_tools binds run_tests/fs_read/repo_grep to the active
+    manager trial's worktree — single-repo only, and only when the worktree exists.
+    (The positive single-repo path is exercised end-to-end by e2e/reviewer.spec.ts,
+    whose fake reviewer calls fs_read on the manager trial's worktree.)"""
+
+    @pytest.mark.asyncio
+    async def test_multi_repo_skips_worktree_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A multi-repo epic gets NO worktree tools (fixed tool names would collide)."""
+        from yukar.models.epic import Epic
+
+        orch = _reviewer_orchestrator()
+        orch._epic = Epic(
+            id="EP-m", slug="s", title="T", status="in_review", touched_repos=["a", "b"]
+        )
+        tools = await orch._build_reviewer_ctx_tools(str(tmp_path / "ws"), "p", "EP-m")
+        assert tools == []
+
+    @pytest.mark.asyncio
+    async def test_missing_worktree_skips_worktree_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A single-repo epic whose trial worktree does not exist gets NO worktree tools."""
+        from yukar.models.epic import Epic
+
+        orch = _reviewer_orchestrator()
+        orch._epic = Epic(
+            id="EP-nw", slug="s", title="T", status="in_review", touched_repos=["myrepo"]
+        )
+        # No worktree was ever created under (root, p, EP-nw, "manager", "myrepo").
+        tools = await orch._build_reviewer_ctx_tools(str(tmp_path / "ws"), "p", "EP-nw")
+        assert tools == []
+
+    @pytest.mark.asyncio
+    async def test_single_repo_with_worktree_binds_read_only_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A single-repo epic with an existing trial worktree gets exactly
+        run_tests / fs_read / repo_grep (read-only), no fs_write/list/delete."""
+        from yukar.config import paths as p
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-ctx", "EP-ctx"
+        await save_project(root, Project(id=pid, name=pid))
+        # Register a repo (path need not be a real git repo for tool construction).
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        await save_repo(root, pid, Repo(name="myrepo", path=str(repo_dir)))
+
+        # Create the active trial's worktree (active_thread_id=None → trial "manager").
+        wt = p.worktree_dir(root, pid, eid, "manager", "myrepo")
+        wt.mkdir(parents=True)
+
+        orch = _reviewer_orchestrator()
+        orch._epic = Epic(
+            id=eid, slug="s", title="T", status="in_review", touched_repos=["myrepo"]
+        )
+        tools = await orch._build_reviewer_ctx_tools(root, pid, eid)
+        names = {getattr(t, "tool_name", None) for t in tools}
+        assert names == {"run_tests", "fs_read", "repo_grep"}
+        # Read-only: none of the mutating fs tools leak in.
+        assert "fs_write" not in names
+        assert "fs_delete" not in names
