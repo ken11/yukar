@@ -97,6 +97,19 @@ async def start_run(
         # to the legacy "manager" default (backward-compatible).
         manager_thread_id = epic_fresh.active_thread_id or "manager"
 
+        # Establish the active-trial invariant: once a run has started, the epic
+        # records which thread is the active manager trial.  Persisting it here
+        # (rather than leaving it None for single-trial epics) means the frontend
+        # resolves the active trial from epic.active_thread_id — which takes
+        # priority over RunState.manager_thread — so a subsequent reviewer run
+        # (whose RunState.manager_thread points at the reviewer thread) can never
+        # shift the UI's notion of the manager trial and hide its composer.
+        if epic_fresh.active_thread_id is None:
+            from yukar.storage.epic_repo import save_epic as _save_epic
+
+            epic_fresh.active_thread_id = manager_thread_id
+            await _save_epic(root, project_id, epic_fresh)
+
         # Guard: if the resolved thread_id is archived, refuse to start a run for it.
         if epic_fresh.active_thread_id is not None:
             tf = await threads_repo.get_threads(root, project_id, epic_id)

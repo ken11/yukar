@@ -32,6 +32,7 @@ export const SEED = {
     smoke: path.join(base, "repo-smoke", "myrepo"),
     multiTrial: path.join(base, "repo-multi-trial", "myrepo"),
     continueBranch: path.join(base, "repo-continue-branch", "myrepo"),
+    reviewer: path.join(base, "repo-reviewer", "myrepo"),
   },
 } as const;
 
@@ -106,5 +107,23 @@ export const FAKE_SCRIPT = JSON.stringify({
       tool_input: { accepted: true, feedback: "" },
     },
     { type: "text", text: "Accepted." },
+  ],
+  // Reviewer (read-only): inspect the branch diff, then report to the user via
+  // ask_user (which parks the run at awaiting_input). Only used by reviewer.spec.
+  reviewer: [
+    {
+      type: "tool_use",
+      tool_name: "read_branch_diff",
+      tool_input: {},
+    },
+    {
+      type: "tool_use",
+      tool_name: "ask_user",
+      tool_input: {
+        question:
+          "Reviewed the branch: hello.py and util.py are present and match the epic's intent. Approve as-is?",
+      },
+    },
+    { type: "text", text: "Awaiting your decision." },
   ],
 });
