@@ -20,6 +20,7 @@ import { cn } from "@/lib/cn";
 import { parseUnifiedDiff } from "@/lib/diff/parse-unified";
 import { useT } from "@/lib/i18n/provider";
 import { DiffLineRow, Spinner } from "./diff-line-row";
+import { FileTree } from "./file-tree";
 import { makeResolveEventHandlers } from "./resolve-event-handlers";
 import { useResolveRun } from "./use-resolve-run";
 
@@ -248,15 +249,16 @@ function DiffViewerPane({
   const t = useT();
   return (
     <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
-      {/* Left: Changed files panel
-          Mobile: horizontally scrollable inline list (height fixed with shrink-0)
-          PC: vertical w-64 fixed panel */}
+      {/* Left: Changed files panel — a single GitHub-style file tree at every
+          breakpoint (one DOM subtree, so filenames are not duplicated).
+          Mobile: bounded-height vertical tree above the diff viewer.
+          PC: fixed-width vertical panel filling the column. */}
       <div
-        className="flex shrink-0 flex-row overflow-x-auto border-b border-outline-variant md:w-64 md:flex-col md:overflow-x-hidden md:border-b-0 md:border-r"
+        className="flex max-h-56 shrink-0 flex-col overflow-y-auto border-b border-outline-variant md:max-h-none md:w-64 md:border-b-0 md:border-r"
         data-testid="changed-files-panel"
       >
         {/* Header: hidden on mobile (save space), visible on PC */}
-        <div className="hidden p-3 md:block">
+        <div className="hidden shrink-0 p-3 md:block">
           <h3 className="mb-2 text-[10px] uppercase tracking-wider text-outline">
             {t("diff.changedFiles")} ({files.length})
           </h3>
@@ -269,50 +271,12 @@ function DiffViewerPane({
           )}
           {isLoading && <p className="text-[11px] text-outline">{t("diff.loading")}</p>}
         </div>
-        {/* File list: horizontal on mobile, vertical on PC */}
-        <div className="flex flex-row md:flex-col md:px-0 md:pb-0">
-          {files.map((file) => {
-            const isSelected = file.path === selectedFile;
-            return (
-              <button
-                key={file.path}
-                type="button"
-                onClick={() => onSelectFile(file.path)}
-                className={cn(
-                  "edge-h flex shrink-0 items-center gap-2 px-3 py-2 text-left transition-colors md:w-full md:px-2 md:py-1.5",
-                  "min-h-[44px]",
-                  isSelected
-                    ? "bg-surface-container-high text-on-surface"
-                    : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface",
-                )}
-              >
-                {/* white tick = current location (PC only) */}
-                <span
-                  className="hidden shrink-0 text-[12px] leading-none md:inline"
-                  aria-hidden
-                  style={{ color: isSelected ? "var(--color-on-surface)" : "transparent" }}
-                >
-                  ›
-                </span>
-                <span
-                  className="max-w-[120px] truncate font-mono text-[11px] md:max-w-none md:flex-1"
-                  title={file.path}
-                >
-                  {file.path.split("/").pop()}
-                </span>
-                <span className="data shrink-0">
-                  <span style={{ color: "var(--color-added)" }}>+{file.added}</span>
-                  <span style={{ color: "var(--color-removed)" }}> −{file.deleted}</span>
-                </span>
-              </button>
-            );
-          })}
-          {files.length === 0 && !isLoading && (
-            <p className="px-3 py-2 text-[11px] text-outline md:px-2">
-              {t("diff.noChangesInMode")}
-            </p>
-          )}
-        </div>
+        <FileTree
+          files={files}
+          selectedFile={selectedFile}
+          onSelectFile={onSelectFile}
+          isLoading={isLoading}
+        />
       </div>
 
       {/* Right: Diff viewer */}
