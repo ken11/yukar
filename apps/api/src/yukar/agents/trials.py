@@ -43,6 +43,18 @@ def is_active_manager_thread(entry: ThreadEntry) -> bool:
     return entry.role == "manager" and entry.status != "archived"
 
 
+def trial_id_of(entry: ThreadEntry) -> str:
+    """Return the *trial* id for a manager ``ThreadEntry``.
+
+    A trial is the (branch + worktree) line of work; a conversation session
+    attaches to it.  ``entry.trial_id`` names the trial.  When it is None (a
+    legacy single-conversation trial, or the first conversation of a trial) the
+    trial id equals the thread's own id, keeping worktree paths backward
+    compatible with pre-decoupling epics.
+    """
+    return entry.trial_id or entry.id
+
+
 # ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
@@ -75,16 +87,25 @@ async def resolve_active_trial_id(
         epic: The loaded ``Epic`` object.
 
     Returns:
-        The active trial worktree id (e.g. ``"manager"`` or a thread id), or
+        The active trial worktree id (e.g. ``"manager"`` or a trial id), or
         ``None`` when all trials are archived and the ghost-worktree fallback
         must be refused.
     """
-    if epic.active_thread_id is not None:
-        return epic.active_thread_id
-
     # Lazy import avoids a circular dependency at module load time; storage is
     # a leaf layer that must not import from agents/.
     from yukar.storage import threads_repo as _tr  # noqa: PLC0415
+
+    if epic.active_thread_id is not None:
+        # The active *conversation* is epic.active_thread_id, but the worktree is
+        # keyed by its *trial* (branch+worktree line).  Resolve the ThreadEntry to
+        # read its trial_id; fall back to the id itself when the entry is not
+        # registered yet (legacy lazy registration) — this preserves the
+        # pre-decoupling behaviour of returning active_thread_id as-is.
+        tf_active = await _tr.get_threads(root, project_id, epic_id)
+        entry = next((t for t in tf_active.threads if t.id == epic.active_thread_id), None)
+        if entry is not None:
+            return trial_id_of(entry)
+        return epic.active_thread_id
 
     tf = await _tr.get_threads(root, project_id, epic_id)
     has_explicit_archived = any(

@@ -21,6 +21,12 @@ class ThreadEntry(BaseModel):
     task: str | None = None  # linked task id
     status: Literal["active", "resolved", "failed", "archived"] = "active"
     branch: str | None = None  # role=manager only: the git branch used by this trial
+    # role=manager only: the *trial* this conversation belongs to.  A trial is the
+    # (branch + worktree) line of work; the worktree is keyed by trial_id, not by
+    # this thread id, so several manager conversations on the same branch share one
+    # worktree.  None → legacy single-conversation trial; resolve via trial_id_of()
+    # which falls back to ``id`` (backward compatible).
+    trial_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     parent_thread_id: str | None = None  # manager=None, worker="manager", evaluator=worker_id
 

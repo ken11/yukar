@@ -65,6 +65,11 @@ class CreateThreadRequest(BaseModel):
     archive_active: bool = (
         False  # when role=manager, archive the current active trial before creating a new one
     )
+    # when role=manager, continue the CURRENT trial (same branch + worktree) with a
+    # fresh conversation instead of starting a new trial.  The previous conversation
+    # is archived (kept as history) but its worktree is preserved.  Mutually exclusive
+    # with archive_active.
+    same_branch: bool = False
 
 
 class PostMessageRequest(BaseModel):
@@ -127,6 +132,56 @@ def _get_manager_branch(epic: Epic, entry: ThreadEntry | None) -> str:
     return epic.branch
 
 
+def _trial_still_referenced(tf: ThreadsFile, trial_id: str, *, excluding_id: str) -> bool:
+    """Return True if a non-archived manager conversation (other than *excluding_id*)
+    still belongs to *trial_id*.
+
+    A trial's worktree is shared across the conversations that continue it
+    (same_branch).  It must not be torn down while any live conversation still
+    owns the trial.
+    """
+    from yukar.agents.trials import trial_id_of
+
+    return any(
+        t.role == "manager"
+        and t.status != "archived"
+        and t.id != excluding_id
+        and trial_id_of(t) == trial_id
+        for t in tf.threads
+    )
+
+
+async def _remove_trial_worktrees(
+    root: str,
+    project_id: str,
+    epic_id: str,
+    trial_id: str,
+    touched_repos: list[str],
+    log_prefix: str,
+) -> None:
+    """Best-effort removal of every repo worktree for *trial_id* (keyed by trial)."""
+    from yukar.config import paths as p
+    from yukar.storage.project_repo import get_repo
+
+    _log = logging.getLogger(__name__)
+    for repo_name in list(touched_repos):
+        wt_path = p.worktree_dir(root, project_id, epic_id, trial_id, repo_name)
+        if not wt_path.exists():
+            continue
+        repo_obj = await get_repo(root, project_id, repo_name)
+        if repo_obj is None:
+            _log.warning(
+                "%s: repo %r not found; skipping worktree removal for %s",
+                log_prefix,
+                repo_name,
+                wt_path,
+            )
+            continue
+        removed, err = await remove_worktree(Path(repo_obj.path), wt_path, force=True)
+        if not removed:
+            _log.warning("%s: failed to remove worktree %s: %s", log_prefix, wt_path, err)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -147,18 +202,70 @@ async def create_thread(
     root: WorkspaceRootDep,
     supervisor: SupervisorDep,
 ) -> ThreadEntry:
-    from yukar.config import paths as p
+    from yukar.agents.trials import trial_id_of
     from yukar.storage.epic_repo import get_epic, save_epic
     from yukar.storage.thread_locks import epic_thread_lock
 
+    if body.same_branch and body.role != "manager":
+        raise HTTPException(
+            status_code=422,
+            detail="same_branch is only valid for role=manager.",
+        )
+    if body.same_branch and body.archive_active:
+        raise HTTPException(
+            status_code=422,
+            detail="same_branch and archive_active are mutually exclusive.",
+        )
+
     await get_epic_or_404(root, project_id, epic_id)
+
+    # For a same-branch continuation these carry the trial to continue.
+    inherited_trial_id: str | None = None
+    inherited_branch: str | None = None
 
     async with epic_thread_lock(project_id, epic_id):
         epic = await get_epic(root, project_id, epic_id)
         if epic is None:
             raise HTTPException(status_code=404, detail=f"Epic not found: {epic_id!r}")
 
-        if body.role == "manager":
+        if body.role == "manager" and body.same_branch:
+            # Continue the CURRENT trial with a fresh conversation: archive the
+            # previous conversation (kept as history) but preserve its worktree so
+            # the new conversation continues on the same branch.
+            tf_existing = await threads_repo.get_threads(root, project_id, epic_id)
+            active_id = epic.active_thread_id or "manager"
+            active_entry = next(
+                (
+                    t
+                    for t in tf_existing.threads
+                    if t.id == active_id and t.role == "manager" and t.status != "archived"
+                ),
+                None,
+            )
+            if active_entry is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "No active manager trial to continue. "
+                        "Create a trial (or run the Manager) first."
+                    ),
+                )
+            if supervisor.is_thread_run_active(project_id, epic_id, active_entry.id):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Thread {active_entry.id!r} has an active run. "
+                        "Stop the run before continuing on the same branch."
+                    ),
+                )
+            inherited_trial_id = trial_id_of(active_entry)
+            inherited_branch = _get_manager_branch(epic, active_entry)
+            # Archive the previous conversation WITHOUT removing the worktree
+            # (the trial continues under the new conversation).
+            active_entry.status = "archived"
+            await threads_repo.save_threads(root, project_id, epic_id, tf_existing)
+
+        elif body.role == "manager":
             tf_existing = await threads_repo.get_threads(root, project_id, epic_id)
             active_id = epic.active_thread_id or "manager"
             existing_active = next(
@@ -193,33 +300,17 @@ async def create_thread(
                 existing_active.status = "archived"
                 await threads_repo.save_threads(root, project_id, epic_id, tf_existing)
 
-                # Remove worktrees (best-effort)
-                _log = logging.getLogger(__name__)
-                from yukar.storage.project_repo import get_repo
-
-                for repo_name in list(epic.touched_repos):
-                    wt_path = p.worktree_dir(
-                        root, project_id, epic_id, existing_active.id, repo_name
-                    )
-                    if wt_path.exists():
-                        repo_obj = await get_repo(root, project_id, repo_name)
-                        if repo_obj is None:
-                            _log.warning(
-                                "create_thread archive: repo %r not found; "
-                                "skipping worktree removal for %s",
-                                repo_name,
-                                wt_path,
-                            )
-                            continue
-                        removed, err = await remove_worktree(
-                            Path(repo_obj.path), wt_path, force=True
-                        )
-                        if not removed:
-                            _log.warning(
-                                "create_thread archive: failed to remove worktree %s: %s",
-                                wt_path,
-                                err,
-                            )
+                # Remove worktrees for the archived trial (a new trial with a
+                # distinct branch is about to be created, so the old trial is
+                # fully abandoned).
+                await _remove_trial_worktrees(
+                    root,
+                    project_id,
+                    epic_id,
+                    trial_id_of(existing_active),
+                    epic.touched_repos,
+                    "create_thread archive",
+                )
 
                 # Clear active_thread_id
                 epic.active_thread_id = None
@@ -256,9 +347,13 @@ async def create_thread(
 
         thread_id = f"th-{uuid.uuid4().hex[:8]}"
 
-        # For manager trials: derive a unique branch name and update epic.
+        # For manager trials: derive the branch name and update epic.
         branch: str | None = None
-        if body.role == "manager":
+        if body.role == "manager" and body.same_branch:
+            # Continuation: reuse the trial's branch (no new branch, no ordinal).
+            branch = inherited_branch
+        elif body.role == "manager":
+            # New trial: derive a unique branch name.
             # Collect all existing manager trials (any status) ordered by creation.
             tf_all = await threads_repo.get_threads(root, project_id, epic_id)
             existing_managers = [t for t in tf_all.threads if t.role == "manager"]
@@ -292,6 +387,14 @@ async def create_thread(
             task=body.task,
             status="active",
             branch=branch if body.role == "manager" else None,
+            # A same-branch continuation inherits the trial_id (so it shares the
+            # worktree); a fresh trial anchors trial_id to its own thread id, so the
+            # worktree path (keyed by trial_id) matches the pre-decoupling layout.
+            trial_id=(
+                (inherited_trial_id if body.same_branch else thread_id)
+                if body.role == "manager"
+                else None
+            ),
             created_at=datetime.now(UTC),
         )
         # Register agent directory in session store
@@ -353,7 +456,6 @@ async def archive_thread(
         404: If the thread or epic does not exist.
         409: If the thread's run is currently active (stop it first).
     """
-    from yukar.config import paths as p
     from yukar.storage.epic_repo import get_epic, save_epic
     from yukar.storage.thread_locks import epic_thread_lock
 
@@ -384,35 +486,32 @@ async def archive_thread(
         entry.status = "archived"
         await threads_repo.save_threads(root, project_id, epic_id, tf)
 
-        # Remove worktrees for this trial (best-effort: don't fail if already gone).
-        _log = logging.getLogger(__name__)
+        from yukar.agents.trials import trial_id_of
+
+        archived_trial_id = trial_id_of(entry)
 
         epic_obj = await get_epic(root, project_id, epic_id)
         if epic_obj is not None:
-            from yukar.storage.project_repo import get_repo
+            # Remove the trial's worktrees ONLY when no still-active conversation
+            # continues the same trial.  After a same_branch continuation, an
+            # archived predecessor and the active continuation share one worktree;
+            # tearing it down here would destroy the live conversation's worktree.
+            if not _trial_still_referenced(tf, archived_trial_id, excluding_id=thread_id):
+                await _remove_trial_worktrees(
+                    root,
+                    project_id,
+                    epic_id,
+                    archived_trial_id,
+                    epic_obj.touched_repos,
+                    "archive_thread",
+                )
 
-            for repo_name in list(epic_obj.touched_repos):
-                wt_path = p.worktree_dir(root, project_id, epic_id, thread_id, repo_name)
-                if wt_path.exists():
-                    # Resolve the bare repo path (needed by remove_worktree).
-                    repo_obj = await get_repo(root, project_id, repo_name)
-                    if repo_obj is None:
-                        _log.warning(
-                            "archive_thread: repo %r not found; skipping worktree removal for %s",
-                            repo_name,
-                            wt_path,
-                        )
-                        continue
-                    removed, err = await remove_worktree(Path(repo_obj.path), wt_path, force=True)
-                    if not removed:
-                        _log.warning(
-                            "archive_thread: failed to remove worktree %s: %s", wt_path, err
-                        )
-
-            # Clear active_thread_id so a new trial can be started.
-            epic_obj.active_thread_id = None
-            epic_obj.updated_at = datetime.now(UTC)
-            await save_epic(root, project_id, epic_obj)
+            # Clear active_thread_id ONLY when the archived thread WAS the active
+            # trial — archiving a stale sibling must not orphan the live trial.
+            if epic_obj.active_thread_id == thread_id:
+                epic_obj.active_thread_id = None
+                epic_obj.updated_at = datetime.now(UTC)
+                await save_epic(root, project_id, epic_obj)
 
     return {"status": "archived", "thread_id": thread_id}
 

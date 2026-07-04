@@ -636,6 +636,9 @@ class EpicOrchestrator:
                     title="Trial 1",
                     role="manager",
                     status="active",
+                    # Lazily-registered legacy trial anchors trial_id to its own id
+                    # so the worktree resolves to the pre-decoupling path.
+                    trial_id=manager_thread_id,
                     parent_thread_id=None,
                 )
             )
@@ -1344,18 +1347,26 @@ class EpicOrchestrator:
         assert self._state is not None
         assert self._epic is not None
 
+        from yukar.agents.trials import trial_id_of
+
         # Determine the branch for the active manager trial.
         # Prefer ThreadEntry.branch (the trial-specific unique branch set at creation time).
         # Fall back to epic.branch only when the trial has no ThreadEntry yet (backward-compat:
         # the legacy "manager" trial is registered lazily and may not appear in threads.yaml
         # until _run_loop has run at least once).
         _manager_branch = self._epic.branch  # default fallback
+        # The worktree is keyed by the *trial* (branch+worktree line), not by this
+        # conversation's thread id.  Default to the thread id (fresh trial) and
+        # override with the ThreadEntry.trial_id when the entry is registered.
+        _manager_trial_id = self._manager_thread_id
         tf_for_branch = await threads_repo.get_threads(self._root, self._project_id, self._epic_id)
         _entry_for_branch = next(
             (t for t in tf_for_branch.threads if t.id == self._manager_thread_id), None
         )
-        if _entry_for_branch is not None and _entry_for_branch.branch is not None:
-            _manager_branch = _entry_for_branch.branch
+        if _entry_for_branch is not None:
+            if _entry_for_branch.branch is not None:
+                _manager_branch = _entry_for_branch.branch
+            _manager_trial_id = trial_id_of(_entry_for_branch)
 
         ctx_d = DispatchContext(
             root=self._root,
@@ -1385,6 +1396,7 @@ class EpicOrchestrator:
                 run_evaluator=self._run_evaluator,
             ),
             manager_thread_id=self._manager_thread_id,
+            manager_trial_id=_manager_trial_id,
             manager_branch=_manager_branch,
         )
         return await run_dispatch(ctx_d, items)

@@ -59,12 +59,13 @@ export function ThreadListPane({
       className="flex h-full w-[240px] shrink-0 flex-col overflow-y-auto bg-surface-container-low"
       style={{ borderRight: "1px solid var(--color-outline-variant)" }}
     >
-      {/* New trial button */}
+      {/* New trial + continue-on-branch buttons */}
       <div
-        className="shrink-0 px-3 py-2"
+        className="flex shrink-0 flex-col gap-1.5 px-3 py-2"
         style={{ borderBottom: "1px solid var(--color-outline-variant)" }}
       >
         <NewThreadModal projectId={projectId} epicId={epicId} />
+        <NewThreadModal projectId={projectId} epicId={epicId} variant="sameBranch" />
       </div>
 
       {/* Active thread list */}

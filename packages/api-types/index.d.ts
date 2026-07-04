@@ -1453,6 +1453,11 @@ export interface components {
              * @default false
              */
             archive_active: boolean;
+            /**
+             * Same Branch
+             * @default false
+             */
+            same_branch: boolean;
         };
         /**
          * DelegationEvent
@@ -2968,6 +2973,8 @@ export interface components {
             status: "active" | "resolved" | "failed" | "archived";
             /** Branch */
             branch?: string | null;
+            /** Trial Id */
+            trial_id?: string | null;
             /**
              * Created At
              * Format: date-time

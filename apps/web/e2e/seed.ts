@@ -31,6 +31,7 @@ export const SEED = {
     scenario: path.join(base, "repo-scenario", "myrepo"),
     smoke: path.join(base, "repo-smoke", "myrepo"),
     multiTrial: path.join(base, "repo-multi-trial", "myrepo"),
+    continueBranch: path.join(base, "repo-continue-branch", "myrepo"),
   },
 } as const;
 

@@ -70,6 +70,9 @@ const ja = {
     newTrial: "新規トライ",
     newTrialDescription:
       "現在のアクティブ・トライをアーカイブし、default ブランチを基点にした新しいブランチで新トライを開始します（ブランチ名には序数サフィックスが付きます）。",
+    continueBranch: "現ブランチで続ける",
+    continueBranchDescription:
+      "現在のブランチと作業内容をそのまま引き継ぎ、過去の会話文脈をリセットした新しい Manager セッションを開始します（新しいブランチは作りません。これまでの会話は履歴として残ります）。",
     trialTitle: "タイトル（任意）",
     trialTitlePlaceholder: "例：Trial 2 / 別アプローチ（空欄で自動採番）",
     archive: "アーカイブ",

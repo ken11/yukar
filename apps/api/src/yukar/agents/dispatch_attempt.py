@@ -165,26 +165,28 @@ async def ensure_worktree_for_repo(
     root: str,
     project_id: str,
     epic_id: str,
-    manager_thread_id: str,
+    trial_id: str,
     manager_branch: str,
     repo_name: str,
     state_lock: asyncio.Lock,
     epic: Epic,
 ) -> Path:
-    """Lazily create worktree for repo under the given manager trial; update epic.touched_repos.
+    """Lazily create worktree for repo under the given trial; update epic.touched_repos.
 
     The worktree is placed at:
-        epics/{epic_id}/worktrees/{manager_thread_id}/{repo_name}
+        epics/{epic_id}/worktrees/{trial_id}/{repo_name}
 
-    ``manager_branch`` is the branch the active trial uses (from ThreadEntry.branch
-    or epic.branch as fallback).  ``epic`` is used only for touched_repos tracking.
+    ``trial_id`` keys the (branch+worktree) line of work: manager conversations
+    that continue the same trial share this worktree.  ``manager_branch`` is the
+    branch the active trial uses (from ThreadEntry.branch or epic.branch as
+    fallback).  ``epic`` is used only for touched_repos tracking.
     """
     repo_obj = await get_repo(root, project_id, repo_name)
     if repo_obj is None:
         raise RuntimeError(f"Repo not found: {repo_name}")
 
     repo_path = Path(repo_obj.path)
-    worktree_path = p.worktree_dir(root, project_id, epic_id, manager_thread_id, repo_name)
+    worktree_path = p.worktree_dir(root, project_id, epic_id, trial_id, repo_name)
     default_branch = repo_obj.default_branch
 
     result = await ensure_worktree(

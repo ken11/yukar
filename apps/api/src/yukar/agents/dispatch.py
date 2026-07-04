@@ -93,9 +93,13 @@ class DispatchContext:
     git_author_email: str
     # Grouped orchestrator callbacks.
     hooks: OrchestratorHooks
-    # Manager-trial identity — used to route worktree paths and HITL.
-    # Defaults to "manager" for backward compatibility with single-trial runs.
+    # Manager-conversation identity — used to route HITL messages and to parent
+    # worker threads.  Defaults to "manager" for backward compat with single-trial runs.
     manager_thread_id: str = "manager"
+    # Trial identity (branch+worktree line) — used to route worktree paths.  Several
+    # manager conversations on the same branch share a trial_id (and thus a worktree).
+    # Defaults to "manager" for backward compat; equals manager_thread_id for a fresh trial.
+    manager_trial_id: str = "manager"
     # Branch the manager trial uses.  Defaults to epic.branch for backward compat.
     # Set to the ThreadEntry.branch of the active trial when it is non-None.
     manager_branch: str = ""
@@ -324,7 +328,7 @@ async def _handle_dispatch_item(
             ctx_d.root,
             ctx_d.project_id,
             ctx_d.epic_id,
-            ctx_d.manager_thread_id,
+            ctx_d.manager_trial_id,
             ctx_d.manager_branch,
             repo_name,
             ctx_d.state_lock,

@@ -196,27 +196,27 @@ def worktrees_dir(root: str, project_id: str, epic_id: str) -> Path:
     return epic_dir(root, project_id, epic_id) / "worktrees"
 
 
-def manager_worktrees_dir(
-    root: str, project_id: str, epic_id: str, manager_thread_id: str
-) -> Path:
+def manager_worktrees_dir(root: str, project_id: str, epic_id: str, trial_id: str) -> Path:
     """Return the directory that holds worktrees for one manager trial.
 
-    Layout: epics/{epic_id}/worktrees/{manager_thread_id}/
-    Only config/paths.py knows this layout (workspace invariant).
+    Layout: epics/{epic_id}/worktrees/{trial_id}/
+    ``trial_id`` keys the (branch+worktree) line of work — several manager
+    conversations on the same branch share this directory.  Only config/paths.py
+    knows this layout (workspace invariant).
     """
-    _validate_segment(manager_thread_id, "manager_thread_id")
-    return worktrees_dir(root, project_id, epic_id) / manager_thread_id
+    _validate_segment(trial_id, "trial_id")
+    return worktrees_dir(root, project_id, epic_id) / trial_id
 
 
 def worktree_dir(
-    root: str, project_id: str, epic_id: str, manager_thread_id: str, repo_name: str
+    root: str, project_id: str, epic_id: str, trial_id: str, repo_name: str
 ) -> Path:
     """Return the path for a single repo worktree under a manager trial.
 
-    Layout: epics/{epic_id}/worktrees/{manager_thread_id}/{repo_name}
+    Layout: epics/{epic_id}/worktrees/{trial_id}/{repo_name}
     """
     _validate_segment(repo_name, "repo_name")
-    return manager_worktrees_dir(root, project_id, epic_id, manager_thread_id) / repo_name
+    return manager_worktrees_dir(root, project_id, epic_id, trial_id) / repo_name
 
 
 # ---------------------------------------------------------------------------

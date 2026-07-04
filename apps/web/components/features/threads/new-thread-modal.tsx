@@ -11,15 +11,32 @@ import { queryKeys } from "@/lib/api/query-keys";
 import { useT } from "@/lib/i18n/provider";
 
 /**
- * Modal for creating a new manager trial.
+ * Modal for starting a new manager conversation session.
+ *
+ * Two variants (a *trial* is a branch+worktree line of work; a *session* is a
+ * fresh conversation attached to it):
+ * - "new" (default): start a NEW trial — archive the active trial and branch off
+ *   the default branch (ordinal-suffixed branch name).
+ *   Request: createThread(role:"manager", archive_active:true).
+ * - "sameBranch": CONTINUE the current trial (same branch + worktree) with a
+ *   fresh conversation. The previous conversation is archived (kept as history)
+ *   but the worktree is preserved.
+ *   Request: createThread(role:"manager", same_branch:true).
  *
  * Flow:
- * 1. A **single request** to createThread(role:"manager", archive_active:true) causes
- *    the server to atomically archive the current active trial and create a new one.
- *    - 409: run is active → show inline error and abort (original trial is preserved).
- * 2. Navigate to the created thread via router.push and invalidate the threads list.
+ * 1. A **single request** atomically archives the previous conversation and
+ *    creates the new one.  409 → run is active → inline error, abort.
+ * 2. Navigate to the created thread and invalidate the threads list + epic detail.
  */
-export function NewThreadModal({ projectId, epicId }: { projectId: string; epicId: string }) {
+export function NewThreadModal({
+  projectId,
+  epicId,
+  variant = "new",
+}: {
+  projectId: string;
+  epicId: string;
+  variant?: "new" | "sameBranch";
+}) {
   const t = useT();
   const router = useRouter();
   const qc = useQueryClient();
@@ -27,34 +44,44 @@ export function NewThreadModal({ projectId, epicId }: { projectId: string; epicI
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
 
+  const isSameBranch = variant === "sameBranch";
+  const label = isSameBranch ? t("common.continueBranch") : t("common.newTrial");
+  const description = isSameBranch
+    ? t("common.continueBranchDescription")
+    : t("common.newTrialDescription");
+  const buttonIcon = isSameBranch ? "edit_note" : "add_comment";
+
   const mutation = useMutation({
     mutationFn: async () => {
-      // archive_active:true atomically archives the current active trial and creates a new one.
+      // "new": archive_active atomically archives the active trial and forks a new branch.
+      // "sameBranch": same_branch continues the current trial with a fresh conversation.
       // If title is empty, omit it and let the backend auto-number it as "Trial N".
-      const newThread = await createThread(projectId, epicId, {
-        role: "manager",
-        archive_active: true,
-        title: title.trim() || "",
-      });
+      const newThread = await createThread(
+        projectId,
+        epicId,
+        isSameBranch
+          ? { role: "manager", archive_active: false, same_branch: true, title: title.trim() || "" }
+          : {
+              role: "manager",
+              archive_active: true,
+              same_branch: false,
+              title: title.trim() || "",
+            },
+      );
       return newThread;
     },
     onSuccess: (newThread) => {
-      // Invalidate threads.list to refresh the left-pane thread list
+      // Invalidate threads.list to refresh the left-pane thread list.
       qc.invalidateQueries({
         queryKey: queryKeys.threads.list(projectId, epicId),
       });
-      // Invalidate epics.detail to refresh EpicShell's liveEpic.active_thread_id.
-      // EpicShell subscribes to epics.detail via useQuery and will re-fetch after invalidation
-      // to get the latest active_thread_id (the new trial id).
-      // This ensures the composer is correctly shown after in-app navigation even when the layout RSC is stale.
+      // Invalidate epics.detail so EpicShell picks up the new active_thread_id.
       qc.invalidateQueries({
         queryKey: queryKeys.epics.detail(projectId, epicId),
       });
       setIsOpen(false);
       setError(null);
       setTitle("");
-      // router.refresh() also re-fetches the layout RSC (updating parent queries such as epics.list).
-      // This is a one-time re-fetch after mutation, not polling.
       router.refresh();
       router.push(`/projects/${projectId}/epics/${epicId}/threads/${newThread.id}`);
     },
@@ -62,7 +89,7 @@ export function NewThreadModal({ projectId, epicId }: { projectId: string; epicI
       if (err instanceof ApiError && err.status === 409) {
         setError(t("common.archiveStopFirst"));
       } else {
-        setError(err instanceof Error ? err.message : "Failed to create trial");
+        setError(err instanceof Error ? err.message : "Failed to create session");
       }
     },
   });
@@ -79,18 +106,22 @@ export function NewThreadModal({ projectId, epicId }: { projectId: string; epicI
         }
       }}
       trigger={
-        <Button variant="primary" size="sm" data-testid="new-thread-btn">
-          <Icon name="add_comment" className="text-[16px]" />
-          {t("common.newTrial")}
+        <Button
+          variant={isSameBranch ? "secondary" : "primary"}
+          size="sm"
+          data-testid={isSameBranch ? "continue-branch-btn" : "new-thread-btn"}
+        >
+          <Icon name={buttonIcon} className="text-[16px]" />
+          {label}
         </Button>
       }
-      title={t("common.newTrial")}
-      description={t("common.newTrialDescription")}
+      title={label}
+      description={description}
       error={error}
       submitLabel={
         <>
           <Icon name="rocket_launch" className="text-[16px]" />
-          {t("common.newTrial")}
+          {label}
         </>
       }
       submitPendingLabel={

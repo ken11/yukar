@@ -61,6 +61,7 @@ describe("M3: createThread — single request with archive_active:true", () => {
     await createThread("proj1", "epic1", {
       role: "manager",
       archive_active: true,
+      same_branch: false,
       title: "",
     });
 
@@ -84,6 +85,7 @@ describe("M3: createThread — single request with archive_active:true", () => {
     await createThread("proj1", "epic1", {
       role: "manager",
       archive_active: false,
+      same_branch: false,
       title: "Trial 1",
     });
 
@@ -99,6 +101,7 @@ describe("M3: createThread — single request with archive_active:true", () => {
       createThread("proj1", "epic1", {
         role: "manager",
         archive_active: true,
+        same_branch: false,
         title: "",
       }),
     ).rejects.toBeInstanceOf(ApiError);
@@ -125,6 +128,7 @@ describe("M4: createThread — body changes depending on title", () => {
     await createThread("proj1", "epic1", {
       role: "manager",
       archive_active: true,
+      same_branch: false,
       title: "Alternative approach",
     });
 
@@ -147,6 +151,7 @@ describe("M4: createThread — body changes depending on title", () => {
     await createThread("proj1", "epic1", {
       role: "manager",
       archive_active: true,
+      same_branch: false,
       title: "", // Send empty string → backend assigns Trial N
     });
 

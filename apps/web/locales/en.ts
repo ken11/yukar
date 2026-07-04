@@ -78,6 +78,9 @@ const en = {
     newTrial: "New Trial",
     newTrialDescription:
       "Archives the current active trial and starts a new trial on a fresh branch based on the default branch (branch name gets an ordinal suffix).",
+    continueBranch: "Continue on Branch",
+    continueBranchDescription:
+      "Keeps the current branch and work in place and starts a new Manager session with a fresh conversation (no new branch is created; the previous conversation is kept as history).",
     trialTitle: "Title (optional)",
     trialTitlePlaceholder: "e.g. Trial 2 / Alternative approach (auto-numbered if empty)",
     archive: "Archive",
