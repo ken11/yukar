@@ -74,7 +74,9 @@ from yukar.agents.project_extras import (
 )
 from yukar.agents.prompts import (
     _MANAGER_SYSTEM_PROMPT,
+    _REVIEWER_SYSTEM_PROMPT,
     _build_manager_prompt,
+    _build_reviewer_prompt,
     _load_epic_docs,
     _load_project_docs,
     _summarise_tasks,
@@ -105,6 +107,7 @@ from yukar.models.events import (
     UserInputResolvedEvent,
     UserMessageCommittedEvent,
 )
+from yukar.models.roles import AgentRole
 from yukar.models.run import RunState
 from yukar.models.task import Task, TaskProgress, TasksFile
 from yukar.models.thread import ThreadEntry
@@ -239,6 +242,8 @@ class EpicOrchestrator:
         embedding_settings: EmbeddingSettings | None = None,
         manager_thread_id: str = "manager",
         require_plan_approval: bool = True,
+        agent_role: AgentRole = "manager",
+        review_context: str = "",
     ) -> None:
         self._llm = llm_settings
         self._git_author_name = git_author_name
@@ -293,8 +298,18 @@ class EpicOrchestrator:
         #   - a genuine user turn (ask_user reply / HITL / seed_prompt) grants it.
         # A continuation run resumes an already-approved plan; a fresh run must
         # earn approval via ask_user before its first dispatch.
-        self._require_plan_approval: bool = require_plan_approval
-        self._plan_approved: bool = is_continuation
+        # Reviewer mode: a read-only, conversational agent that reviews the active
+        # trial's branch and reports to the user.  It reuses this orchestrator's
+        # conversation loop but with a read-only toolset and no task/dispatch/plan
+        # machinery.  review_context carries the Manager↔user conversation to seed.
+        self._agent_role: AgentRole = agent_role
+        self._review_context: str = review_context
+        _is_reviewer = agent_role == "reviewer"
+
+        # A reviewer has no dispatch, so the plan-approval gate is irrelevant;
+        # disable it so the loop never nudges toward plan approval / dispatch.
+        self._require_plan_approval: bool = require_plan_approval and not _is_reviewer
+        self._plan_approved: bool = is_continuation or _is_reviewer
 
         # HITL: pending messages queued from threads router.
         # Maps thread_id → list of text strings.
@@ -728,13 +743,21 @@ class EpicOrchestrator:
 
         manager_model = create_model(
             self._llm,
-            role="manager",
-            effort=(self._epic.manager_effort if self._epic is not None else None),
+            role=self._agent_role,
+            # Reviewer runs without an epic effort override (Manager-only setting).
+            effort=(
+                self._epic.manager_effort
+                if (self._epic is not None and self._agent_role == "manager")
+                else None
+            ),
         )
 
         # L1: overlay per-role system prompt.
+        _base_system_prompt = (
+            _REVIEWER_SYSTEM_PROMPT if self._agent_role == "reviewer" else _MANAGER_SYSTEM_PROMPT
+        )
         manager_system_prompt = overlay_system_prompt(
-            _MANAGER_SYSTEM_PROMPT, root, project_id, "manager"
+            _base_system_prompt, root, project_id, self._agent_role
         )
 
         # L2: build AgentSkills plugin if skills exist.
@@ -776,12 +799,18 @@ class EpicOrchestrator:
         # remember() tool: callable by Manager only. Captures store + epic_id in closure.
         remember_tool = _make_remember_tool(mem_store, epic_id, _pub_sensitive)
 
-        manager_agent = Agent(
-            model=manager_model,
-            agent_id=manager_thread_id,
-            session_manager=fsm,
-            conversation_manager=create_conversation_manager(self._llm),
-            tools=[
+        if self._agent_role == "reviewer":
+            # Read-only reviewer: inspect the branch diff, search the code, and
+            # report to the user.  No task/dispatch/complete/authoring tools, no
+            # memory-write (remember).  read_branch_diff already resolves the
+            # active trial's branch (via epic.branch), so it needs no worktree.
+            agent_tools: list[Any] = [
+                read_branch_diff_tool,
+                ask_user_tool,
+                *manager_repo_tools,
+            ]
+        else:
+            agent_tools = [
                 task_update_tool,
                 dispatch_tool,
                 complete_epic_tool,
@@ -794,7 +823,14 @@ class EpicOrchestrator:
                 *manager_profile_tools,
                 *manager_skill_mcp_tools,
                 *self._mcp_tools,
-            ],
+            ]
+
+        manager_agent = Agent(
+            model=manager_model,
+            agent_id=manager_thread_id,
+            session_manager=fsm,
+            conversation_manager=create_conversation_manager(self._llm),
+            tools=agent_tools,
             callback_handler=translator.callback,
             system_prompt=manager_system_prompt,
             memory_manager=memory_manager,
@@ -804,7 +840,7 @@ class EpicOrchestrator:
             project_id=project_id,
             epic_id=epic_id,
             run_id=run_id,
-            role="manager",
+            role=self._agent_role,
         ).bind(manager_agent)
 
         # Register FSM hook: publish UserMessageCommittedEvent when a clean
@@ -899,13 +935,18 @@ class EpicOrchestrator:
                 prompt = "\n\n".join(hitl_texts)
                 _human_authored = True
             elif turn == 0 and not self._is_continuation:
-                # Fresh run turn 0: always send the full Epic initialisation prompt so
-                # the Manager receives title/description/acceptance criteria/docs.
+                # Fresh run turn 0: always send the full initialisation prompt so
+                # the agent receives title/description/acceptance criteria/docs.
                 # Any unsolicited HITL that arrived before turn 0 completed is appended
                 # via hitl_prefix so it is not lost.
                 # This is orchestrator-generated boilerplate — NOT human-authored.
                 hitl_prefix = "\n\n".join(hitl_texts) if hitl_texts else ""
-                prompt = _build_manager_prompt(epic, project_docs, epic_docs, hitl_prefix)
+                if self._agent_role == "reviewer":
+                    prompt = _build_reviewer_prompt(
+                        epic, project_docs, epic_docs, self._review_context, hitl_prefix
+                    )
+                else:
+                    prompt = _build_manager_prompt(epic, project_docs, epic_docs, hitl_prefix)
             elif turn == 0 and self._is_continuation:
                 # Continuation run — FSM is now the sole writer.
                 #
@@ -919,6 +960,12 @@ class EpicOrchestrator:
                 if self._seed_prompt:
                     prompt = self._seed_prompt
                     _human_authored = True
+                elif self._agent_role == "reviewer":
+                    prompt = (
+                        "Continue your review from the prior session. Use "
+                        "`read_branch_diff` and `repo_search` to gather evidence, then "
+                        "call `ask_user` to report your findings to the user."
+                    )
                 elif self._require_plan_approval and not self._plan_approved:
                     # Resuming a plan that was never approved (planned, then the
                     # run ended before the user approved — no work has started).
@@ -949,6 +996,12 @@ class EpicOrchestrator:
                     "rejected. Call `ask_user` to present the current plan (and any "
                     "changes you just made) and wait for the user's approval. "
                     "Do NOT call `dispatch` until the user approves."
+                )
+            elif self._agent_role == "reviewer":
+                prompt = (
+                    "Continue your review. Gather any remaining evidence with "
+                    "`read_branch_diff` / `repo_search`, then call `ask_user` to "
+                    "report your verdict and findings to the user."
                 )
             else:
                 task_summary = _summarise_tasks(tf)
