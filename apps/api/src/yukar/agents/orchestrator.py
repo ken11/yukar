@@ -1148,9 +1148,10 @@ class EpicOrchestrator:
     def _make_ask_user_tool(self) -> Any:
         """Return the ``ask_user`` Strands tool bound to this orchestrator.
 
-        Manager-only tool.  Worker and Evaluator do NOT receive this tool.
-        When called, it sets ``_awaiting_user=True`` and stores the question
-        so the loop knows to block on ``_pending_messages.get()`` next turn.
+        Given to the Manager and the Reviewer (both talk to the user); Worker and
+        Evaluator do NOT receive this tool.  When called, it sets
+        ``_awaiting_user=True`` and stores the question so the loop knows to block
+        on ``_pending_messages.get()`` next turn.
         """
         from strands import tool
 

@@ -356,7 +356,22 @@ async def create_thread(
                     None,
                 )
                 if current is None:
-                    # No ThreadEntry at all — genuine inconsistency.
+                    if active_id == "manager":
+                        # The legacy/default "manager" trial is registered lazily by
+                        # the orchestrator once a run starts.  A run-start sets
+                        # epic.active_thread_id="manager" (the active-trial invariant)
+                        # a beat before that ThreadEntry appears, so "manager" with no
+                        # entry means a run is starting — not corruption.  Ask the user
+                        # to retry rather than emitting a misleading "not found".
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "A run is starting for this epic (the manager trial is "
+                                "registering). Retry in a moment, or stop the run first."
+                            ),
+                        )
+                    # A non-legacy active_thread_id with no ThreadEntry is a genuine
+                    # inconsistency.
                     raise HTTPException(
                         status_code=409,
                         detail=(
