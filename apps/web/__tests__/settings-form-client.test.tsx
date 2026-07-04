@@ -201,4 +201,28 @@ describe("SettingsFormClient — blank→null conversion for nullable fields", (
     // The default value for workspace_root is displayed
     expect(screen.getByDisplayValue("~/yukar-projects")).toBeInTheDocument();
   });
+
+  it("renders a Reviewer per-role model-override input and PUTs roles.reviewer.model_id", async () => {
+    const settings = makeSettings();
+    vi.mocked(getSettings).mockResolvedValue(settings);
+    vi.mocked(putSettings).mockResolvedValue(settings);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+
+    render(<SettingsFormClient initialSettings={settings} />, { wrapper: wrapper(qc) });
+
+    // The Reviewer role override input exists (regression: it used to be missing,
+    // so the Reviewer's model could not be configured from the UI).
+    const reviewerInput = screen.getByRole<HTMLInputElement>("textbox", { name: /reviewer/i });
+    await user.type(reviewerInput, "us.anthropic.claude-opus-4-8-v1:0");
+
+    await user.click(screen.getByRole("button", { name: /保存する/i }));
+
+    await waitFor(() => {
+      expect(putSettings).toHaveBeenCalledOnce();
+    });
+    const calledWith = vi.mocked(putSettings).mock.calls[0][0];
+    expect(calledWith.llm?.roles?.reviewer?.model_id).toBe("us.anthropic.claude-opus-4-8-v1:0");
+  });
 });

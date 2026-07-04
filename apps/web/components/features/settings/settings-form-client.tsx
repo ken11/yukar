@@ -171,7 +171,10 @@ export function SettingsFormClient({ initialSettings }: SettingsFormClientProps)
     setForm((f) => ({ ...f, indexer: { ...indexer, ...patch } }));
   }
 
-  function setRoleModelId(role: "manager" | "worker" | "evaluator" | "arbiter", value: string) {
+  function setRoleModelId(
+    role: "manager" | "worker" | "evaluator" | "arbiter" | "reviewer",
+    value: string,
+  ) {
     const updated: LLMRolesSettings = { ...roles, [role]: { model_id: value || null } };
     setLlm({ roles: updated });
   }
@@ -295,8 +298,8 @@ export function SettingsFormClient({ initialSettings }: SettingsFormClientProps)
           <div>
             <FieldLabel>{st.model.roleOverrides}</FieldLabel>
             <FieldHint>{st.model.roleOverridesHint}</FieldHint>
-            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-4">
-              {(["manager", "worker", "evaluator", "arbiter"] as const).map((role) => (
+            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-3">
+              {(["manager", "worker", "evaluator", "arbiter", "reviewer"] as const).map((role) => (
                 <div key={role}>
                   <label
                     htmlFor={`settings-llm-role-${role}`}
