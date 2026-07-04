@@ -11,6 +11,7 @@ from pathlib import Path
 
 from yukar.config import paths as p
 from yukar.models.epic import Epic
+from yukar.models.message import Message
 from yukar.models.task import Task, TasksFile
 
 # ---------------------------------------------------------------------------
@@ -187,6 +188,39 @@ _EVALUATOR_SYSTEM_PROMPT = (
     "criteria."
 )
 
+_REVIEWER_SYSTEM_PROMPT = (
+    "You are the Reviewer for yukar, an autonomous coding agent system.\n\n"
+    "The Manager has reported an epic ready for review. You are an INDEPENDENT, "
+    "read-only reviewer working in a fresh context. Your job is to judge whether "
+    "the actual state of the current branch genuinely satisfies the epic's intent "
+    "and acceptance criteria, and to report your assessment to the USER.\n\n"
+    "## What you are (and are not)\n"
+    "- You report to the USER, not to the Manager. You NEVER instruct the Manager, "
+    "assign tasks, or edit code. If fixes are needed, you say so in your report and "
+    "the user decides what to do.\n"
+    "- You are read-only: you cannot modify files, commit, or dispatch. You inspect.\n"
+    "- You are skeptical by design: verify the Manager's claims against the actual "
+    "diff and code. Do not take the Manager's summary at face value.\n\n"
+    "## How to review\n"
+    "1. Call `read_branch_diff` to see the full change set (epic branch vs the default "
+    "branch). This is the ground truth of what was actually done.\n"
+    "2. Compare the diff against the epic description and acceptance criteria: is every "
+    "stated goal actually met? Are there gaps, regressions, or unrelated changes?\n"
+    "3. Use `fs_read` and `repo_grep` to inspect specific files in depth, and "
+    "`repo_search` / `repo_summarize` for broader context.\n"
+    "4. Optionally use `run_tests` to independently verify the work runs/passes — do "
+    "not rely on the Manager's or Evaluator's word.\n"
+    "5. Use `read_epic_docs` / `read_project_docs` to recover the intended design.\n"
+    "6. Use `ask_user` to ask the user clarifying questions or to deliver your findings "
+    "and wait for their direction.\n\n"
+    "## Your report\n"
+    "Give the user a clear verdict and the evidence for it: what the branch does, "
+    "whether it meets the epic's intent and acceptance criteria, and a concrete list "
+    "of any gaps, risks, or regressions you found (with file/function references). "
+    "Be direct: state plainly whether you would approve the work as-is or not, and why. "
+    "End by asking the user how they want to proceed."
+)
+
 _ARBITER_SYSTEM_PROMPT = (
     "You are the Arbiter agent for yukar, an autonomous coding agent system.\n"
     "\n"
@@ -270,6 +304,95 @@ def _build_manager_prompt(
         "Call `ask_user` to present your plan and any questions BEFORE dispatching. "
         "Wait for the user's approval before calling `dispatch`. "
         "When all work is done, call `complete_epic`."
+    )
+
+    return "\n".join(parts)
+
+
+def format_manager_conversation(messages: list[Message], *, max_chars: int = 24000) -> str:
+    """Render the Manager↔user exchange as a plain transcript for the Reviewer seed.
+
+    Keeps the human replies (the user's decisions/agreements), the Manager's
+    natural-language narration (its plan and what it did), and the questions the
+    Manager posed via ``ask_user`` (so the replies have context).  Drops
+    tool-call/tool-result noise (task_update, dispatch, worker/evaluator output).
+
+    Oldest-first.  When the transcript exceeds ``max_chars`` it is trimmed from
+    the FRONT so the most recent turns (including the final report) are kept.
+    """
+    lines: list[str] = []
+    for m in messages:
+        role = m.message.role
+        speaker = "User" if role == "user" else "Manager"
+        chunks: list[str] = []
+        for part in m.message.content:
+            if part.text and part.text.strip():
+                chunks.append(part.text.strip())
+            tu = part.tool_use
+            if role == "assistant" and tu is not None and tu.name == "ask_user":
+                q = tu.input.get("question")
+                if isinstance(q, str) and q.strip():
+                    chunks.append(f"[asks the user] {q.strip()}")
+        text = "\n".join(chunks).strip()
+        if text:
+            lines.append(f"**{speaker}:** {text}")
+    transcript = "\n\n".join(lines)
+    if len(transcript) > max_chars:
+        transcript = "…(earlier conversation trimmed)…\n\n" + transcript[-max_chars:]
+    return transcript
+
+
+def _build_reviewer_prompt(
+    epic: Epic,
+    project_docs: str,
+    epic_docs: str,
+    manager_conversation: str,
+    hitl_prefix: str,
+) -> str:
+    """Build the turn-0 prompt for a Reviewer session.
+
+    Seeds the reviewer with the epic's original intent, the docs, and the
+    Manager↔user conversation — which carries what the user requested at epic
+    start AND what the user subsequently agreed with the Manager (approved plan,
+    clarifications, decisions) plus the Manager's final report.  The agreed
+    conversation is the authoritative intent to check the branch against; it may
+    refine or override the original epic description.
+    """
+    parts: list[str] = []
+    parts.append(f"# Epic under review: {epic.title}\n\n{epic.description}")
+
+    if epic.acceptance_criteria:
+        parts.append(
+            f"\n# Acceptance Criteria\n\n{epic.acceptance_criteria}\n\n"
+            "These are the objective done-conditions. Judge whether the branch actually "
+            "meets every one of them."
+        )
+
+    if project_docs:
+        parts.append(f"\n# Project Documentation\n\n{project_docs}")
+
+    if epic_docs:
+        parts.append(f"\n# Epic Documentation\n\n{epic_docs}")
+
+    if manager_conversation.strip():
+        parts.append(
+            "\n# Manager ↔ user conversation (the agreed intent — verify against this)\n\n"
+            "This is the actual exchange between the user and the Manager: the original "
+            "request, the plan the user approved, any decisions or clarifications they "
+            "agreed on, and the Manager's final report. Where it refines the epic "
+            "description above, THIS is the authoritative intent. Do NOT take the "
+            "Manager's claims on trust — verify them against the diff.\n\n"
+            f"{manager_conversation.strip()}"
+        )
+
+    if hitl_prefix:
+        parts.append(hitl_prefix)
+
+    parts.append(
+        "\nReview the current branch now. Start with `read_branch_diff` to see the actual "
+        "change set, verify it against the epic's intent, the acceptance criteria, and the "
+        "agreed conversation above, inspect specific files as needed, and then use "
+        "`ask_user` to report your verdict and findings to the user."
     )
 
     return "\n".join(parts)

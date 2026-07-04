@@ -58,13 +58,14 @@ class LLMRoleSettings(BaseModel):
 
 
 class LLMRolesSettings(BaseModel):
-    """Optional per-role model overrides (manager / worker / evaluator / arbiter)."""
+    """Optional per-role model overrides (manager / worker / evaluator / arbiter / reviewer)."""
 
     model_config = ConfigDict(extra="forbid")
     manager: LLMRoleSettings = Field(default_factory=LLMRoleSettings)
     worker: LLMRoleSettings = Field(default_factory=LLMRoleSettings)
     evaluator: LLMRoleSettings = Field(default_factory=LLMRoleSettings)
     arbiter: LLMRoleSettings = Field(default_factory=LLMRoleSettings)
+    reviewer: LLMRoleSettings = Field(default_factory=LLMRoleSettings)
 
 
 class ConversationSummarySettings(BaseModel):
