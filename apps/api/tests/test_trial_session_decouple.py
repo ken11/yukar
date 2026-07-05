@@ -158,7 +158,7 @@ class TestResolveReturnsTrialId:
 
 
 def _root_of(client: AsyncClient) -> str:
-    return client._transport.app.state.settings.workspace_root  # type: ignore[attr-defined,union-attr]
+    return client._transport.app.state.settings.workspace_root  # type: ignore[attr-defined,union-attr]  # ty: ignore[unresolved-attribute]
 
 
 async def _create_first_trial(client: AsyncClient, project_id: str) -> tuple[str, dict[str, Any]]:

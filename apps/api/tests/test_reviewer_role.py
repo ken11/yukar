@@ -104,7 +104,7 @@ class TestReviewerPrompt:
                     content=[
                         ContentPart(text="Here is my plan: add auth.py."),
                         ContentPart(
-                            tool_use=ToolUseBlock(
+                            toolUse=ToolUseBlock(
                                 toolUseId="t1",
                                 name="ask_user",
                                 input={"question": "OAuth or password login?"},
@@ -128,7 +128,7 @@ class TestReviewerPrompt:
                     role="assistant",
                     content=[
                         ContentPart(
-                            tool_use=ToolUseBlock(toolUseId="t2", name="dispatch", input={})
+                            toolUse=ToolUseBlock(toolUseId="t2", name="dispatch", input={})
                         )
                     ],
                 ),
@@ -139,7 +139,7 @@ class TestReviewerPrompt:
                     role="user",
                     content=[
                         ContentPart(
-                            tool_result=ToolResultBlock(toolUseId="t2", text="worker output blob")
+                            toolResult=ToolResultBlock(toolUseId="t2", text="worker output blob")
                         )
                     ],
                 ),

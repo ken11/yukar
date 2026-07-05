@@ -293,7 +293,7 @@ export interface paths {
          *
          *     Raises:
          *         409: If a run is already active for this epic, an arbiter merge is in
-         *             progress, or the budget is exhausted.
+         *             progress, the epic is closed, or the budget is exhausted.
          */
         post: operations["start_review_api_projects__project_id__epics__epic_id__review_post"];
         delete?: never;
