@@ -253,6 +253,27 @@ async def create_thread(
         if epic is None:
             raise HTTPException(status_code=404, detail=f"Epic not found: {epic_id!r}")
 
+        # A trial's lifecycle (new trial / archive+new / same-branch continuation)
+        # must not change while ANY run holds this epic's single run slot — this
+        # includes a read-only REVIEWER run, whose ``manager_thread_id`` is the
+        # reviewer thread and is therefore invisible to a per-trial
+        # ``is_thread_run_active(<manager trial>)`` check.  Without this guard,
+        # "continue on current branch" (or "new trial") during an active review
+        # would archive the manager conversation and repoint ``active_thread_id``
+        # while the reviewer keeps the run slot — wedging the epic: the new trial
+        # can be neither run (409 run active) nor messaged (409 different trial)
+        # until the reviewer is stopped.  ``is_running`` is a strict superset of
+        # ``is_thread_run_active`` for this epic, so it subsumes the manager
+        # same-trial case too.
+        if body.role == "manager" and supervisor.is_running(project_id, epic_id):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "An active run is in progress for this epic (a manager or "
+                    "reviewer run). Stop it before creating or continuing a trial."
+                ),
+            )
+
         if body.role == "manager" and body.same_branch:
             # Continue the CURRENT trial with a fresh conversation: archive the
             # previous conversation (kept as history) but preserve its worktree so
@@ -275,14 +296,9 @@ async def create_thread(
                         "Create a trial (or run the Manager) first."
                     ),
                 )
-            if supervisor.is_thread_run_active(project_id, epic_id, active_entry.id):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Thread {active_entry.id!r} has an active run. "
-                        "Stop the run before continuing on the same branch."
-                    ),
-                )
+            # No per-trial run-active check here: the epic-level ``is_running``
+            # guard above already rejects same-branch continuation while any run
+            # (manager or reviewer) is active.
             inherited_trial_id = trial_id_of(active_entry)
             inherited_branch = _get_manager_branch(epic, active_entry)
             # Archive the previous conversation WITHOUT removing the worktree
@@ -311,16 +327,10 @@ async def create_thread(
                             "Archive it before creating a new one, or pass archive_active=true."
                         ),
                     )
-                # archive_active=True: atomically archive then create within the lock
-                # if a run is active, return 409 (recovery safety: exit without archiving)
-                if supervisor.is_thread_run_active(project_id, epic_id, existing_active.id):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            f"Thread {existing_active.id!r} has an active run. "
-                            "Stop the run before archiving."
-                        ),
-                    )
+                # archive_active=True: atomically archive then create within the lock.
+                # The epic-level ``is_running`` guard above already rejected this
+                # (409) if any run — manager or reviewer — is active, so reaching
+                # here means the archive is safe (no live run on the slot).
                 # Archive the existing active trial
                 existing_active.status = "archived"
                 await threads_repo.save_threads(root, project_id, epic_id, tf_existing)
@@ -626,11 +636,18 @@ async def archive_thread(
                 "Only manager threads can be archived.",
             )
 
-        # Refuse to archive while this trial's run is active.
-        if supervisor.is_thread_run_active(project_id, epic_id, thread_id):
+        # Refuse to archive while ANY run holds this epic's run slot.  A per-thread
+        # ``is_thread_run_active(thread_id)`` check would miss a read-only REVIEWER
+        # run (bound to the reviewer thread, not this manager thread), yet archiving
+        # tears down the manager trial's worktree that the reviewer is reading.
+        # ``is_running`` subsumes the this-trial case and also blocks the reviewer.
+        if supervisor.is_running(project_id, epic_id):
             raise HTTPException(
                 status_code=409,
-                detail=(f"Thread {thread_id!r} has an active run. Stop the run before archiving."),
+                detail=(
+                    f"Thread {thread_id!r} cannot be archived: an active run is in progress "
+                    "for this epic (a manager or reviewer run). Stop the run first."
+                ),
             )
 
         # Transition thread status to archived.

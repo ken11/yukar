@@ -80,7 +80,7 @@ const ja = {
     trialTitle: "タイトル（任意）",
     trialTitlePlaceholder: "例：Trial 2 / 別アプローチ（空欄で自動採番）",
     archive: "アーカイブ",
-    archiveStopFirst: "実行中のトライは先に停止してください。",
+    archiveStopFirst: "実行中の処理を先に停止してください（レビューも実行中に含まれます）。",
     archiveArchivedSection: "アーカイブ済みトライ",
     archiveReadOnly: "このトライはアーカイブ済みです（読み取り専用）。",
   },

@@ -138,16 +138,23 @@ async def run_action(
     epic_id: str,
     action: Literal["pause", "resume", "stop"],
     supervisor: SupervisorDep,
+    root: WorkspaceRootDep,
 ) -> dict[str, str]:
-    if not supervisor.is_running(project_id, epic_id):
-        raise HTTPException(status_code=404, detail="No active run for this epic")
-    if action == "pause":
-        await supervisor.pause(project_id, epic_id)
-    elif action == "resume":
-        await supervisor.resume(project_id, epic_id)
-    elif action == "stop":
-        await supervisor.stop(project_id, epic_id)
-    return {"status": action}
+    if supervisor.is_running(project_id, epic_id):
+        if action == "pause":
+            await supervisor.pause(project_id, epic_id)
+        elif action == "resume":
+            await supervisor.resume(project_id, epic_id)
+        elif action == "stop":
+            await supervisor.stop(project_id, epic_id)
+        return {"status": action}
+    # No live run for this epic.  A stop may still target a run *parked* in
+    # awaiting_input (persisted across a server restart, per recovery.py): the UI
+    # shows a Stop button driven by the persisted RunState.  Clear it so Stop
+    # works instead of 404ing.  pause/resume only make sense on a live run.
+    if action == "stop" and await supervisor.stop_parked_awaiting(root, project_id, epic_id):
+        return {"status": "stop"}
+    raise HTTPException(status_code=404, detail="No active run for this epic")
 
 
 @router.get("/run/state")

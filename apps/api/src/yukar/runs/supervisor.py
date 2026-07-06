@@ -680,6 +680,43 @@ class RunSupervisor:
         if cancelled_error is not None:
             raise cancelled_error
 
+    async def stop_parked_awaiting(self, root: str, project_id: str, epic_id: str) -> bool:
+        """Stop a run that is *parked* in awaiting_input with no live task.
+
+        ``recovery.py`` intentionally preserves an awaiting_input run on disk
+        across a server restart rather than resuming it (the user is expected to
+        reply, which starts a continuation).  Such a run has NO live task, so
+        ``is_running`` is False — yet the persisted ``RunState`` still drives the
+        UI's awaiting banner *and* Stop button.  Without this, ``POST /run/stop``
+        would 404 and the user could not dismiss the parked question (a reviewer
+        parked at ``ask_user`` after an auto-reload is the common case).
+
+        Reset the persisted state to idle (restartable) and publish
+        ``RunStoppedEvent`` so subscribed clients converge — mirroring a live
+        stop's cleanup (see ``_update_state_idle`` and orchestrator.py stop arm).
+
+        Returns:
+            True if a parked awaiting_input run was cleared; False if a live run
+            exists (callers must use ``stop()`` for that) or nothing is parked.
+        """
+        from yukar.events import bus as event_bus
+        from yukar.models.events import RunStoppedEvent
+        from yukar.storage import state_repo
+
+        if self.is_running(project_id, epic_id):
+            return False
+        state = await state_repo.get_state(root, project_id, epic_id)
+        if state is None or state.status != "awaiting_input":
+            return False
+        run_id = state.run_id
+        await _update_state_idle(root, project_id, epic_id)
+        event_bus.publish(
+            project_id,
+            epic_id,
+            RunStoppedEvent(project_id=project_id, epic_id=epic_id, run_id=run_id),
+        )
+        return True
+
     def get_run_id(self, project_id: str, epic_id: str) -> str | None:
         key = self._key(project_id, epic_id)
         if key not in self._runs:

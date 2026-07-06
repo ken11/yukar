@@ -12,7 +12,7 @@ per-role model override.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
 import pytest
 from httpx import AsyncClient
@@ -628,3 +628,196 @@ class TestReviewerLegacyEpic:
         assert loaded is not None
         assert loaded.active_thread_id is None
         assert loaded.status == "in_review"
+
+
+# ---------------------------------------------------------------------------
+# Regression: a live reviewer run holds the epic's single run slot, so trial
+# mutations must be rejected — even though the reviewer's run is bound to the
+# reviewer thread (invisible to a per-manager-trial run check).  Without the
+# epic-level is_running guard, "continue on current branch" would archive the
+# manager conversation and repoint active_thread_id while the reviewer keeps the
+# slot, wedging the epic (new trial can be neither run nor messaged).
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerBlocksTrialMutations:
+    @staticmethod
+    def _inject_reviewer_run(sup, root: str, pid: str, eid: str, reviewer_thread_id: str) -> None:  # type: ignore[no-untyped-def]
+        from unittest.mock import MagicMock
+
+        from yukar.runs.supervisor import _RunHandle
+
+        task = MagicMock()
+        task.done.return_value = False
+        sup._runs[sup._key(pid, eid)] = _RunHandle(
+            run_id="run-rev",
+            runner=MagicMock(),
+            task=task,
+            root=root,
+            project_id=pid,
+            epic_id=eid,
+            manager_thread_id=reviewer_thread_id,  # bound to the reviewer, not th-M
+        )
+
+    @staticmethod
+    async def _setup(  # type: ignore[no-untyped-def]
+        tmp_path,
+        *,
+        manager_status: Literal["active", "resolved", "failed", "archived"] = "active",
+    ):
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project
+        from yukar.models.thread import ThreadEntry
+        from yukar.runs.supervisor import RunSupervisor
+        from yukar.storage import threads_repo
+        from yukar.storage.epic_repo import save_epic
+        from yukar.storage.project_repo import save_project
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-rev-guard", "EP-rev-guard"
+        await save_project(root, Project(id=pid, name=pid))
+        await save_epic(
+            root,
+            pid,
+            Epic(
+                id=eid,
+                slug="s",
+                title="T",
+                status="in_review",
+                branch="yukar/ep-rev-guard",
+                active_thread_id="th-M",
+            ),
+        )
+        await threads_repo.add_thread(
+            root,
+            pid,
+            eid,
+            ThreadEntry(
+                id="th-M",
+                title="Trial 1",
+                role="manager",
+                status=manager_status,
+                branch="yukar/ep-rev-guard",
+                trial_id="th-M",
+            ),
+        )
+        await threads_repo.add_thread(
+            root,
+            pid,
+            eid,
+            ThreadEntry(id="th-REV", title="Review 1", role="reviewer", status="active"),
+        )
+        sup = RunSupervisor()
+        TestReviewerBlocksTrialMutations._inject_reviewer_run(sup, root, pid, eid, "th-REV")
+        return root, pid, eid, sup
+
+    @pytest.mark.asyncio
+    async def test_same_branch_409_while_reviewer_active(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi import HTTPException
+
+        from yukar.api.routers import threads as threads_router
+        from yukar.api.routers.threads import CreateThreadRequest
+        from yukar.storage import threads_repo
+        from yukar.storage.epic_repo import get_epic
+
+        root, pid, eid, sup = await self._setup(tmp_path)
+        # The per-manager-trial check the old guard used is blind to the reviewer:
+        assert sup.is_running(pid, eid) is True
+        assert sup.is_thread_run_active(pid, eid, "th-M") is False
+
+        with pytest.raises(HTTPException) as ei:
+            await threads_router.create_thread(
+                project_id=pid,
+                epic_id=eid,
+                body=CreateThreadRequest(role="manager", same_branch=True, title=""),
+                root=root,
+                supervisor=sup,
+            )
+        assert ei.value.status_code == 409
+
+        # The manager conversation was NOT archived and active_thread_id is intact.
+        tf = await threads_repo.get_threads(root, pid, eid)
+        assert next(t for t in tf.threads if t.id == "th-M").status == "active"
+        loaded = await get_epic(root, pid, eid)
+        assert loaded is not None
+        assert loaded.active_thread_id == "th-M"
+
+    @pytest.mark.asyncio
+    async def test_archive_active_new_trial_409_while_reviewer_active(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi import HTTPException
+
+        from yukar.api.routers import threads as threads_router
+        from yukar.api.routers.threads import CreateThreadRequest
+        from yukar.storage import threads_repo
+
+        root, pid, eid, sup = await self._setup(tmp_path)
+        with pytest.raises(HTTPException) as ei:
+            await threads_router.create_thread(
+                project_id=pid,
+                epic_id=eid,
+                body=CreateThreadRequest(role="manager", archive_active=True, title="Trial 2"),
+                root=root,
+                supervisor=sup,
+            )
+        assert ei.value.status_code == 409
+        tf = await threads_repo.get_threads(root, pid, eid)
+        assert next(t for t in tf.threads if t.id == "th-M").status == "active"
+
+    @pytest.mark.asyncio
+    async def test_new_trial_409_while_reviewer_active_after_manager_resolved(
+        self, tmp_path
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Even when the manager trial is finished (resolved) — the path with no
+        archive_active — a new trial is blocked while the reviewer holds the slot."""
+        from fastapi import HTTPException
+
+        from yukar.api.routers import threads as threads_router
+        from yukar.api.routers.threads import CreateThreadRequest
+
+        root, pid, eid, sup = await self._setup(tmp_path, manager_status="resolved")
+        with pytest.raises(HTTPException) as ei:
+            await threads_router.create_thread(
+                project_id=pid,
+                epic_id=eid,
+                body=CreateThreadRequest(role="manager", title="Trial 2"),
+                root=root,
+                supervisor=sup,
+            )
+        assert ei.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_archive_thread_409_while_reviewer_active(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi import HTTPException
+
+        from yukar.api.routers import threads as threads_router
+        from yukar.storage import threads_repo
+
+        root, pid, eid, sup = await self._setup(tmp_path)
+        with pytest.raises(HTTPException) as ei:
+            await threads_router.archive_thread(
+                project_id=pid,
+                epic_id=eid,
+                thread_id="th-M",
+                root=root,
+                supervisor=sup,
+            )
+        assert ei.value.status_code == 409
+        tf = await threads_repo.get_threads(root, pid, eid)
+        assert next(t for t in tf.threads if t.id == "th-M").status == "active"
+
+    @pytest.mark.asyncio
+    async def test_user_thread_creation_allowed_while_reviewer_active(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The guard is scoped to trial (manager) mutations; ad-hoc user threads
+        do not touch trials/active_thread_id and remain creatable during a run."""
+        from yukar.api.routers import threads as threads_router
+        from yukar.api.routers.threads import CreateThreadRequest
+
+        root, pid, eid, sup = await self._setup(tmp_path)
+        entry = await threads_router.create_thread(
+            project_id=pid,
+            epic_id=eid,
+            body=CreateThreadRequest(role="user", title="notes"),
+            root=root,
+            supervisor=sup,
+        )
+        assert entry.role == "user"

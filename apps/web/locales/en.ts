@@ -88,7 +88,7 @@ const en = {
     trialTitle: "Title (optional)",
     trialTitlePlaceholder: "e.g. Trial 2 / Alternative approach (auto-numbered if empty)",
     archive: "Archive",
-    archiveStopFirst: "Stop the active run before archiving.",
+    archiveStopFirst: "Stop the active run first (a review counts as an active run).",
     archiveArchivedSection: "Archived Trials",
     archiveReadOnly: "This trial is archived (read-only).",
   },
