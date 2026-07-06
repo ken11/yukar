@@ -721,9 +721,11 @@ class TestReviewerBlocksTrialMutations:
         from yukar.storage.epic_repo import get_epic
 
         root, pid, eid, sup = await self._setup(tmp_path)
-        # The per-manager-trial check the old guard used is blind to the reviewer:
+        # The live run is bound to the reviewer thread (th-REV), not the manager
+        # trial (th-M) — exactly what a per-manager-trial run check would miss, so
+        # the guard must reject on the epic-level is_running instead.
         assert sup.is_running(pid, eid) is True
-        assert sup.is_thread_run_active(pid, eid, "th-M") is False
+        assert sup._runs[sup._key(pid, eid)].manager_thread_id == "th-REV"
 
         with pytest.raises(HTTPException) as ei:
             await threads_router.create_thread(

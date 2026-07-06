@@ -256,15 +256,14 @@ async def create_thread(
         # A trial's lifecycle (new trial / archive+new / same-branch continuation)
         # must not change while ANY run holds this epic's single run slot — this
         # includes a read-only REVIEWER run, whose ``manager_thread_id`` is the
-        # reviewer thread and is therefore invisible to a per-trial
-        # ``is_thread_run_active(<manager trial>)`` check.  Without this guard,
-        # "continue on current branch" (or "new trial") during an active review
-        # would archive the manager conversation and repoint ``active_thread_id``
-        # while the reviewer keeps the run slot — wedging the epic: the new trial
-        # can be neither run (409 run active) nor messaged (409 different trial)
-        # until the reviewer is stopped.  ``is_running`` is a strict superset of
-        # ``is_thread_run_active`` for this epic, so it subsumes the manager
-        # same-trial case too.
+        # reviewer thread, so a run check scoped to the manager trial would miss
+        # it.  Without this guard, "continue on current branch" (or "new trial")
+        # during an active review would archive the manager conversation and
+        # repoint ``active_thread_id`` while the reviewer keeps the run slot —
+        # wedging the epic: the new trial can be neither run (409 run active) nor
+        # messaged (409 different trial) until the reviewer is stopped.  The
+        # epic-level ``is_running`` catches the reviewer and the manager
+        # same-trial case alike.
         if body.role == "manager" and supervisor.is_running(project_id, epic_id):
             raise HTTPException(
                 status_code=409,
@@ -636,11 +635,11 @@ async def archive_thread(
                 "Only manager threads can be archived.",
             )
 
-        # Refuse to archive while ANY run holds this epic's run slot.  A per-thread
-        # ``is_thread_run_active(thread_id)`` check would miss a read-only REVIEWER
-        # run (bound to the reviewer thread, not this manager thread), yet archiving
-        # tears down the manager trial's worktree that the reviewer is reading.
-        # ``is_running`` subsumes the this-trial case and also blocks the reviewer.
+        # Refuse to archive while ANY run holds this epic's run slot.  A run check
+        # scoped to this manager thread would miss a read-only REVIEWER run (bound
+        # to the reviewer thread), yet archiving tears down the manager trial's
+        # worktree that the reviewer is reading.  The epic-level ``is_running``
+        # blocks both the this-trial run and the reviewer.
         if supervisor.is_running(project_id, epic_id):
             raise HTTPException(
                 status_code=409,

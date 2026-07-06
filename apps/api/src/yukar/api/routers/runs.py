@@ -77,7 +77,7 @@ async def start_run(
 
     # TOCTOU guard: hold epic_thread_lock while resolving the active trial and
     # registering the run.  This serialises against archive_thread / create_thread
-    # which also hold the same lock when they check is_thread_run_active.
+    # which hold the same lock when they check is_running before mutating trials.
     # supervisor.start() acquires _start_lock internally; lock order is
     # epic_thread_lock (outer) → _start_lock (inner) — fixed, no cycle.
     async with epic_thread_lock(project_id, epic_id):

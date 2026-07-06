@@ -408,18 +408,6 @@ class RunSupervisor:
             return False
         return not self._runs[key].task.done()
 
-    def is_thread_run_active(self, project_id: str, epic_id: str, thread_id: str) -> bool:
-        """Return True if an active run is driving the given manager thread.
-
-        Used by the threads router to check whether a trial's run is still active
-        before archiving — avoids direct _runs/_handle private-attribute access.
-        """
-        key = self._key(project_id, epic_id)
-        handle = self._runs.get(key)
-        return (
-            handle is not None and not handle.task.done() and handle.manager_thread_id == thread_id
-        )
-
     async def start(
         self,
         root: str,

@@ -879,64 +879,12 @@ class TestM4Title:
 
 
 # ---------------------------------------------------------------------------
-# Test 11: is_thread_run_active (TestM5WorktreePath)
+# Test 11: worktree path selection by active_thread_id (TestWorktreePathSelection)
 # ---------------------------------------------------------------------------
 
 
-class TestM5WorktreePath:
-    """supervisor.is_thread_run_active returns correct judgements."""
-
-    def test_is_thread_run_active_returns_true_for_active_run(self) -> None:
-        """is_thread_run_active returns True when the handle matches and task is not done."""
-        from unittest.mock import MagicMock
-
-        from yukar.runs.supervisor import RunSupervisor, _RunHandle
-
-        sup = RunSupervisor()
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        handle = _RunHandle(
-            run_id="run-1",
-            runner=MagicMock(),
-            task=mock_task,
-            root="/tmp",
-            project_id="p",
-            epic_id="EP-1",
-            manager_thread_id="th-abc",
-        )
-        sup._runs[("p", "EP-1")] = handle
-
-        assert sup.is_thread_run_active("p", "EP-1", "th-abc") is True
-        assert sup.is_thread_run_active("p", "EP-1", "th-other") is False
-
-    def test_is_thread_run_active_returns_false_when_no_run(self) -> None:
-        """is_thread_run_active returns False when no run is registered."""
-        from yukar.runs.supervisor import RunSupervisor
-
-        sup = RunSupervisor()
-        assert sup.is_thread_run_active("p", "EP-1", "th-abc") is False
-
-    def test_is_thread_run_active_returns_false_when_task_done(self) -> None:
-        """is_thread_run_active returns False when the task has completed."""
-        from unittest.mock import MagicMock
-
-        from yukar.runs.supervisor import RunSupervisor, _RunHandle
-
-        sup = RunSupervisor()
-        mock_task = MagicMock()
-        mock_task.done.return_value = True  # task is finished
-        handle = _RunHandle(
-            run_id="run-1",
-            runner=MagicMock(),
-            task=mock_task,
-            root="/tmp",
-            project_id="p",
-            epic_id="EP-1",
-            manager_thread_id="th-abc",
-        )
-        sup._runs[("p", "EP-1")] = handle
-
-        assert sup.is_thread_run_active("p", "EP-1", "th-abc") is False
+class TestWorktreePathSelection:
+    """paths.worktree_dir keys off the active trial id (with a 'manager' fallback)."""
 
     @pytest.mark.asyncio
     async def test_active_thread_id_used_for_arbiter_worktree(self, tmp_path: Any) -> None:
