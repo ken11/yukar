@@ -250,15 +250,45 @@ class TestSameBranchSession:
         assert (wt / "sentinel.txt").exists(), "worktree contents must be preserved"
 
     @pytest.mark.asyncio
-    async def test_same_branch_requires_active_trial(self, app_client: AsyncClient) -> None:
-        """same_branch with no manager trial to continue → 409."""
+    async def test_same_branch_no_prior_trial_starts_on_epic_branch(
+        self, app_client: AsyncClient
+    ) -> None:
+        """same_branch is 'new session, keep the branch' — it must NOT require a
+        live conversation to continue.  With no prior manager trial it still
+        succeeds, starting the first session on the epic's canonical branch."""
         pid = "sb-none-proj"
         epic_id = await _setup_project_and_epic(app_client, pid)
+        epic = (await app_client.get(f"/api/projects/{pid}/epics/{epic_id}")).json()
         r = await app_client.post(
             f"/api/projects/{pid}/epics/{epic_id}/threads",
             json={"title": "Continue", "role": "manager", "same_branch": True},
         )
-        assert r.status_code == 409, r.text
+        assert r.status_code == 201, r.text
+        assert r.json()["branch"] == epic["branch"]
+
+    @pytest.mark.asyncio
+    async def test_same_branch_recovers_from_archived_trial(self, app_client: AsyncClient) -> None:
+        """Recovery: after the manager trial was archived (active_thread_id cleared),
+        'continue on current branch' must still start a fresh session on that
+        branch — inheriting the archived trial's branch/trial_id — and repoint
+        active_thread_id at the new conversation (repairing the orphaned epic)."""
+        pid = "sb-archived-proj"
+        epic_id, first = await _create_first_trial(app_client, pid)
+        ra = await app_client.post(
+            f"/api/projects/{pid}/epics/{epic_id}/threads/{first['id']}/archive"
+        )
+        assert ra.status_code == 200, ra.text
+
+        r = await app_client.post(
+            f"/api/projects/{pid}/epics/{epic_id}/threads",
+            json={"title": "Continue", "role": "manager", "same_branch": True},
+        )
+        assert r.status_code == 201, r.text
+        new = r.json()
+        assert new["branch"] == first["branch"]
+        assert new["trial_id"] == (first.get("trial_id") or first["id"])
+        epic = (await app_client.get(f"/api/projects/{pid}/epics/{epic_id}")).json()
+        assert epic["active_thread_id"] == new["id"]
 
     @pytest.mark.asyncio
     async def test_same_branch_with_active_run_returns_409(self, app_client: AsyncClient) -> None:

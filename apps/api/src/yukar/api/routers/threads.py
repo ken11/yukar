@@ -274,36 +274,45 @@ async def create_thread(
             )
 
         if body.role == "manager" and body.same_branch:
-            # Continue the CURRENT trial with a fresh conversation: archive the
-            # previous conversation (kept as history) but preserve its worktree so
-            # the new conversation continues on the same branch.
-            tf_existing = await threads_repo.get_threads(root, project_id, epic_id)
-            active_id = epic.active_thread_id or "manager"
-            active_entry = next(
-                (
-                    t
-                    for t in tf_existing.threads
-                    if t.id == active_id and t.role == "manager" and t.status != "archived"
-                ),
-                None,
-            )
-            if active_entry is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "No active manager trial to continue. "
-                        "Create a trial (or run the Manager) first."
-                    ),
-                )
+            # "Continue on current branch" = start a FRESH conversation that keeps
+            # the current branch (``epic.branch``) + its worktree.  The branch is
+            # the durable artifact; a fresh session merely attaches to it.  So this
+            # must NOT depend on a live (non-archived) manager conversation existing
+            # — the whole point is to begin a NEW session, keeping only the branch.
+            # It therefore works even when the previous conversation was archived or
+            # the epic was left without an active pointer (e.g. an interrupted flow
+            # or a stale state), which also repairs such an orphaned epic by
+            # repointing ``active_thread_id`` at the new conversation below.
+            #
             # No per-trial run-active check here: the epic-level ``is_running``
-            # guard above already rejects same-branch continuation while any run
-            # (manager or reviewer) is active.
-            inherited_trial_id = trial_id_of(active_entry)
-            inherited_branch = _get_manager_branch(epic, active_entry)
-            # Archive the previous conversation WITHOUT removing the worktree
-            # (the trial continues under the new conversation).
-            active_entry.status = "archived"
-            await threads_repo.save_threads(root, project_id, epic_id, tf_existing)
+            # guard above already rejects continuation while any run is active.
+            tf_existing = await threads_repo.get_threads(root, project_id, epic_id)
+            # Resolve the trial (branch+worktree line) to keep, keyed on the current
+            # branch.  Prefer the epic's active pointer when it sits on this branch,
+            # else the most recent manager trial on this branch (archived eligible),
+            # so we inherit and share that trial's worktree.
+            inherited_branch = epic.branch
+            on_branch_managers = [
+                t
+                for t in tf_existing.threads
+                if t.role == "manager" and _get_manager_branch(epic, t) == epic.branch
+            ]
+            base_entry: ThreadEntry | None = None
+            if epic.active_thread_id is not None:
+                base_entry = next(
+                    (t for t in on_branch_managers if t.id == epic.active_thread_id), None
+                )
+            if base_entry is None:
+                base_entry = on_branch_managers[-1] if on_branch_managers else None
+            # When no manager trial exists on this branch yet, inherited_trial_id
+            # stays None so the new conversation anchors a fresh trial on the branch.
+            inherited_trial_id = trial_id_of(base_entry) if base_entry is not None else None
+            # Archive a still-live predecessor conversation (kept as history) WITHOUT
+            # removing its worktree — the trial continues under the new conversation.
+            # An already-archived predecessor is simply inherited (nothing to do).
+            if base_entry is not None and base_entry.status != "archived":
+                base_entry.status = "archived"
+                await threads_repo.save_threads(root, project_id, epic_id, tf_existing)
 
         elif body.role == "manager":
             tf_existing = await threads_repo.get_threads(root, project_id, epic_id)

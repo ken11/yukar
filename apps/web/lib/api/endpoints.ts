@@ -4,7 +4,7 @@
  */
 
 import type { components, operations } from "@yukar/api-types";
-import { type ApiError, apiFetch } from "./client";
+import { ApiError, apiFetch } from "./client";
 
 export { ApiError } from "./client";
 
@@ -114,6 +114,21 @@ export type ProjectLifecycleEvent =
   | RunStoppedEvent
   | RunPausedEvent
   | RunResumedEvent;
+
+/**
+ * Extract the backend's human-readable `detail` string from an ApiError, if the
+ * body carries one (FastAPI HTTPException → `{ detail: "..." }`).  Returns null
+ * when there is no string detail, so callers can fall back to a generic message.
+ * Prefer this over a fixed message for 4xx so the real reason (e.g. "No active
+ * manager trial to continue" vs "An active run is in progress") reaches the user
+ * instead of a one-size-fits-all guess.
+ */
+export function extractDetail(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  const body = err.body as { detail?: unknown } | null | undefined;
+  const detail = body?.detail;
+  return typeof detail === "string" && detail.trim() ? detail : null;
+}
 
 /** Extract conflicts array from a 409 ApiError body if present */
 export function extractConflicts(err: ApiError): string[] {

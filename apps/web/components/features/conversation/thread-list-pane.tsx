@@ -10,7 +10,7 @@ import { ThreadTreePanel } from "@/components/features/epics/thread-tree-panel";
 import { NewThreadModal } from "@/components/features/threads/new-thread-modal";
 import { Icon } from "@/components/icon";
 import type { ThreadEntry } from "@/lib/api/endpoints";
-import { ApiError, archiveThread, listThreads } from "@/lib/api/endpoints";
+import { ApiError, archiveThread, extractDetail, listThreads } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
 import { useT } from "@/lib/i18n/provider";
@@ -198,8 +198,9 @@ function ThreadRow({
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        // Run is active — guide user with inline banner (DESIGN.md: window.alert is forbidden)
-        setArchiveError(t("common.archiveStopFirst"));
+        // Show the backend's real reason (active run, etc.) rather than a fixed
+        // guess (DESIGN.md: window.alert is forbidden — use an inline banner).
+        setArchiveError(extractDetail(err) ?? t("common.archiveStopFirst"));
       } else {
         setArchiveError(err instanceof Error ? err.message : "Archive failed");
       }

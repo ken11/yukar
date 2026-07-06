@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Icon } from "@/components/icon";
 import { Button } from "@/components/ui/button";
 import { FormDialog } from "@/components/ui/form-dialog";
-import { ApiError, createThread } from "@/lib/api/endpoints";
+import { ApiError, createThread, extractDetail } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { useT } from "@/lib/i18n/provider";
 
@@ -87,7 +87,9 @@ export function NewThreadModal({
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        setError(t("common.archiveStopFirst"));
+        // Surface the backend's real reason (active run vs. no active trial vs.
+        // dangling active_thread_id) instead of a fixed "stop the run" guess.
+        setError(extractDetail(err) ?? t("common.archiveStopFirst"));
       } else {
         setError(err instanceof Error ? err.message : "Failed to create session");
       }
