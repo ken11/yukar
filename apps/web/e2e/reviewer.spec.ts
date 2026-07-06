@@ -211,3 +211,115 @@ test.describe
       expect(postResponse.status(), "Reply to the reviewer is accepted (201)").toBe(201);
     });
   });
+
+/**
+ * Reviewer stays available after approval — regression guard for the case
+ * where the Manager finishes and the user approves the epic (→ completed)
+ * before asking the Reviewer to check. The "Ask Reviewer" button must remain
+ * on a completed epic (not only while in_review), and POST /review must accept
+ * a completed (non-closed) epic without moving it off completed.
+ */
+test.describe
+  .serial("reviewer available on a completed epic", () => {
+    const state = {
+      projectId: "",
+      epicId: "",
+      managerThreadId: "",
+    };
+
+    test("setup: run to in_review, then approve → completed", async ({ page }) => {
+      await page.goto("/projects");
+      await page.getByTestId("new-project-btn").click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByTestId("project-name-input").fill("reviewer-completed-project");
+      await page.getByTestId("repo-path-input-0").fill(SEED.repoDirs.reviewer);
+      await page.getByTestId("form-dialog-submit").click();
+
+      const row = page
+        .locator('[data-testid^="project-row-"]')
+        .filter({ hasText: "reviewer-completed-project" });
+      await expect(row).toBeVisible({ timeout: 15_000 });
+      state.projectId = (await row.getAttribute("data-testid"))?.replace("project-row-", "") ?? "";
+      expect(state.projectId).toBeTruthy();
+
+      await page.goto(`/projects/${state.projectId}`);
+      await page.getByTestId("new-epic-btn").first().click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByTestId("epic-title-input").fill("Completed reviewer epic");
+      await page.getByTestId("epic-description-input").fill("Create hello.py and util.py.");
+      await page.getByTestId("epic-ac-input").fill("hello.py exists and prints 'hello'");
+      await page.getByTestId("form-dialog-submit").click();
+
+      await page.waitForURL(/\/projects\/[^/]+\/epics\/[^/]+/, { timeout: 15_000 });
+      state.epicId = page.url().match(/\/epics\/([^/?#]+)/)?.[1] ?? "";
+      expect(state.epicId).toBeTruthy();
+
+      await page.getByTestId("start-run-btn").click();
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(
+              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+            );
+            return (await res.json()).status;
+          },
+          { timeout: 90_000, intervals: [500, 1000, 1000] },
+        )
+        .toBe("in_review");
+
+      const eRes = await page.request.get(`/api/projects/${state.projectId}/epics/${state.epicId}`);
+      const epic: { active_thread_id?: string | null } = await eRes.json();
+      state.managerThreadId = epic.active_thread_id ?? "manager";
+      expect(state.managerThreadId).toBeTruthy();
+
+      // Approve from the UI (in_review → completed) — the run is idle after in_review.
+      await page.goto(
+        `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
+      );
+      await page.getByTestId("approve-epic-btn").click();
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(
+              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+            );
+            return (await res.json()).status;
+          },
+          { timeout: 15_000, intervals: [500, 1000] },
+        )
+        .toBe("completed");
+    });
+
+    test("Ask Reviewer is available on a completed epic and starts a review", async ({ page }) => {
+      expect(state.managerThreadId).toBeTruthy();
+      await page.goto(
+        `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
+      );
+
+      // The fix: the reviewer button remains available after approval (completed),
+      // not only while in_review.
+      await expect(
+        page.getByTestId("start-review-btn"),
+        "Ask Reviewer is shown on a completed epic",
+      ).toBeVisible({ timeout: 15_000 });
+
+      const [reviewResponse] = await Promise.all([
+        page.waitForResponse(
+          (resp) => resp.url().endsWith("/review") && resp.request().method() === "POST",
+          { timeout: 20_000 },
+        ),
+        page.getByTestId("start-review-btn").first().click(),
+      ]);
+      expect(reviewResponse.status(), "POST /review is accepted for a completed epic").toBe(201);
+      const reviewer = await reviewResponse.json();
+      expect(reviewer.role, "The new thread is a reviewer conversation").toBe("reviewer");
+
+      await page.waitForURL(new RegExp(`/threads/${reviewer.id}`), { timeout: 15_000 });
+
+      // Starting a review must not move the epic off completed (reviewer is read-only).
+      const eRes = await page.request.get(`/api/projects/${state.projectId}/epics/${state.epicId}`);
+      expect((await eRes.json()).status, "Reviewer leaves the completed epic completed").toBe(
+        "completed",
+      );
+    });
+  });

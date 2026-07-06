@@ -408,9 +408,14 @@ export function RunControlsBar({
     return null;
   }
 
-  if (isCompleted) {
+  // Completed epic: reachable via the persisted run status (state.yaml) or the
+  // user-approved epic status. Either way the work is done and idle, so the
+  // read-only Reviewer must stay available — the user can still ask it to
+  // verify the branch after approval, not only while in_review.
+  if (isCompleted || epicStatus === "completed") {
     return (
       <>
+        {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
         <button
           type="button"
           data-testid="rerun-btn"
@@ -422,6 +427,22 @@ export function RunControlsBar({
           <Icon name="restart_alt" className="text-[16px]" />
           <span className="hidden sm:inline">
             {runMutation.isPending ? t("common.starting") : t("common.rerun")}
+          </span>
+        </button>
+        <button
+          type="button"
+          data-testid="start-review-btn"
+          onClick={() => {
+            setReviewError(null);
+            reviewMutation.mutate();
+          }}
+          disabled={reviewMutation.isPending}
+          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+          title={t("epic.reviewCheckTitle")}
+        >
+          <Icon name="fact_check" className="text-[16px]" />
+          <span className="hidden sm:inline">
+            {reviewMutation.isPending ? "…" : t("epic.reviewCheck")}
           </span>
         </button>
         <button
