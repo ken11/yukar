@@ -244,7 +244,7 @@ export function SettingsFormClient({ initialSettings }: SettingsFormClientProps)
             label={st.model.globalModel}
             hint={
               provider === "anthropic"
-                ? "e.g. claude-sonnet-4-6"
+                ? "e.g. claude-sonnet-5, claude-fable-5, claude-sonnet-4-6"
                 : provider === "fake"
                   ? "Any string (fake provider ignores model ID)"
                   : "e.g. us.anthropic.claude-sonnet-4-6-20251201-v1:0"

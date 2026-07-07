@@ -60,6 +60,25 @@ class TestPricing:
         cost = compute_cost_usd("claude-fable-5", input_tokens=1_000_000, output_tokens=0)
         assert abs(cost - 10.0) < 1e-9
 
+    def test_sonnet_5(self) -> None:
+        from yukar.usage.pricing import compute_cost_usd
+
+        # Standard Sonnet 5 rate: input=3.0, output=15.0 per 1M.
+        cost = compute_cost_usd("claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000)
+        assert abs(cost - (3.0 + 15.0)) < 1e-9
+
+    def test_sonnet_5_bedrock_arn_does_not_collide_with_sonnet_4(self) -> None:
+        """A Sonnet 5 Bedrock id resolves to the sonnet-5 entry, not a sonnet-4-* one."""
+        from yukar.usage.pricing import get_pricing
+
+        five = get_pricing("us.anthropic.claude-sonnet-5-20260514-v1:0")
+        four = get_pricing("us.anthropic.claude-sonnet-4-6-20251201-v1:0")
+        # Both must resolve (not fall through to None → zeroed cost attribution).
+        assert five is not None
+        assert four is not None
+        assert five.input == 3.0
+        assert four.input == 3.0
+
     def test_cache_read_tokens(self) -> None:
         from yukar.usage.pricing import compute_cost_usd
 

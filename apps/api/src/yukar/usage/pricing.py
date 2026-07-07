@@ -12,10 +12,15 @@ entry whose key is found in the model id wins.  Unknown models are assigned
 zero cost and a warning is logged.
 
 Model id examples that resolve correctly:
+  - "claude-sonnet-5"             → sonnet-5 entry
   - "claude-sonnet-4-6"            → sonnet-4-6 entry
   - "anthropic.claude-sonnet-4-6-20250514-v1:0" → sonnet-4-6 entry
   - "us.anthropic.claude-opus-4-7-20250514-v1:0" → opus-4-7 entry
+  - "claude-fable-5"              → fable-5 entry
   - "amazon.titan-embed-text-v2:0" → titan-embed-text-v2 entry
+
+Ordering note: "sonnet-5" is not a substring of any "sonnet-4-*" id and vice
+versa, so the Sonnet 5 / Sonnet 4.x entries never collide regardless of order.
 """
 
 from __future__ import annotations
@@ -55,6 +60,16 @@ _PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     (
         "opus-4-1",
         ModelPricing(input=15.0, output=75.0, cache_write=18.75, cache_read=1.50),
+    ),
+    # Sonnet 5 — standard rate $3/$15 per 1M (same as Sonnet 4.6).  An
+    # introductory discount of $2/$10 applies through 2026-08-31; it is
+    # deliberately NOT encoded here because this table has no time logic and
+    # would silently go stale after that date.  Standard rates also keep cost
+    # estimates conservative (the budget stop-gate over- rather than
+    # under-counts spend during the intro window).
+    (
+        "sonnet-5",
+        ModelPricing(input=3.0, output=15.0, cache_write=3.75, cache_read=0.30),
     ),
     # Sonnet 4 variants
     (
