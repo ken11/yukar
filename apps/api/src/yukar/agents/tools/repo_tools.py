@@ -51,6 +51,13 @@ def make_repo_tools(
         Uses FAISS vector search. Returns the top-k most semantically similar
         chunks to *query*.
 
+        NOTE: the index is built from the project's DEFAULT branch at run start
+        and is NOT rebuilt per epic branch/worktree. Results therefore reflect the
+        default branch, NOT changes made on the current epic branch. To see a
+        branch's actual work, use ``read_branch_diff`` (Manager) or ``repo_grep`` /
+        ``read_diff(base_branch=...)`` (Worker/Evaluator), which read the live
+        worktree.
+
         Args:
             query: Natural-language or code description of what to find.
             top_k: Maximum number of results (default 8).

@@ -121,7 +121,7 @@ export const FAKE_SCRIPT = JSON.stringify({
     {
       type: "tool_use",
       tool_name: "fs_read",
-      tool_input: { path: "hello.py" },
+      tool_input: { path: "hello.py", repo: "myrepo" },
     },
     {
       type: "tool_use",

@@ -32,6 +32,51 @@ from yukar.sandbox.path_guard import PathGuardError
 _MAX_READ_BYTES = 1 * 1024 * 1024  # 1 MiB
 
 
+def read_file(ctx: AgentContext, path: str) -> dict[str, Any]:
+    """Read a file's text content inside *ctx*'s worktree (read-only core).
+
+    Shared by the single-repo ``fs_read`` tool and the multi-repo overview
+    ``fs_read`` (which resolves a per-repo ctx first), so there is exactly one
+    implementation of the read + containment + size-limit logic.  Gitignored or
+    outside-worktree paths are treated as non-existent (spec §6.6).
+
+    Returns a ``make_success``/``make_error`` dict.
+    """
+    try:
+        resolved = ctx.path_guard.resolve(path)
+    except PathGuardError:
+        # Treat PathGuardError (including ignore-blocked) as "not found"
+        # so that gitignored files appear non-existent to agents (spec §6.6).
+        return make_error(f"File not found: {path}")
+
+    if not resolved.exists():
+        return make_error(f"File not found: {resolved}")
+    if not resolved.is_file():
+        return make_error(f"Not a file: {resolved}")
+
+    size = resolved.stat().st_size
+    if size > _MAX_READ_BYTES:
+        return make_error(
+            f"File too large to read ({size} bytes > {_MAX_READ_BYTES} byte limit): {resolved}"
+        )
+
+    # Bounded read: open in binary mode and read at most cap+1 bytes so that a
+    # file that grows between stat() and read() cannot consume unbounded memory
+    # (A1-02 TOCTOU mitigation).
+    try:
+        with resolved.open("rb") as _fh:
+            raw = _fh.read(_MAX_READ_BYTES + 1)
+    except OSError as _exc:
+        return make_error(f"Error reading file: {_exc}")
+    if len(raw) > _MAX_READ_BYTES:
+        return make_error(
+            f"File exceeded size limit during read ({len(raw)} bytes > "
+            f"{_MAX_READ_BYTES} byte limit): {resolved}"
+        )
+    text = raw.decode("utf-8", errors="replace")
+    return make_success(text, path=str(resolved))
+
+
 def make_fs_tools(ctx: AgentContext) -> list[Any]:
     """Return [fs_read, fs_write, fs_list] tools bound to *ctx*'s worktree.
 
@@ -56,40 +101,7 @@ def make_fs_tools(ctx: AgentContext) -> list[Any]:
         Returns:
             A dict with ``"content"`` (text) and ``"path"`` (resolved absolute).
         """
-        try:
-            resolved = ctx.path_guard.resolve(path)
-        except PathGuardError:
-            # Treat PathGuardError (including ignore-blocked) as "not found"
-            # so that gitignored files appear non-existent to agents (spec §6.6).
-            return make_error(f"File not found: {path}")
-
-        if not resolved.exists():
-            return make_error(f"File not found: {resolved}")
-        if not resolved.is_file():
-            return make_error(f"Not a file: {resolved}")
-
-        size = resolved.stat().st_size
-        if size > _MAX_READ_BYTES:
-            return make_error(
-                f"File too large to read ({size} bytes > "
-                f"{_MAX_READ_BYTES} byte limit): {resolved}"
-            )
-
-        # Bounded read: open in binary mode and read at most cap+1 bytes so
-        # that a file that grows between stat() and read() cannot consume
-        # unbounded memory (A1-02 TOCTOU mitigation).
-        try:
-            with resolved.open("rb") as _fh:
-                raw = _fh.read(_MAX_READ_BYTES + 1)
-        except OSError as _exc:
-            return make_error(f"Error reading file: {_exc}")
-        if len(raw) > _MAX_READ_BYTES:
-            return make_error(
-                f"File exceeded size limit during read ({len(raw)} bytes > "
-                f"{_MAX_READ_BYTES} byte limit): {resolved}"
-            )
-        text = raw.decode("utf-8", errors="replace")
-        return make_success(text, path=str(resolved))
+        return read_file(ctx, path)
 
     @tool
     def fs_write(path: str, content: str) -> dict[str, Any]:

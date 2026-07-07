@@ -466,22 +466,56 @@ def _reviewer_orchestrator():  # type: ignore[no-untyped-def]
 
 
 class TestReviewerWorktreeTools:
-    """_build_reviewer_ctx_tools binds run_tests/fs_read/repo_grep to the active
-    manager trial's worktree — single-repo only, and only when the worktree exists.
-    (The positive single-repo path is exercised end-to-end by e2e/reviewer.spec.ts,
-    whose fake reviewer calls fs_read on the manager trial's worktree.)"""
+    """_build_worktree_ro_tools binds run_tests/fs_read/repo_grep to the active
+    manager trial's worktree(s), multi-repo aware (the tools take a `repo` arg),
+    and only for repos whose worktree exists.  (The positive single-repo path is
+    also exercised end-to-end by e2e/reviewer.spec.ts, whose fake reviewer calls
+    fs_read on the manager trial's worktree.)"""
 
     @pytest.mark.asyncio
-    async def test_multi_repo_skips_worktree_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """A multi-repo epic gets NO worktree tools (fixed tool names would collide)."""
+    async def test_multi_repo_binds_per_repo_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A multi-repo epic gets ONE set of tools that dispatch by `repo`; omitting
+        `repo` errors (ambiguous), and each repo reads its own worktree."""
+        from yukar.config import paths as p
         from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-multi", "EP-multi"
+        await save_project(root, Project(id=pid, name=pid))
+        for name in ("repoA", "repoB"):
+            rdir = tmp_path / name
+            rdir.mkdir()
+            await save_repo(root, pid, Repo(name=name, path=str(rdir)))
+            # Active trial's worktree (active_thread_id=None → trial "manager").
+            wt = p.worktree_dir(root, pid, eid, "manager", name)
+            wt.mkdir(parents=True)
+            (wt / "marker.txt").write_text(f"content of {name}")
 
         orch = _reviewer_orchestrator()
         orch._epic = Epic(
-            id="EP-m", slug="s", title="T", status="in_review", touched_repos=["a", "b"]
+            id=eid, slug="s", title="T", status="in_review", touched_repos=["repoA", "repoB"]
         )
-        tools = await orch._build_reviewer_ctx_tools(str(tmp_path / "ws"), "p", "EP-m")
-        assert tools == []
+        tools = await orch._build_worktree_ro_tools(root, pid, eid)
+        by_name = {getattr(t, "tool_name", None): t for t in tools}
+        # One set of tools (not duplicated per repo).
+        assert set(by_name) == {"run_tests", "fs_read", "repo_grep"}
+
+        fs_read = by_name["fs_read"]
+        # Dispatch to the correct worktree via `repo`.
+        a = fs_read(path="marker.txt", repo="repoA")
+        assert a["status"] == "success"
+        assert "content of repoA" in a["content"][0]["text"]
+        b = fs_read(path="marker.txt", repo="repoB")
+        assert b["status"] == "success"
+        assert "content of repoB" in b["content"][0]["text"]
+        # `repo` is always required → omitting it errors (lists available repos).
+        missing_repo = fs_read(path="marker.txt")
+        assert missing_repo["status"] == "error"
+        # Unknown repo → error.
+        unknown = fs_read(path="marker.txt", repo="nope")
+        assert unknown["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_missing_worktree_skips_worktree_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -493,7 +527,7 @@ class TestReviewerWorktreeTools:
             id="EP-nw", slug="s", title="T", status="in_review", touched_repos=["myrepo"]
         )
         # No worktree was ever created under (root, p, EP-nw, "manager", "myrepo").
-        tools = await orch._build_reviewer_ctx_tools(str(tmp_path / "ws"), "p", "EP-nw")
+        tools = await orch._build_worktree_ro_tools(str(tmp_path / "ws"), "p", "EP-nw")
         assert tools == []
 
     @pytest.mark.asyncio
@@ -521,12 +555,48 @@ class TestReviewerWorktreeTools:
         orch._epic = Epic(
             id=eid, slug="s", title="T", status="in_review", touched_repos=["myrepo"]
         )
-        tools = await orch._build_reviewer_ctx_tools(root, pid, eid)
+        tools = await orch._build_worktree_ro_tools(root, pid, eid)
         names = {getattr(t, "tool_name", None) for t in tools}
         assert names == {"run_tests", "fs_read", "repo_grep"}
         # Read-only: none of the mutating fs tools leak in.
         assert "fs_write" not in names
         assert "fs_delete" not in names
+
+    @pytest.mark.asyncio
+    async def test_manager_variant_excludes_run_tests(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """include_run_tests=False (Manager) yields exactly fs_read + repo_grep
+        (read-only branch inspection), never run_tests or any mutating fs tool."""
+        from yukar.config import paths as p
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-mgr", "EP-mgr"
+        await save_project(root, Project(id=pid, name=pid))
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        await save_repo(root, pid, Repo(name="myrepo", path=str(repo_dir)))
+        wt = p.worktree_dir(root, pid, eid, "manager", "myrepo")
+        wt.mkdir(parents=True)
+        (wt / "marker.txt").write_text("hello from myrepo")
+
+        orch = _reviewer_orchestrator()
+        orch._epic = Epic(
+            id=eid, slug="s", title="T", status="in_review", touched_repos=["myrepo"]
+        )
+        tools = await orch._build_worktree_ro_tools(root, pid, eid, include_run_tests=False)
+        by_name = {getattr(t, "tool_name", None): t for t in tools}
+        assert set(by_name) == {"fs_read", "repo_grep"}
+        assert "run_tests" not in by_name
+        assert "fs_write" not in by_name
+        assert "fs_delete" not in by_name
+        # `repo` is required even for a single-repo epic (no default/auto-pick).
+        result = by_name["fs_read"](path="marker.txt", repo="myrepo")
+        assert result["status"] == "success"
+        assert "hello from myrepo" in result["content"][0]["text"]
+        # Omitting `repo` errors rather than silently picking the sole repo.
+        assert by_name["fs_read"](path="marker.txt")["status"] == "error"
 
 
 class TestReviewerLegacyEpic:
@@ -596,7 +666,7 @@ class TestReviewerLegacyEpic:
         # 2) The Reviewer's worktree tools bind to the legacy worktree.
         orch = _reviewer_orchestrator()
         orch._epic = epic
-        tools = await orch._build_reviewer_ctx_tools(root, pid, eid)
+        tools = await orch._build_worktree_ro_tools(root, pid, eid)
         assert {getattr(t, "tool_name", None) for t in tools} == {
             "run_tests",
             "fs_read",

@@ -109,7 +109,11 @@ export const FULL_SCENARIO_FAKE_SCRIPT = JSON.stringify({
   // to the user via ask_user (parks at awaiting_input).
   reviewer: [
     { type: "tool_use", tool_name: "read_branch_diff", tool_input: {} },
-    { type: "tool_use", tool_name: "fs_read", tool_input: { path: "hello.py" } },
+    {
+      type: "tool_use",
+      tool_name: "fs_read",
+      tool_input: { path: "hello.py", repo: "myrepo" },
+    },
     { type: "tool_use", tool_name: "ask_user", tool_input: { question: Q_REVIEW } },
     { type: "text", text: "レビュー結果を報告しました。" },
     // After the user's acknowledgement the reviewer wraps up (turn ends with no
