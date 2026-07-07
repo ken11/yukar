@@ -10,11 +10,11 @@ Both functions operate on the explicit ``DispatchContext`` defined in
 Profile resolution (BE-B)
 -------------------------
 Profile resolution is performed **once per attempt** in ``run_one_attempt``.
-The resolved profile (or ``None`` when absent / base_role mismatches) is then
-passed to both ``_merge_commands`` and the worker/evaluator hooks so that all
-four profile dimensions (instructions / skills / MCP / commands) receive the
-same resolved value — eliminating the former asymmetry where ``_merge_commands``
-called ``get_profile`` independently without checking ``base_role``.
+The resolved profile (or ``None`` when absent / base_role mismatches) is passed
+to the worker/evaluator hooks so that all three profile dimensions
+(instructions / skills / MCP) receive the same resolved value.  Command
+permissions are NOT a profile dimension — they come solely from the repo-level
+allow/deny list, independent of any profile.
 """
 
 from __future__ import annotations
@@ -98,67 +98,6 @@ def _resolve_profile(
         return None
 
     return profile
-
-
-def _merge_commands(
-    resolved_profile: AgentProfile | None,
-    repo_allow: list[str],
-    repo_deny: list[str],
-) -> tuple[list[str], list[str]]:
-    """Merge the repo-level allow/deny lists with the profile's allowlist.
-
-    The repo is the security boundary: a profile cannot grant commands that the
-    repo does not allow.  A profile has no deny list of its own — the repo deny
-    (plus the always-on baseline denylist) is the hard gate.
-
-    Merging rules:
-      effective_allow = repo_allow ∩ profile.allowed_commands  (when non-empty)
-                      = repo_allow                              (profile absent / empty)
-      effective_deny  = repo_deny                               (profile cannot widen deny)
-
-    The caller is responsible for resolving ``resolved_profile`` (including
-    base_role validation) before calling this function.  Passing ``None``
-    returns the repo values unchanged.
-
-    Returns:
-        (effective_allow, effective_deny) as plain lists.
-    """
-    if resolved_profile is None:
-        return repo_allow, repo_deny
-
-    # Profile allowlist — restrict (intersect) only when non-empty.
-    if resolved_profile.allowed_commands:
-        repo_allow_set = set(repo_allow)
-        effective_allow = [
-            cmd for cmd in resolved_profile.allowed_commands if cmd in repo_allow_set
-        ]
-        if not effective_allow:
-            # None of the profile's selected commands are in the repo allow list
-            # (e.g. a stale selection after the repo allow list was edited).  An
-            # empty allow list is deny-all downstream, which would silently block
-            # every command for this task — surface it loudly instead of failing
-            # closed without a trace.
-            logger.warning(
-                "dispatch_attempt: profile %r allowed_commands=%s are all disjoint from "
-                "the repo allow list %s; the effective allow list is EMPTY (deny-all). "
-                "The assigned agent will be unable to run any command.",
-                resolved_profile.name,
-                resolved_profile.allowed_commands,
-                repo_allow,
-            )
-    else:
-        effective_allow = list(repo_allow)
-
-    # No profile-level deny: the repo deny list is the boundary.
-    effective_deny = list(repo_deny)
-
-    logger.debug(
-        "dispatch_attempt: merged commands profile=%r allow=%s deny=%s",
-        resolved_profile.name,
-        effective_allow,
-        effective_deny,
-    )
-    return effective_allow, effective_deny
 
 
 async def ensure_worktree_for_repo(
@@ -279,8 +218,10 @@ async def run_one_attempt(
     repo_allow = list(repo_obj.commands.allow) if repo_obj else []
     repo_deny = list(repo_obj.commands.deny) if repo_obj else []
 
-    # Merge repo-level and profile-level command allow/deny (repo is security boundary).
-    allow_cmds, deny_cmds = _merge_commands(resolved_profile, repo_allow, repo_deny)
+    # Command permissions come solely from the repo-level allow/deny list; a
+    # profile never narrows or grants commands.  Fresh copies so this worker's
+    # AgentContext never aliases the list reused for the Evaluator below.
+    allow_cmds, deny_cmds = list(repo_allow), list(repo_deny)
 
     ctx = await AgentContext.create(
         project_id=project_id,
@@ -422,13 +363,13 @@ async def run_one_attempt(
     # Resolve evaluator profile (separate resolution — evaluator may have its own profile).
     resolved_eval_profile = _resolve_profile(root, project_id, task, expected_role="evaluator")
 
-    # Build a dedicated AgentContext for the Evaluator so that its command
-    # allow/deny list is derived from the *evaluator* profile (not the worker
-    # profile).  The same worktree_path is used — path_guard / git escape guard /
-    # gitignore are all anchored to the worktree, satisfying the sandbox invariant.
-    # repo_allow/repo_deny were fetched above for the Worker; they are reused here
-    # to avoid a second get_repo call (repo is the security boundary for both).
-    eval_allow, eval_deny = _merge_commands(resolved_eval_profile, repo_allow, repo_deny)
+    # Build a dedicated AgentContext for the Evaluator.  The same worktree_path
+    # is used — path_guard / git escape guard / gitignore are all anchored to the
+    # worktree, satisfying the sandbox invariant.  Command permissions come solely
+    # from the repo-level allow/deny list (fetched above for the Worker; reused
+    # here to avoid a second get_repo call).  Fresh copies so the two AgentContexts
+    # never alias the same list.
+    eval_allow, eval_deny = list(repo_allow), list(repo_deny)
     eval_ctx = await AgentContext.create(
         project_id=project_id,
         epic_id=epic_id,

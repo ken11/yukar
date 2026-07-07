@@ -234,11 +234,8 @@ test.describe
       await expect(instructionsTextarea).toBeVisible();
       await instructionsTextarea.fill("Always use TypeScript. Prefer functional components.");
 
-      // Allowed commands are now a multi-select fed by the repo allow list (a
-      // subset picker, not free text). This project's repo has no allow list
-      // configured at this point in the scenario, so the profile inherits the
-      // repo allow list unchanged — nothing to select here.
-      await expect(page.getByTestId("profile-commands-multiselect")).toBeVisible();
+      // A profile no longer controls command permissions — those come solely
+      // from the repo-level allow/deny list, so there is nothing to pick here.
 
       // Save
       const saveBtn = page.getByTestId("save-profile-btn");
@@ -267,12 +264,6 @@ test.describe
         "Always use TypeScript. Prefer functional components.",
         { timeout: 10_000 },
       );
-
-      // Allowed commands are a repo-allowed subset multi-select (no free-text
-      // textarea any more); confirm it re-renders after reload.
-      await expect(page.getByTestId("profile-commands-multiselect")).toBeVisible({
-        timeout: 10_000,
-      });
     });
 
     // ---- 9. Repos run_command allow/deny persist ----

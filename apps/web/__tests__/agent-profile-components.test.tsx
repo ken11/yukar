@@ -77,7 +77,6 @@ const sampleProfile: AgentProfile = {
   instructions: "use pnpm",
   skills: [],
   mcp_servers: [],
-  allowed_commands: ["pnpm test"],
 };
 
 const sampleRepo: Repo = {
@@ -102,7 +101,6 @@ describe("AgentProfilesSection", () => {
         initialProfiles={emptyProfiles}
         initialSkills={emptySkills}
         initialMcpConfig={emptyMcp}
-        initialRepos={[sampleRepo]}
       />,
       { wrapper: wrapper(qc) },
     );
@@ -121,7 +119,6 @@ describe("AgentProfilesSection", () => {
         initialProfiles={[sampleProfile]}
         initialSkills={emptySkills}
         initialMcpConfig={emptyMcp}
-        initialRepos={[sampleRepo]}
       />,
       { wrapper: wrapper(qc) },
     );
@@ -148,7 +145,6 @@ describe("AgentProfilesSection", () => {
         initialProfiles={emptyProfiles}
         initialSkills={emptySkills}
         initialMcpConfig={emptyMcp}
-        initialRepos={[sampleRepo]}
       />,
       { wrapper: wrapper(qc) },
     );
@@ -186,7 +182,6 @@ describe("AgentProfilesSection", () => {
         initialProfiles={[sampleProfile]}
         initialSkills={emptySkills}
         initialMcpConfig={emptyMcp}
-        initialRepos={[sampleRepo]}
       />,
       { wrapper: wrapper(qc) },
     );
@@ -222,7 +217,6 @@ describe("AgentProfilesSection", () => {
         initialProfiles={[sampleProfile]}
         initialSkills={skills}
         initialMcpConfig={emptyMcp}
-        initialRepos={[sampleRepo]}
       />,
       { wrapper: wrapper(qc) },
     );
@@ -230,57 +224,6 @@ describe("AgentProfilesSection", () => {
     expect(screen.getByTestId("profile-skills-multiselect")).toBeInTheDocument();
     expect(screen.getByText("run-tests")).toBeInTheDocument();
     expect(screen.getByText("lint")).toBeInTheDocument();
-  });
-
-  it("shows repo-allowed commands as selectable chips in the commands multi-select", () => {
-    vi.mocked(listAgentProfiles).mockResolvedValue([sampleProfile]);
-
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <AgentProfilesSection
-        projectId="proj1"
-        initialProfiles={[sampleProfile]}
-        initialSkills={emptySkills}
-        initialMcpConfig={emptyMcp}
-        initialRepos={[sampleRepo]}
-      />,
-      { wrapper: wrapper(qc) },
-    );
-
-    // The commands field is now a multi-select fed by the repo allow list,
-    // not free-text textareas.
-    const multiselect = screen.getByTestId("profile-commands-multiselect");
-    expect(multiselect).toBeInTheDocument();
-    // sampleRepo.commands.allow = ["pnpm test"] → the chip is offered.
-    expect(multiselect).toHaveTextContent("pnpm test");
-    // The removed free-text deny textarea must be gone.
-    expect(screen.queryByTestId("profile-commands-deny-textarea")).not.toBeInTheDocument();
-  });
-
-  it("surfaces a stale selected command (no longer repo-allowed) as a removable chip", () => {
-    // Profile selected "old-cmd", but the repo now only allows "pnpm test".
-    const staleProfile: AgentProfile = {
-      ...sampleProfile,
-      name: "stale-worker",
-      allowed_commands: ["old-cmd"],
-    };
-    vi.mocked(listAgentProfiles).mockResolvedValue([staleProfile]);
-
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <AgentProfilesSection
-        projectId="proj1"
-        initialProfiles={[staleProfile]}
-        initialSkills={emptySkills}
-        initialMcpConfig={emptyMcp}
-        initialRepos={[sampleRepo]}
-      />,
-      { wrapper: wrapper(qc) },
-    );
-
-    const multiselect = screen.getByTestId("profile-commands-multiselect");
-    // The stale entry stays visible (and removable) rather than silently persisting.
-    expect(multiselect).toHaveTextContent("old-cmd");
   });
 });
 

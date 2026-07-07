@@ -3,8 +3,9 @@
 A profile lets the Manager assign a named configuration to a task instead
 of using the generic role-level AgentConfig.  Multiple Worker profiles
 (e.g. ``frontend-worker``, ``backend-worker``) can coexist in the same
-project, each with its own instructions, skill/MCP subsets and command
-allow/deny lists.
+project, each with its own instructions and skill/MCP subsets.  Command
+permissions are NOT part of a profile — they come solely from the repo-level
+allow/deny list.
 
 The profile is the *named* variant; AgentConfig remains the role-level
 default.  When a task has ``agent=None`` the orchestrator uses the default
@@ -39,12 +40,9 @@ class AgentProfile(BaseModel):
     mcp_servers: list[str] = Field(default_factory=list)
     """MCP server names to activate.  Empty list = use all project MCP servers."""
 
-    allowed_commands: list[str] = Field(default_factory=list)
-    """Profile-level run_command allowlist — a SUBSET of the repo-level allow list.
-
-    Empty list = inherit the repo allow list unchanged.  A non-empty list is
-    intersected with the repo allow list at dispatch time, so a profile can only
-    NARROW what the repo already permits — it can never grant a command the repo
-    does not allow.  There is intentionally no profile-level deny list: the
-    repo-level deny plus the always-on baseline denylist are the hard gate.
-    """
+    # NOTE: there is deliberately NO per-profile command allowlist.  Command
+    # permissions come SOLELY from the repo-level allow/deny list (the human's
+    # security boundary).  A profile-level allowlist could only NARROW a Worker's
+    # commands — never grant — so its sole real effect was to silently lock
+    # Workers out of running tests.  The lever was removed entirely; any legacy
+    # ``allowed_commands`` key in an on-disk profile is ignored on load.

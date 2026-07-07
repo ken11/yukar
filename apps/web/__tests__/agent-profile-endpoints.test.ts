@@ -109,7 +109,6 @@ describe("putAgentProfile", () => {
       instructions: "use pnpm",
       skills: ["run-tests"],
       mcp_servers: [],
-      allowed_commands: ["pnpm test"],
     };
     mockFetch.mockResolvedValueOnce(mockResponse(200, profile));
 
@@ -121,7 +120,7 @@ describe("putAgentProfile", () => {
     expect(call[1].method).toBe("PUT");
     const body = JSON.parse(call[1].body);
     expect(body.base_role).toBe("worker");
-    expect(body.allowed_commands).toEqual(["pnpm test"]);
+    expect(body.skills).toEqual(["run-tests"]);
   });
 });
 

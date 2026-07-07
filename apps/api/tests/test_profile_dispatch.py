@@ -4,14 +4,15 @@ Covers:
 1. instructions: profile overlay stacks on top of project-role overlay
 2. skills: profile.skills non-empty → AgentSkills receives only those skill dirs
 3. MCP: profile.mcp_servers non-empty → only matching server tools forwarded
-4. run_command: effective allow = repo ∩ profile.allowed_commands; deny = repo deny
-   (a profile has no deny list of its own)
-5. Unassigned task (task.agent=None) → no change (backward compat)
-6. Missing profile → warning logged, fallback to defaults
-7. base_role mismatch (worker profile on evaluator call) → warning, fallback
-8. build_skills_plugin with names= subset
-9. McpClientManager.get_tools_by_server_async
-10. base_role mismatch → commands also revert to repo defaults (4-dimension consistency)
+4. Unassigned task (task.agent=None) → no change (backward compat)
+5. Missing profile → warning logged, fallback to defaults
+6. base_role mismatch (worker profile on evaluator call) → warning, fallback
+7. build_skills_plugin with names= subset
+8. McpClientManager.get_tools_by_server_async
+
+Note: there is no per-profile command allowlist — command permissions come
+solely from the repo-level allow/deny list, so command scope is not a profile
+dimension and has no dedicated dispatch test here.
 """
 
 from __future__ import annotations
@@ -280,106 +281,8 @@ class TestMcpToolsByServer:
 
 
 # ---------------------------------------------------------------------------
-# 4. run_command — profile × repo merging
+# 4. Profile resolution
 # ---------------------------------------------------------------------------
-
-
-class TestMergeCommands:
-    """Tests for _merge_commands (new signature: resolved_profile, repo_allow, repo_deny).
-
-    Profile resolution (base_role validation) is the responsibility of
-    _resolve_profile; _merge_commands now receives the already-validated profile
-    (or None).  These tests verify the merging logic in isolation.
-    """
-
-    def test_no_profile_returns_repo_values(self) -> None:
-        from yukar.agents.dispatch_attempt import _merge_commands
-
-        allow, deny = _merge_commands(None, ["pytest", "npm"], ["rm"])
-        assert allow == ["pytest", "npm"]
-        assert deny == ["rm"]
-
-    def test_profile_allow_intersects_with_repo(self) -> None:
-        """effective_allow = repo_allow ∩ profile.allowed_commands when non-empty."""
-        from yukar.agents.dispatch_attempt import _merge_commands
-        from yukar.models.agent_profile import AgentProfile
-
-        # profile allows ["pytest"] — a subset of repo's ["pytest", "npm", "git"]
-        profile = AgentProfile(
-            name="be-worker",
-            base_role="worker",
-            allowed_commands=["pytest"],
-        )
-        allow, deny = _merge_commands(profile, ["pytest", "npm", "git"], [])
-        # Intersection: only "pytest" is in both repo and profile
-        assert allow == ["pytest"]
-        assert deny == []
-
-    def test_profile_allow_empty_uses_repo_allow(self) -> None:
-        """When profile.allowed_commands is empty, repo.allow is used unchanged."""
-        from yukar.agents.dispatch_attempt import _merge_commands
-        from yukar.models.agent_profile import AgentProfile
-
-        profile = AgentProfile(
-            name="no-filter",
-            base_role="worker",
-            allowed_commands=[],
-        )
-        allow, deny = _merge_commands(profile, ["pytest", "git"], ["rm"])
-        assert allow == ["pytest", "git"]
-        assert deny == ["rm"]
-
-    def test_profile_has_no_deny_of_its_own(self) -> None:
-        """A profile has no deny list — effective_deny is always exactly repo_deny."""
-        from yukar.agents.dispatch_attempt import _merge_commands
-        from yukar.models.agent_profile import AgentProfile
-
-        profile = AgentProfile(
-            name="strict-worker",
-            base_role="worker",
-            allowed_commands=["pytest"],
-        )
-        allow, deny = _merge_commands(profile, ["pytest", "npm"], ["rm"])
-        # Profile narrows allow to the intersection…
-        assert allow == ["pytest"]
-        # …but cannot add to (or change) the repo deny list.
-        assert deny == ["rm"]
-
-    def test_profile_cannot_grant_beyond_repo(self) -> None:
-        """Profile allow that is not in repo.allow produces empty effective_allow."""
-        from yukar.agents.dispatch_attempt import _merge_commands
-        from yukar.models.agent_profile import AgentProfile
-
-        # Profile tries to grant "bash" — repo does not allow it.
-        profile = AgentProfile(
-            name="escalate",
-            base_role="worker",
-            allowed_commands=["bash", "sh"],
-        )
-        allow, deny = _merge_commands(profile, ["pytest"], [])
-        # "bash" and "sh" are not in repo.allow → intersection is empty
-        assert allow == []
-
-    def test_missing_profile_falls_back_to_repo(self) -> None:
-        """When resolved_profile is None, repo values are used unchanged."""
-        from yukar.agents.dispatch_attempt import _merge_commands
-
-        allow, deny = _merge_commands(None, ["pytest"], ["rm"])
-        assert allow == ["pytest"]
-        assert deny == ["rm"]
-
-    def test_repo_deny_is_preserved_regardless_of_profile(self) -> None:
-        """The repo deny list passes through unchanged; a profile cannot alter it."""
-        from yukar.agents.dispatch_attempt import _merge_commands
-        from yukar.models.agent_profile import AgentProfile
-
-        profile = AgentProfile(
-            name="narrowed",
-            base_role="worker",
-            allowed_commands=["pytest"],
-        )
-        _, deny = _merge_commands(profile, ["pytest"], ["rm", "curl"])
-        assert deny == ["rm", "curl"]
 
 
 class TestResolveProfile:
@@ -446,91 +349,6 @@ class TestResolveProfile:
             result = _resolve_profile(str(tmp_path), "proj", task, "worker")
         assert result is None
         mock_log.warning.assert_called_once()
-
-
-class TestMergeCommandsBaseRoleConsistency:
-    """Verifies that base_role mismatch also reverts commands to repo defaults.
-
-    This is the key 4-dimension consistency invariant: when _resolve_profile
-    returns None (due to base_role mismatch or missing profile), _merge_commands
-    must also return the repo allow/deny unchanged — i.e., commands are NOT
-    applied from a mismatched profile.
-
-    Previously _merge_commands called get_profile independently (without
-    base_role checking), so a mismatched profile could still affect commands
-    while instructions/skills/MCP were correctly ignored.
-    """
-
-    def _make_task(self, agent: str | None = None) -> Any:
-        from yukar.models.task import Task
-
-        return Task(id="T1", title="test", agent=agent)
-
-    @pytest.mark.asyncio
-    async def test_wrong_base_role_commands_revert_to_repo(self, tmp_path: Path) -> None:
-        """base_role mismatch → _resolve_profile returns None → _merge_commands returns repo values.
-
-        This tests the full pipeline: _resolve_profile + _merge_commands together
-        so that the 4-dimension consistency is verified end-to-end.
-        """
-        from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
-        from yukar.models.agent_profile import AgentProfile
-        from yukar.storage.agent_profiles_repo import save_profile
-
-        root = str(tmp_path)
-        # Evaluator profile with restrictive commands — assigned to a worker task.
-        await save_profile(
-            root,
-            "proj",
-            AgentProfile(
-                name="eval-profile",
-                base_role="evaluator",
-                instructions="Evaluator only.",
-                allowed_commands=["pytest"],
-            ),
-        )
-        task = self._make_task(agent="eval-profile")
-        repo_allow = ["pytest", "npm", "git"]
-        repo_deny = ["rm"]
-
-        # Resolution with expected_role="worker" → mismatch → None
-        resolved = _resolve_profile(root, "proj", task, expected_role="worker")
-        assert resolved is None, "base_role mismatch must yield None"
-
-        # _merge_commands with None profile must return repo values unchanged.
-        allow, deny = _merge_commands(resolved, repo_allow, repo_deny)
-        assert allow == repo_allow, "commands must revert to repo allow on mismatch"
-        assert deny == repo_deny, "commands must revert to repo deny on mismatch"
-
-    @pytest.mark.asyncio
-    async def test_wrong_base_role_profile_deny_not_applied(self, tmp_path: Path) -> None:
-        """Evaluator profile deny must not extend repo deny when assigned to worker task."""
-        from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
-        from yukar.models.agent_profile import AgentProfile
-        from yukar.storage.agent_profiles_repo import save_profile
-
-        root = str(tmp_path)
-        await save_profile(
-            root,
-            "proj",
-            AgentProfile(
-                name="eval-deny-heavy",
-                base_role="evaluator",
-                allowed_commands=[],
-            ),
-        )
-        task = self._make_task(agent="eval-deny-heavy")
-        repo_allow: list[str] = []
-        repo_deny = ["rm"]
-
-        resolved = _resolve_profile(root, "proj", task, expected_role="worker")
-        allow, deny = _merge_commands(resolved, repo_allow, repo_deny)
-
-        # None of the evaluator-profile denies should appear.
-        assert "curl" not in deny
-        assert "wget" not in deny
-        assert "ssh" not in deny
-        assert deny == repo_deny
 
 
 # ---------------------------------------------------------------------------
@@ -875,118 +693,3 @@ class TestOrchestratorProfileResolution:
 
         # Should have been called with names=["skill-a"]
         assert any(c["names"] == ["skill-a"] for c in build_skills_calls)
-
-
-# ---------------------------------------------------------------------------
-# Task A — Evaluator dedicated AgentContext
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluatorDedicatedCtx:
-    """Verify that run_one_attempt builds a separate AgentContext for the Evaluator.
-
-    The Evaluator's command allow/deny should come from the evaluator profile
-    merged with the repo-level config, NOT from the worker profile.
-    """
-
-    def _make_task(self, agent: str | None = None) -> Any:
-        from yukar.models.task import Task
-
-        return Task(id="T1", title="test", repo="repo", agent=agent)
-
-    @pytest.mark.asyncio
-    async def test_evaluator_ctx_uses_eval_profile_commands(self, tmp_path: Path) -> None:
-        """Evaluator profile's commands take effect; worker profile commands do not leak."""
-        from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
-        from yukar.models.agent_profile import AgentProfile
-        from yukar.storage.agent_profiles_repo import save_profile
-
-        root = str(tmp_path)
-        project_id = "proj"
-
-        # Worker profile allows only ["pytest"]
-        await save_profile(
-            root,
-            project_id,
-            AgentProfile(
-                name="worker-profile",
-                base_role="worker",
-                allowed_commands=["pytest"],
-            ),
-        )
-        # Evaluator profile allows ["pytest", "npm"] (wider)
-        await save_profile(
-            root,
-            project_id,
-            AgentProfile(
-                name="eval-profile",
-                base_role="evaluator",
-                allowed_commands=["pytest", "npm"],
-            ),
-        )
-
-        # Repo allows everything the profiles reference.
-        repo_allow = ["pytest", "npm", "git"]
-        repo_deny: list[str] = []
-
-        # Simulate what run_one_attempt does for the Worker:
-        task = self._make_task()
-        task.agent = "worker-profile"
-        resolved_worker = _resolve_profile(root, project_id, task, expected_role="worker")
-        worker_allow, worker_deny = _merge_commands(resolved_worker, repo_allow, repo_deny)
-        # Worker can only use pytest.
-        assert worker_allow == ["pytest"]
-
-        # Simulate what run_one_attempt does for the Evaluator (independent resolution):
-        task_eval = self._make_task()
-        task_eval.agent = "eval-profile"
-        resolved_eval = _resolve_profile(root, project_id, task_eval, expected_role="evaluator")
-        eval_allow, eval_deny = _merge_commands(resolved_eval, repo_allow, repo_deny)
-        # Evaluator gets pytest + npm — NOT restricted to worker's pytest-only allow.
-        assert set(eval_allow) == {"pytest", "npm"}
-
-    @pytest.mark.asyncio
-    async def test_no_eval_profile_evaluator_gets_repo_allow(self, tmp_path: Path) -> None:
-        """When no evaluator profile exists, Evaluator gets the full repo allow list.
-
-        Even if the Worker profile restricts allow to a subset, the Evaluator
-        should fall back to the repo allow list, not inherit the worker restriction.
-        """
-        from yukar.agents.dispatch_attempt import _merge_commands, _resolve_profile
-        from yukar.models.agent_profile import AgentProfile
-        from yukar.storage.agent_profiles_repo import save_profile
-
-        root = str(tmp_path)
-        project_id = "proj"
-
-        # Worker profile restricts allow to ["pytest"] only.
-        await save_profile(
-            root,
-            project_id,
-            AgentProfile(
-                name="strict-worker",
-                base_role="worker",
-                allowed_commands=["pytest"],
-            ),
-        )
-
-        repo_allow = ["pytest", "npm", "git"]
-        repo_deny: list[str] = []
-
-        # Worker ctx: restricted by worker profile.
-        task_worker = self._make_task()
-        task_worker.agent = "strict-worker"
-        resolved_worker = _resolve_profile(root, project_id, task_worker, expected_role="worker")
-        worker_allow, _ = _merge_commands(resolved_worker, repo_allow, repo_deny)
-        assert worker_allow == ["pytest"]
-
-        # Evaluator ctx: no evaluator profile → resolved_eval_profile is None →
-        # _merge_commands returns repo allow unchanged.
-        task_eval = self._make_task()
-        task_eval.agent = None  # no profile assigned
-        resolved_eval = _resolve_profile(root, project_id, task_eval, expected_role="evaluator")
-        assert resolved_eval is None  # no profile → None
-        eval_allow, eval_deny = _merge_commands(resolved_eval, repo_allow, repo_deny)
-        # Evaluator must NOT inherit the worker's restricted allow list.
-        assert set(eval_allow) == {"pytest", "npm", "git"}
-        assert eval_deny == []

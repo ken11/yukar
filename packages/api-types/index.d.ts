@@ -1242,8 +1242,6 @@ export interface components {
             skills?: string[];
             /** Mcp Servers */
             mcp_servers?: string[];
-            /** Allowed Commands */
-            allowed_commands?: string[];
         };
         /** AgentSettings */
         AgentSettings: {

@@ -1778,9 +1778,9 @@ class EpicOrchestrator:
 
         Command allow/deny (AgentContext):
         - The ``ctx`` parameter received here is the *Evaluator-dedicated* AgentContext
-          built by ``dispatch_attempt.run_one_attempt`` after resolving the evaluator
-          profile.  Its allow/deny list is derived via ``_merge_commands(
-          resolved_eval_profile, repo_allow, repo_deny)`` — independent of the Worker ctx.
+          built by ``dispatch_attempt.run_one_attempt``.  Its allow/deny list comes
+          solely from the repo-level allow/deny list — a profile never influences
+          command scope.
         - This orchestrator method applies only the instructions / skills / MCP dimensions
           from ``resolved_profile``; it does NOT call ``AgentContext.create`` and does NOT
           modify the command configuration carried by ``ctx``.

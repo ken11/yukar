@@ -4,11 +4,11 @@ Layout:
   <yukar_dir>/agent_profiles/<name>.md
 
 Frontmatter keys:
-  name, description, base_role, skills, mcp_servers, allowed_commands
+  name, description, base_role, skills, mcp_servers
 
-Legacy files may still carry ``commands: {allow: [], deny: []}`` instead of
-``allowed_commands``; those are migrated on read (allow → allowed_commands,
-deny dropped) so old profiles keep working.
+There is intentionally NO per-profile command allowlist: command permissions
+come solely from the repo-level allow/deny list.  Any legacy ``allowed_commands``
+(or ``commands: {allow, deny}``) key in an old profile file is ignored on read.
 
 Body text = instructions (the system-prompt overlay).
 
@@ -48,7 +48,6 @@ def _build_frontmatter(profile: AgentProfile) -> str:
         "base_role": profile.base_role,
         "skills": list(profile.skills),
         "mcp_servers": list(profile.mcp_servers),
-        "allowed_commands": list(profile.allowed_commands),
     }
 
     buf = StringIO()
@@ -62,19 +61,12 @@ def _build_frontmatter(profile: AgentProfile) -> str:
 
 
 def _profile_from_parts(meta: dict[str, Any], body: str, fallback_name: str) -> AgentProfile:
-    """Construct an AgentProfile from parsed frontmatter and body text."""
-    allowed_raw = meta.get("allowed_commands")
-    if allowed_raw is not None:
-        allowed_commands = list(allowed_raw)
-    else:
-        # Legacy format: commands: {allow: [...], deny: [...]}.  Migrate the
-        # allow list; the deprecated deny list is dropped (the repo-level deny
-        # and the baseline denylist remain the hard gate).
-        commands_raw = meta.get("commands", {})
-        allowed_commands = (
-            list(commands_raw.get("allow", [])) if isinstance(commands_raw, dict) else []
-        )
+    """Construct an AgentProfile from parsed frontmatter and body text.
 
+    Any legacy ``allowed_commands`` (or ``commands``) key is intentionally not
+    read: per-profile command control was removed, so command permissions come
+    solely from the repo-level allow/deny list.
+    """
     return AgentProfile(
         name=str(meta.get("name", fallback_name)),
         description=str(meta.get("description", "")),
@@ -82,7 +74,6 @@ def _profile_from_parts(meta: dict[str, Any], body: str, fallback_name: str) -> 
         instructions=body,
         skills=list(meta.get("skills", [])),
         mcp_servers=list(meta.get("mcp_servers", [])),
-        allowed_commands=allowed_commands,
     )
 
 

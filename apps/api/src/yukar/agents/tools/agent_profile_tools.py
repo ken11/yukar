@@ -49,13 +49,13 @@ def make_agent_profile_tools(
         """List all named agent profiles defined for this project.
 
         Named profiles let you assign a specific configuration (instructions,
-        skill subset, MCP subset, command allow/deny) to individual tasks via
-        the ``agent`` field of ``task_update``.
+        skill subset, MCP subset) to individual tasks via the ``agent`` field
+        of ``task_update``.  Command permissions are NOT part of a profile —
+        they come solely from the repo-level allow/deny list.
 
         Returns:
             ``{"status": "success"|"error", "content": [...],
-            "profiles": [{name, description, base_role, skills, mcp_servers,
-            commands}]}``.
+            "profiles": [{name, description, base_role, skills, mcp_servers}]}``.
         """
         try:
             profiles = agent_profiles_repo.list_profiles(root, project_id)
@@ -92,21 +92,25 @@ def make_agent_profile_tools(
         instructions: str | None = None,
         skills: list[str] | None = None,
         mcp_servers: list[str] | None = None,
-        allowed_commands: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create or update a named agent profile for this project.
 
         Use profiles to give different Worker instances project-specific
-        guidance, tool subsets, and command permissions.  For example, create
-        a ``frontend-worker`` profile with frontend-relevant skills and a
-        ``backend-worker`` profile with backend-specific instructions, then
-        assign the right profile to each task via ``task_update(agent=...)``.
+        guidance and tool subsets.  For example, create a ``frontend-worker``
+        profile with frontend-relevant skills and a ``backend-worker`` profile
+        with backend-specific instructions, then assign the right profile to
+        each task via ``task_update(agent=...)``.
+
+        A profile does NOT control which shell commands the Worker may run.
+        Command permissions come solely from the repo-level allow/deny list,
+        which the human configures in the repo settings — you cannot grant or
+        restrict commands from here.
 
         PARTIAL UPDATE (read-merge): any argument you leave unset (``None``) is
         left UNCHANGED on an existing profile.  So to tweak only the
-        instructions, pass ``name`` and ``instructions`` — the skills, MCP
-        servers and allowed_commands are preserved, never wiped.  To clear a
-        list field, pass an explicit empty list ``[]``.
+        instructions, pass ``name`` and ``instructions`` — the skills and MCP
+        servers are preserved, never wiped.  To clear a list field, pass an
+        explicit empty list ``[]``.
 
         Do NOT re-write a profile you have already created unless its
         configuration genuinely needs to change; if nothing changed the write
@@ -121,13 +125,6 @@ def make_agent_profile_tools(
                           Use Markdown. Empty string = base prompt only.
             skills: Skill names to activate.  ``[]`` = all project skills.
             mcp_servers: MCP server names to activate.  ``[]`` = all project MCP servers.
-            allowed_commands: Shell command prefixes the Worker may run
-                              (e.g. ``["pytest", "npm test"]``).  This is a
-                              SUBSET of the repo-level allow list — a command not
-                              already allowed by the repo has no effect (it is
-                              intersected at dispatch).  ``[]`` = inherit the
-                              repo allow list unchanged.  There is no deny list;
-                              the repo deny + baseline denylist are the hard gate.
 
         Returns:
             ``{"status": "success"|"error", "content": [...], "ok": bool,
@@ -165,9 +162,6 @@ def make_agent_profile_tools(
                 instructions=_pick(instructions, existing.instructions if existing else None, ""),
                 skills=_pick(skills, existing.skills if existing else None, []),
                 mcp_servers=_pick(mcp_servers, existing.mcp_servers if existing else None, []),
-                allowed_commands=_pick(
-                    allowed_commands, existing.allowed_commands if existing else None, []
-                ),
             )
 
             # Anti-churn: skip the write (and the event) when nothing changed.

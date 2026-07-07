@@ -10,12 +10,11 @@ import {
 import { Icon } from "@/components/icon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import type { AgentProfile, McpConfig, Repo, SkillMeta } from "@/lib/api/endpoints";
+import type { AgentProfile, McpConfig, SkillMeta } from "@/lib/api/endpoints";
 import {
   deleteAgentProfile,
   getMcpConfig,
   listAgentProfiles,
-  listRepos,
   listSkills,
   putAgentProfile,
 } from "@/lib/api/endpoints";
@@ -34,7 +33,6 @@ interface ProfileDraft {
   instructions: string;
   skills: string[];
   mcp_servers: string[];
-  allowedCommands: string[];
 }
 
 function profileToDraft(p: AgentProfile): ProfileDraft {
@@ -45,7 +43,6 @@ function profileToDraft(p: AgentProfile): ProfileDraft {
     instructions: p.instructions,
     skills: p.skills ?? [],
     mcp_servers: p.mcp_servers ?? [],
-    allowedCommands: p.allowed_commands ?? [],
   };
 }
 
@@ -57,7 +54,6 @@ function emptyDraft(): ProfileDraft {
     instructions: "",
     skills: [],
     mcp_servers: [],
-    allowedCommands: [],
   };
 }
 
@@ -69,8 +65,6 @@ function draftToProfile(d: ProfileDraft): AgentProfile {
     instructions: d.instructions,
     skills: d.skills.length > 0 ? d.skills : undefined,
     mcp_servers: d.mcp_servers.length > 0 ? d.mcp_servers : undefined,
-    // empty = inherit the repo allow list unchanged
-    allowed_commands: d.allowedCommands,
   };
 }
 
@@ -152,7 +146,6 @@ export interface AgentProfilesSectionProps {
   initialProfiles: AgentProfile[];
   initialSkills: SkillMeta[];
   initialMcpConfig: McpConfig;
-  initialRepos: Repo[];
 }
 
 export function AgentProfilesSection({
@@ -160,7 +153,6 @@ export function AgentProfilesSection({
   initialProfiles,
   initialSkills,
   initialMcpConfig,
-  initialRepos,
 }: AgentProfilesSectionProps) {
   const t = useDict();
   const ps = t.projectSettings ?? ({} as NonNullable<(typeof t)["projectSettings"]>);
@@ -188,13 +180,6 @@ export function AgentProfilesSection({
     staleTime: 30_000,
   });
 
-  const { data: repos = initialRepos } = useQuery({
-    queryKey: queryKeys.repos.list(projectId),
-    queryFn: () => listRepos(projectId),
-    initialData: initialRepos,
-    staleTime: 30_000,
-  });
-
   const [selectedName, setSelectedName] = useState<string | null>(profiles[0]?.name ?? null);
   const [isCreating, setIsCreating] = useState(false);
   const [draft, setDraft] = useState<ProfileDraft>(emptyDraft);
@@ -212,11 +197,6 @@ export function AgentProfilesSection({
 
   const skillNames = skills.map((s) => s.name);
   const mcpServerNames = (mcpConfig.servers ?? []).map((s) => s.name);
-  // Union of every repo's allow list — the universe a profile may pick a subset from.
-  // (A profile can only narrow the repo allow list; it can never widen it.)
-  const repoAllowedCommands = Array.from(
-    new Set(repos.flatMap((r) => r.commands?.allow ?? [])),
-  ).sort();
 
   const saveMutation = useMutation({
     mutationFn: ({ name, profile }: { name: string; profile: AgentProfile }) =>
@@ -457,28 +437,6 @@ export function AgentProfilesSection({
                   onChange={(next) => patchDraft({ mcp_servers: next })}
                   data-testid="profile-mcp-multiselect"
                 />
-              </div>
-
-              {/* Allowed commands — a subset of the repo allow list (toggle on/off) */}
-              <div>
-                <p className="mb-1.5 text-[11px] uppercase tracking-wider text-outline">
-                  Allowed Commands{" "}
-                  <span className="normal-case tracking-normal text-outline/60">
-                    (subset of repo allow list; empty = all repo-allowed)
-                  </span>
-                </p>
-                <MultiSelect
-                  label="Repo-allowed commands"
-                  items={repoAllowedCommands}
-                  selected={draft.allowedCommands}
-                  onChange={(next) => patchDraft({ allowedCommands: next })}
-                  data-testid="profile-commands-multiselect"
-                />
-                <p className="mt-1.5 text-[11px] text-outline">
-                  Only commands already allowed at the repo level can be selected. A profile narrows
-                  this list; it can never grant a command the repo does not allow. There is no
-                  per-profile deny — the repo deny list is the hard gate.
-                </p>
               </div>
 
               {/* Actions */}

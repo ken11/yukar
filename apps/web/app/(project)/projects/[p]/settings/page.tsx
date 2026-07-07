@@ -3,13 +3,7 @@ import { AgentConfigsSection } from "@/components/features/settings/agent-config
 import { AgentProfilesSection } from "@/components/features/settings/agent-profiles-section";
 import { McpSection } from "@/components/features/settings/mcp-section";
 import { SkillsSection } from "@/components/features/settings/skills-section";
-import {
-  getAgentConfig,
-  getMcpConfig,
-  listAgentProfiles,
-  listRepos,
-  listSkills,
-} from "@/lib/api/endpoints";
+import { getAgentConfig, getMcpConfig, listAgentProfiles, listSkills } from "@/lib/api/endpoints";
 import { getDictionary } from "@/lib/i18n/dictionary";
 import { getLocale } from "@/lib/i18n/locale";
 
@@ -20,7 +14,7 @@ export default async function ProjectSettingsPage({ params }: { params: Promise<
   const ps = t.projectSettings;
 
   // Fetch all sections in parallel; fall back gracefully on error
-  const [agentConfigs, skills, mcpConfig, agentProfiles, repos] = await Promise.all([
+  const [agentConfigs, skills, mcpConfig, agentProfiles] = await Promise.all([
     Promise.all([
       getAgentConfig(p, "manager").catch(() => ({ role: "manager" as const, instructions: "" })),
       getAgentConfig(p, "worker").catch(() => ({ role: "worker" as const, instructions: "" })),
@@ -32,7 +26,6 @@ export default async function ProjectSettingsPage({ params }: { params: Promise<
     listSkills(p).catch(() => []),
     getMcpConfig(p).catch(() => ({ servers: [] })),
     listAgentProfiles(p).catch(() => []),
-    listRepos(p).catch(() => []),
   ]);
 
   return (
@@ -72,7 +65,6 @@ export default async function ProjectSettingsPage({ params }: { params: Promise<
           initialProfiles={agentProfiles}
           initialSkills={skills}
           initialMcpConfig={mcpConfig}
-          initialRepos={repos}
         />
 
         <div className="edge-h my-8" aria-hidden />
