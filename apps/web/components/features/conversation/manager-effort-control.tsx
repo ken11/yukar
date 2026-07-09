@@ -45,7 +45,7 @@ export function ManagerEffortControl({ projectId, epicId }: ManagerEffortControl
 
   return (
     <div className="flex items-center gap-1.5" title={t("conversation.effortTooltip")}>
-      <span className="address text-on-surface-variant opacity-60">
+      <span className="address hidden text-on-surface-variant opacity-60 md:inline">
         {t("conversation.effortLabel")}
       </span>
       <div

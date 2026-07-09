@@ -293,11 +293,12 @@ export function ProjectHeader({ projectId, projectName }: ProjectHeaderProps) {
 
   return (
     <header
-      className="sticky top-0 z-20 flex min-h-14 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 edge-h px-4 py-2 md:h-16 md:flex-nowrap md:px-6 md:py-0"
+      className="sticky top-0 z-20 flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 edge-h px-4 py-2 md:h-16 md:flex-nowrap md:px-6 md:py-0"
       style={{ backgroundColor: "var(--color-surface-header)" }}
     >
-      {/* Left: address — truncate prevents overflow on mobile */}
-      <div className="min-w-0 flex-1">
+      {/* Left: address — own full-width row on mobile so it doesn't get squeezed
+          into a multi-line wrap next to the action buttons */}
+      <div className="min-w-0 flex-1 basis-full md:basis-auto">
         <AddressLine segments={addressSegments} />
       </div>
       {/* Right: action buttons — shrink-0 prevents collapsing */}

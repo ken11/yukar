@@ -19,6 +19,7 @@ import { Icon } from "@/components/icon";
 import type { Epic, Project, RunState, ThreadEntry } from "@/lib/api/endpoints";
 import { getEpic, runAction } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
+import { cn } from "@/lib/cn";
 import { useT } from "@/lib/i18n/provider";
 import { useRunActivity } from "@/lib/sse/use-run-activity";
 import { EpicRunProvider } from "./epic-run-context";
@@ -46,6 +47,9 @@ export function EpicShell({
 }: EpicShellProps) {
   const t = useT();
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  // Mobile only: collapse header + tab bar while scrolling down a conversation
+  // (driven by ThreadChatInner via context; the classes only apply below md).
+  const [mobileChromeHidden, setMobileChromeHidden] = useState(false);
   const qc = useQueryClient();
 
   // Subscribe to epic.active_thread_id live.
@@ -106,6 +110,7 @@ export function EpicShell({
       activityState,
       setPausePending,
       clearLiveBuffer,
+      setMobileChromeHidden,
     }),
     [projectId, epicId, project, epic, activityState, setPausePending, clearLiveBuffer],
   );
@@ -119,8 +124,15 @@ export function EpicShell({
        * Each content pane (ThreadPageClient, etc.) manages its own scroll.
        */}
       <div className="flex h-full flex-col overflow-hidden md:h-full">
-        {/* nameplate (sticky) — shrink-0 */}
-        <div className="shrink-0">
+        {/* nameplate (sticky) — shrink-0.
+            Mobile: collapses while scrolling down the conversation (max-h transition);
+            desktop is pinned open via md:max-h-none. */}
+        <div
+          className={cn(
+            "shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 md:max-h-none md:opacity-100",
+            mobileChromeHidden ? "max-md:max-h-0 max-md:opacity-0" : "max-md:max-h-32",
+          )}
+        >
           <EpicScopeHeader onStopRequest={() => setShowStopConfirm(true)} />
         </div>
 
@@ -187,8 +199,13 @@ export function EpicShell({
           </div>
         )}
 
-        {/* tab bar (shrink-0, no top dependency needed) */}
-        <div className="shrink-0">
+        {/* tab bar (shrink-0, no top dependency needed) — collapses with the header on mobile */}
+        <div
+          className={cn(
+            "shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 md:max-h-none md:opacity-100",
+            mobileChromeHidden ? "max-md:max-h-0 max-md:opacity-0" : "max-md:max-h-16",
+          )}
+        >
           <EpicTabBar />
         </div>
 

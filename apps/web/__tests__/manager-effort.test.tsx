@@ -74,6 +74,7 @@ function effortWrapper(queryClient: QueryClient, contextEpic: Epic | null = base
     },
     setPausePending: vi.fn(),
     clearLiveBuffer: vi.fn(),
+    setMobileChromeHidden: vi.fn(),
   };
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (

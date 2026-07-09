@@ -2,6 +2,7 @@
 
 import { AssistantRuntimeProvider, useExternalStoreRuntime } from "@assistant-ui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEpicRun } from "@/components/chrome/epic-run-context";
 import { NewThreadModal } from "@/components/features/threads/new-thread-modal";
 import { Icon } from "@/components/icon";
 import type { ThreadEntry } from "@/lib/api/endpoints";
@@ -33,6 +34,7 @@ export function ThreadChatInner({
   isArchived,
   projectId,
   epicId,
+  threadListToggle,
 }: {
   thread: ThreadEntry | null;
   messages: import("@assistant-ui/react").ThreadMessageLike[];
@@ -51,11 +53,39 @@ export function ThreadChatInner({
   isArchived?: boolean;
   projectId?: string;
   epicId?: string;
+  /** Mobile-only thread-list toggle button, rendered at the head of the role bar (md:hidden inside) */
+  threadListToggle?: React.ReactNode;
 }) {
   const t = useT();
   const [value, setValue] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  // Mobile reading mode: scrolling down the history collapses the epic header +
+  // tab bar (EpicShell applies the classes below md only); scrolling up restores them.
+  const { setMobileChromeHidden } = useEpicRun();
+  const lastScrollTopRef = useRef(0);
+  // Programmatic scrolls (auto-scroll to the latest message) must not collapse
+  // the chrome — only user gestures should. The auto-scroll effect bumps this
+  // deadline before calling scrollIntoView.
+  const suppressChromeHideUntilRef = useRef(0);
+  const handleHistoryScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const el = e.currentTarget;
+      const delta = el.scrollTop - lastScrollTopRef.current;
+      lastScrollTopRef.current = el.scrollTop;
+      if (performance.now() < suppressChromeHideUntilRef.current) return;
+      if (Math.abs(delta) < 8) return;
+      if (delta > 0 && el.scrollTop > 48) {
+        setMobileChromeHidden(true);
+      } else if (delta < 0) {
+        setMobileChromeHidden(false);
+      }
+    },
+    [setMobileChromeHidden],
+  );
+  // Restore the chrome when leaving the conversation (e.g. switching to the tasks tab)
+  useEffect(() => () => setMobileChromeHidden(false), [setMobileChromeHidden]);
 
   const handleAdapterSend = useCallback(
     async (content: string) => {
@@ -84,6 +114,8 @@ export function ThreadChatInner({
   const streamTextLen = streamStateTextLength(streamState);
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll triggers on content length changes
   useEffect(() => {
+    // Smooth scroll can emit events for up to ~1s — don't let it collapse the mobile chrome
+    suppressChromeHideUntilRef.current = performance.now() + 1000;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, streamTextLen]);
 
@@ -94,6 +126,15 @@ export function ThreadChatInner({
       composerRef.current?.focus();
     }
   }, [awaitingInput, isAwaitingInput]);
+
+  // Auto-grow the composer with its content (capped by max-h; CSS min-height wins on desktop).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measures on every input; `value` is the trigger, not a read dependency
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [value]);
 
   const allMessages = adapter.messages ?? [];
 
@@ -127,18 +168,21 @@ export function ThreadChatInner({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="flex h-full flex-col overflow-hidden">
-        {/* Thread role badge — datum row, not a card */}
+        {/* Thread role badge — datum row, not a card.
+            Mobile: doubles as the single merged bar (thread-list toggle + role icon + effort);
+            the role LABEL is hidden there because the toggle already shows the trial title. */}
         {thread && (
           <div
-            className="flex shrink-0 items-center gap-3 px-6 py-2"
+            className="flex shrink-0 items-center gap-2 px-2 py-1 md:gap-3 md:px-6 md:py-2"
             style={{ borderBottom: "1px solid var(--color-outline-variant)" }}
           >
+            {threadListToggle}
             <Icon
               name={roleIcon[thread.role] ?? "chat"}
               className="shrink-0 text-[14px] text-on-surface-variant"
               aria-hidden
             />
-            <span className="address text-on-surface-variant">
+            <span className="address hidden text-on-surface-variant md:inline">
               {roleLabel[thread.role] ?? thread.role}
             </span>
             <div className="ml-auto flex items-center gap-3">
@@ -209,20 +253,32 @@ export function ThreadChatInner({
 
         {/* Chat history */}
         <div
-          className="flex-1 overflow-y-auto px-6 py-6"
+          className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-6"
+          onScroll={handleHistoryScroll}
           role="log"
           aria-live="polite"
           aria-label="Conversation"
         >
-          <div className="mx-auto max-w-[var(--measure-read)] space-y-8">
-            {allMessages.map((msg, i) => (
-              <MessageRow
-                key={msg.id ?? i}
-                msg={msg}
-                roleLabel={roleLabel[threadRole] ?? threadRole}
-                role={threadRole}
-              />
-            ))}
+          <div className="mx-auto max-w-[var(--measure-read)] space-y-3 md:space-y-8">
+            {allMessages.map((msg, i) => {
+              // Mobile groups consecutive same-role messages under one attribution
+              // header (desktop keeps a header per bubble — see MessageRow).
+              const prev = i > 0 ? allMessages[i - 1] : undefined;
+              const grouped =
+                !!prev &&
+                prev.role === msg.role &&
+                msg.id !== "__awaiting__" &&
+                prev.id !== "__awaiting__";
+              return (
+                <MessageRow
+                  key={msg.id ?? i}
+                  msg={msg}
+                  roleLabel={roleLabel[threadRole] ?? threadRole}
+                  role={threadRole}
+                  grouped={grouped}
+                />
+              );
+            })}
 
             {/* Zero content + running placeholder */}
             {allMessages.length === 0 && isRunning && (
@@ -285,10 +341,12 @@ export function ThreadChatInner({
           </div>
         ) : canCompose ? (
           <div className="shrink-0" style={{ borderTop: "1px solid var(--color-outline-variant)" }}>
-            <div className="mx-auto max-w-[var(--measure-read)] px-6 py-4">
-              {/* Recess surface + shadow datum */}
+            <div className="mx-auto max-w-[var(--measure-read)] px-4 py-2.5 md:px-6 md:py-4">
+              {/* Recess surface + shadow datum.
+                  Mobile: single row (auto-growing textarea + icon send button).
+                  Desktop (md:): column layout with the labelled send button below. */}
               <div
-                className="flex flex-col"
+                className="flex items-end md:flex-col md:items-stretch"
                 style={{
                   backgroundColor: "var(--color-surface-container-lowest)",
                   border: "1px solid var(--color-outline-variant)",
@@ -302,24 +360,26 @@ export function ThreadChatInner({
                   onChange={(e) => setValue(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder={t("conversation.composerPlaceholder")}
-                  rows={3}
-                  className="flex-1 resize-none bg-transparent px-4 pt-3 pb-2 text-body-md text-on-surface placeholder:text-outline focus:outline-none"
+                  rows={1}
+                  className="max-h-40 min-w-0 flex-1 resize-none bg-transparent px-3 pt-2.5 pb-2 text-body-md text-on-surface placeholder:text-outline focus:outline-none md:px-4 md:pt-3 md:min-h-[80px]"
                   aria-label={t("conversation.composerPlaceholder")}
                 />
-                <div className="flex items-center justify-end gap-3 px-3 pb-3">
+                <div className="flex shrink-0 items-center justify-end gap-3 p-1.5 md:px-3 md:pb-3 md:pt-0">
                   <button
                     type="button"
                     onClick={handleSend}
                     disabled={!value.trim() || isSending}
-                    className="flex items-center gap-1.5 rounded px-3 py-1.5 text-body-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label={isSending ? t("conversation.sending") : t("conversation.send")}
+                    className="flex min-h-[40px] min-w-[40px] items-center justify-center gap-1.5 rounded px-2 py-2 text-body-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-40 md:min-h-[32px] md:min-w-0 md:px-3 md:py-1.5"
                     style={{
                       backgroundColor: "var(--color-primary)",
                       color: "var(--color-on-primary)",
-                      minHeight: "32px",
                     }}
                   >
-                    <Icon name="send" className="text-[15px]" aria-hidden />
-                    {isSending ? t("conversation.sending") : t("conversation.send")}
+                    <Icon name="send" className="text-[18px] md:text-[15px]" aria-hidden />
+                    <span className="hidden md:inline">
+                      {isSending ? t("conversation.sending") : t("conversation.send")}
+                    </span>
                   </button>
                 </div>
               </div>

@@ -74,8 +74,8 @@ export function AgentConfigsSection({ projectId, initialConfigs }: AgentConfigsS
       </p>
       <p className="mb-5 text-[12px] text-outline">{ps.sections.agentInstructionsHint}</p>
 
-      {/* Role tabs */}
-      <div className="mb-4 flex gap-0 border-b border-outline-variant/40">
+      {/* Role tabs — horizontally scrollable on narrow screens, scrollbar hidden */}
+      <div className="mb-4 flex gap-0 overflow-x-auto border-b border-outline-variant/40 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
         {ROLES.map((role) => {
           const active = activeRole === role;
           return (
@@ -85,7 +85,7 @@ export function AgentConfigsSection({ projectId, initialConfigs }: AgentConfigsS
               role="tab"
               aria-selected={active}
               onClick={() => setActiveRole(role)}
-              className={`flex items-center gap-1.5 border-b-2 px-4 py-2 text-[12px] uppercase tracking-wider transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30 ${
+              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-4 py-2 text-[12px] uppercase tracking-wider transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30 ${
                 active
                   ? "border-white text-on-surface"
                   : "border-transparent text-outline hover:border-outline-variant hover:text-on-surface-variant"

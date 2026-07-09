@@ -49,6 +49,7 @@ const en = {
       planned: "Planned",
     },
     close: "Close",
+    actionsToggle: "Show epic actions",
     reopen: "Reopen",
     approve: "Approve",
     approveTitle: "Approve as complete (for investigation epics with nothing to merge)",

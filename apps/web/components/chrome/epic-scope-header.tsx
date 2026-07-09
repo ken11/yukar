@@ -17,6 +17,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { useState } from "react";
 import { RunControlsBar } from "@/components/features/epics/run-controls";
 import { NewThreadModal } from "@/components/features/threads/new-thread-modal";
 import { Icon } from "@/components/icon";
@@ -53,6 +54,41 @@ function resolveStatus(epicStatus: string | undefined, runStatus: string): Statu
   if (runStatus === "error") return "error";
   return "idle";
 }
+
+/**
+ * Mobile-only compact status glyph (icon, no text). The full StatusBadge lives in
+ * the controls row, which is collapsed behind the ⋯ toggle on mobile — this glyph
+ * keeps the state visible without duplicating the badge's text in the DOM
+ * (duplicate text/testids would break Playwright strict mode).
+ */
+const MOBILE_STATUS_GLYPH: Record<string, { icon: string; color?: string; labelKey: string }> = {
+  running: {
+    icon: "radio_button_checked",
+    color: "var(--color-running)",
+    labelKey: "epic.status.running",
+  },
+  in_progress: {
+    icon: "radio_button_checked",
+    color: "var(--color-running)",
+    labelKey: "epic.status.running",
+  },
+  preparing: { icon: "sync", labelKey: "epic.status.preparing" },
+  awaiting: {
+    icon: "pending_actions",
+    color: "var(--color-light)",
+    labelKey: "epic.status.awaiting",
+  },
+  paused: { icon: "pause", labelKey: "epic.status.paused" },
+  interrupted: { icon: "warning", labelKey: "epic.status.interrupted" },
+  in_review: { icon: "rate_review", labelKey: "epic.status.in_review" },
+  completed: { icon: "check", labelKey: "epic.status.completed" },
+  merged: { icon: "check", labelKey: "epic.status.merged" },
+  closed: { icon: "lock", labelKey: "epic.status.closed" },
+  error: { icon: "error", color: "var(--color-error)", labelKey: "epic.status.error" },
+  planned: { icon: "schedule", labelKey: "epic.status.planned" },
+  blocked: { icon: "block", labelKey: "epic.status.blocked" },
+  idle: { icon: "circle", labelKey: "epic.status.idle" },
+};
 
 /** Telemetry instrument — task progress displayed in .data mono */
 function TelemetryInstrument({ tasksDone, tasksTotal }: { tasksDone: number; tasksTotal: number }) {
@@ -91,6 +127,11 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
   const t = useT();
   const { projectId, epicId, project, epic, activityState, setPausePending } = useEpicRun();
 
+  // Mobile only: the controls row (status badge + run controls + new trial) is
+  // collapsed behind a ⋯ toggle to give the conversation the vertical space.
+  // Desktop (md:) ignores this state — the row is always inline there.
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+
   const isRunning =
     activityState.runStatus === "running" || activityState.runStatus === "preparing";
   const status = resolveStatus(epic?.status, activityState.runStatus);
@@ -112,10 +153,16 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
         // Running only: single cyan point at the left edge (.light-v + .light-live)
         isRunning ? "light-v light-live" : "",
       )}
-      style={{ backgroundColor: "var(--color-surface-header)" }}
+      style={{
+        backgroundColor: "var(--color-surface-header)",
+        // Topmost element on mobile epic routes (the global top bar is hidden there)
+        paddingTop: "env(safe-area-inset-top)",
+      }}
     >
-      {/* Top row: datum address band — edge-h provides the datum line (header surface receives light, boundary with field is the horizon) */}
-      <div className="edge-h flex min-w-0 items-center overflow-hidden px-4 pt-2 pb-1.5 md:px-6">
+      {/* Top row: datum address band — desktop only. On mobile the global top bar
+          already shows the location and the back chevron covers navigation, so
+          this row is dropped to reclaim vertical space for the conversation. */}
+      <div className="edge-h hidden min-w-0 items-center overflow-hidden px-4 pt-2 pb-1.5 md:flex md:px-6">
         {/* AddressLine: min-w-0 + truncate prevents long paths from overflowing */}
         <div className="min-w-0 truncate">
           <AddressLine
@@ -132,7 +179,7 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
        * Mobile: flex-col (vertical stack) — row 1 = title row, row 2 = controls
        * Desktop (md:): flex-row, single-line layout as before
        */}
-      <div className="flex flex-col gap-2 px-4 py-2 md:flex-row md:items-center md:gap-x-4 md:px-6 md:min-h-[52px]">
+      <div className="flex flex-col gap-2 px-4 py-1.5 md:flex-row md:items-center md:gap-x-4 md:px-6 md:py-2 md:min-h-[52px]">
         {/* Row 1: back chevron + Epic switcher */}
         <div className="flex min-w-0 items-center gap-x-2 md:flex-1">
           {/* Back chevron — shrink-0 keeps it always visible */}
@@ -149,10 +196,46 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
           <h2 className="min-w-0 flex-1">
             <EpicSwitcher />
           </h2>
+
+          {/* Mobile only: compact status glyph — the full badge is inside the collapsed controls row */}
+          {(() => {
+            const glyph = MOBILE_STATUS_GLYPH[status] ?? MOBILE_STATUS_GLYPH.idle;
+            return (
+              <span
+                className="flex shrink-0 items-center md:hidden"
+                role="status"
+                aria-label={t(glyph.labelKey)}
+                title={t(glyph.labelKey)}
+                style={{ color: glyph.color ?? "var(--color-on-surface-variant)" }}
+              >
+                <Icon
+                  name={glyph.icon}
+                  className={cn("text-[16px]", isRunning && "animate-pulse")}
+                />
+              </span>
+            );
+          })()}
+
+          {/* Mobile only: ⋯ toggle for the controls row */}
+          <button
+            type="button"
+            onClick={() => setMobileActionsOpen((v) => !v)}
+            aria-expanded={mobileActionsOpen}
+            aria-label={t("epic.actionsToggle")}
+            title={t("epic.actionsToggle")}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset md:hidden"
+          >
+            <Icon name={mobileActionsOpen ? "expand_less" : "more_horiz"} className="text-[20px]" />
+          </button>
         </div>
 
-        {/* Row 2: controls — flex-wrap on mobile, flex-nowrap on desktop */}
-        <div className="flex flex-wrap items-center gap-2 md:flex-nowrap md:shrink-0 md:gap-3">
+        {/* Row 2: controls — always inline on desktop; collapsed behind ⋯ on mobile */}
+        <div
+          className={cn(
+            "flex-wrap items-center gap-2 md:flex md:flex-nowrap md:shrink-0 md:gap-3",
+            mobileActionsOpen ? "flex" : "hidden",
+          )}
+        >
           <TelemetryInstrument tasksDone={tasksDone} tasksTotal={tasksTotal} />
           <StatusBadge status={status} />
           <RunControlsBar

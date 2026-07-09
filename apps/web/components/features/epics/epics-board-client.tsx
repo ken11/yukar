@@ -263,7 +263,9 @@ function EpicBoardRow({
       data-testid={`epic-card-${epic.id}`}
       data-epic-status={epic.status}
       className={cn(
-        "flex items-center gap-3 py-3 transition-colors hover:bg-surface-container md:gap-6 md:py-4",
+        // Mobile: wrap into two lines (id/status/actions, then full-width title).
+        // Desktop (md:): single row.
+        "flex flex-wrap items-center gap-3 py-3 transition-colors hover:bg-surface-container md:flex-nowrap md:gap-6 md:py-4",
       )}
       style={{
         borderBottom: "1px solid var(--edge-shadow)",
@@ -301,16 +303,22 @@ function EpicBoardRow({
         </span>
       </Link>
 
-      {/* Title + description — flex-1 */}
-      <Link href={href} className="min-w-0 flex-1 focus-visible:outline-none">
+      {/* Title + description — full-width second line on mobile, flex-1 inline on desktop */}
+      <Link
+        href={href}
+        className="order-last w-full min-w-0 pl-7 focus-visible:outline-none md:order-none md:w-auto md:flex-1 md:pl-0"
+      >
         <span className="font-sans text-[14px] font-semibold text-on-surface">{epic.title}</span>
         {epic.description && (
           <p className="mt-0.5 truncate text-[12px] text-on-surface-variant">{epic.description}</p>
         )}
       </Link>
 
-      {/* StatusBadge */}
-      <StatusBadge status={statusForBadge as Parameters<typeof StatusBadge>[0]["status"]} />
+      {/* StatusBadge — pushed right on mobile (title is on its own line) */}
+      <StatusBadge
+        status={statusForBadge as Parameters<typeof StatusBadge>[0]["status"]}
+        className="ml-auto md:ml-0"
+      />
 
       {/* Inline close / reopen action */}
       {isClosed ? (

@@ -18,6 +18,8 @@ const mockPathname = vi.fn(() => "/projects");
 vi.mock("next/navigation", () => ({
   usePathname: () => mockPathname(),
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  // Non-epic segments — the drawer hides itself on epic detail routes
+  useSelectedLayoutSegments: () => [],
 }));
 
 // Mock next/link

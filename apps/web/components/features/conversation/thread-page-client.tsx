@@ -114,8 +114,9 @@ export function ThreadPageClient({
         className={cn(
           // PC: always shown as a normal flex item
           "hidden md:flex",
-          // Mobile: fixed overlay sliding in from the left (offset by topbar=48px)
-          mobileListOpen && "fixed inset-x-0 bottom-0 top-12 z-30 flex",
+          // Mobile: fixed overlay sliding in from the left (the mobile top bar is
+          // hidden on epic detail routes, so the overlay starts at the very top)
+          mobileListOpen && "fixed inset-x-0 bottom-0 top-0 z-30 flex",
         )}
         style={mobileListOpen ? { paddingBottom: "env(safe-area-inset-bottom)" } : undefined}
       >
@@ -130,29 +131,30 @@ export function ThreadPageClient({
 
       {/* Right pane: chat (full width on mobile) */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Mobile: thread list toggle button (md:hidden) */}
-        <div
-          className="flex shrink-0 items-center gap-2 px-3 py-2 md:hidden"
-          style={{ borderBottom: "1px solid var(--color-outline-variant)" }}
-        >
-          <button
-            type="button"
-            onClick={() => setMobileListOpen((v) => !v)}
-            className="flex items-center gap-2 rounded px-2 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset"
-            style={{ minHeight: "44px", minWidth: "44px" }}
-            aria-label={
-              mobileListOpen ? t("conversation.closeThreadList") : t("conversation.openThreadList")
-            }
-            aria-expanded={mobileListOpen}
-          >
-            <Icon name={mobileListOpen ? "close" : "menu"} className="text-[18px]" aria-hidden />
-            <span className="truncate text-[12px]">
-              {thread?.title ?? t("conversation.manager")}
-            </span>
-          </button>
-        </div>
-
+        {/*
+         * Mobile thread-list toggle: rendered INSIDE ThreadChatInner's role bar
+         * (single merged bar) instead of a dedicated bar, to keep mobile chrome flat.
+         */}
         <ThreadChatInner
+          threadListToggle={
+            <button
+              type="button"
+              onClick={() => setMobileListOpen((v) => !v)}
+              className="flex min-w-0 shrink items-center gap-1.5 rounded px-1.5 py-1 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset md:hidden"
+              style={{ minHeight: "40px" }}
+              aria-label={
+                mobileListOpen
+                  ? t("conversation.closeThreadList")
+                  : t("conversation.openThreadList")
+              }
+              aria-expanded={mobileListOpen}
+            >
+              <Icon name={mobileListOpen ? "close" : "menu"} className="text-[18px]" aria-hidden />
+              <span className="truncate text-[12px]">
+                {thread?.title ?? t("conversation.manager")}
+              </span>
+            </button>
+          }
           thread={thread}
           messages={messages}
           streamState={liveState.streamState}

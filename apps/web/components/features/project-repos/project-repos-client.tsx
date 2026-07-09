@@ -364,7 +364,7 @@ export function ProjectReposClient({
   });
 
   return (
-    <div className="px-10 py-8">
+    <div className="px-4 py-6 md:px-10 md:py-8">
       {/* Datum address */}
       <div className="mb-6">
         <p className="address">
@@ -383,9 +383,9 @@ export function ProjectReposClient({
         <EmptyState address={`${projectId} / repos`} message={t("repos.notConfigured")} />
       ) : (
         <div className="w-full max-w-[960px]">
-          {/* Table header */}
+          {/* Table header — hidden on mobile (rows stack there, so columns have no meaning) */}
           <div
-            className="grid items-center border-b border-outline-variant/40 pb-2"
+            className="hidden items-center border-b border-outline-variant/40 pb-2 md:grid"
             style={{ gridTemplateColumns: "1fr 1fr minmax(80px,auto) minmax(80px,auto) 40px" }}
           >
             <span className="text-[11px] font-medium uppercase tracking-[0.05em] text-outline">
@@ -421,24 +421,32 @@ export function ProjectReposClient({
                 data-testid={`repo-row-${repo.name}`}
                 className="border-b border-outline-variant/20 py-5"
               >
-                {/* Summary row */}
+                {/* Summary row — stacked on mobile (name+delete / path / branch+index), grid on desktop.
+                    The inline gridTemplateColumns only applies once md:grid kicks in. */}
                 <div
-                  className="grid items-center"
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1.5 md:grid md:gap-0"
                   style={{
                     gridTemplateColumns: "1fr 1fr minmax(80px,auto) minmax(80px,auto) 40px",
                   }}
                 >
-                  <span className="data text-on-surface">{repo.name}</span>
-                  <span className="data truncate text-outline" title={repo.path}>
+                  <span className="data order-1 text-on-surface md:order-none">{repo.name}</span>
+                  <span
+                    className="data order-3 w-full truncate text-outline md:order-none md:w-auto"
+                    title={repo.path}
+                  >
                     {repo.path}
                   </span>
-                  <span className="data text-on-surface-variant">{repo.default_branch}</span>
-                  <IndexStateBadge
-                    repoName={repo.name}
-                    indexStatus={indexStatus}
-                    onReindex={(name) => reindexMutation.mutate(name)}
-                    isReindexing={isReindexing}
-                  />
+                  <span className="data order-4 text-on-surface-variant md:order-none">
+                    {repo.default_branch}
+                  </span>
+                  <span className="order-5 md:order-none">
+                    <IndexStateBadge
+                      repoName={repo.name}
+                      indexStatus={indexStatus}
+                      onReindex={(name) => reindexMutation.mutate(name)}
+                      isReindexing={isReindexing}
+                    />
+                  </span>
                   <button
                     type="button"
                     data-testid={`delete-repo-btn-${repo.name}`}
@@ -447,14 +455,14 @@ export function ProjectReposClient({
                       setConfirmDelete(repo.name);
                     }}
                     aria-label={t("repos.removeLabel").replace("{repo}", repo.name)}
-                    className="justify-self-end rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-error"
+                    className="order-2 ml-auto rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-error md:order-none md:ml-0 md:justify-self-end"
                   >
                     <Icon name="delete" className="text-[16px]" />
                   </button>
                 </div>
 
-                {/* Command allow/deny */}
-                <div className="mt-4 grid grid-cols-2 gap-4">
+                {/* Command allow/deny — stacked on mobile */}
+                <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <label
                       htmlFor={`repo-allow-${repo.name}`}

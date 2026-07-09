@@ -60,7 +60,8 @@ export function TabBar({ items, className }: TabBarProps) {
     <div
       className={cn(
         // Mobile: horizontal scroll enabled, scrollbar hidden
-        "flex h-11 items-end edge-h",
+        // shrink-0: keep the 44px height when placed inside a column flex that overflows
+        "flex h-11 shrink-0 items-end edge-h",
         "overflow-x-auto",
         "[&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]",
         className,

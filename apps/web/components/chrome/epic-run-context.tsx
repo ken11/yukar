@@ -21,6 +21,12 @@ export interface EpicRunContextValue {
   activityState: RunActivityState;
   setPausePending: (v: boolean) => void;
   clearLiveBuffer: (threadId: string) => void;
+  /**
+   * Mobile only: collapse the epic header + tab bar while the user scrolls down
+   * a conversation (scroll up restores them). Desktop ignores this — the CSS
+   * classes it drives only apply below md. Called from ThreadChatInner's scroll.
+   */
+  setMobileChromeHidden: (v: boolean) => void;
 }
 
 const EpicRunContext = createContext<EpicRunContextValue | null>(null);

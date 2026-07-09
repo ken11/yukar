@@ -435,14 +435,10 @@ export function EpicSwitcher() {
 
         {/* epic title */}
         <span
-          className="min-w-0 font-sans font-semibold text-on-surface text-[20px] leading-[26px] md:text-[length:var(--text-title,26px)] md:leading-[length:var(--text-title--line-height,32px)]"
+          className="min-w-0 line-clamp-1 font-sans font-semibold text-on-surface text-[17px] leading-[24px] md:line-clamp-2 md:text-[length:var(--text-title,26px)] md:leading-[length:var(--text-title--line-height,32px)]"
           style={{
             letterSpacing: "var(--text-title--letter-spacing, -0.02em)",
             wordBreak: "break-word",
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical",
-            overflow: "hidden",
           }}
         >
           {epic?.title ?? epicId}

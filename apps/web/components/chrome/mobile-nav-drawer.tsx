@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSelectedLayoutSegments } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icon";
 import { LanguageToggle } from "@/components/ui/language-toggle";
@@ -33,6 +33,13 @@ export function MobileNavDrawer({ extraControls }: MobileNavDrawerProps) {
   const pathname = usePathname();
   const t = useT();
   const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Epic detail routes drop the mobile top bar entirely — real phone browsers
+  // already lose 100–150px to their own chrome, so the conversation gets the
+  // space instead. The back chevron in EpicScopeHeader covers navigation.
+  // Only matches within the (project) layout; (global) routes never start with "epics".
+  const segments = useSelectedLayoutSegments();
+  const isEpicDetail = segments[0] === "epics" && segments.length > 1;
 
   // Close the drawer on route transition
   // biome-ignore lint/correctness/useExhaustiveDependencies: close on route change
@@ -73,6 +80,10 @@ export function MobileNavDrawer({ extraControls }: MobileNavDrawerProps) {
       document.body.style.overflow = "";
     };
   }, [open]);
+
+  if (isEpicDetail) {
+    return null;
+  }
 
   return (
     <>

@@ -41,6 +41,7 @@ const ja = {
       planned: "計画中",
     },
     close: "終了",
+    actionsToggle: "エピック操作を表示",
     reopen: "再開",
     approve: "完了として承認",
     approveTitle: "マージ不要の調査エピックなどを完了として承認します",

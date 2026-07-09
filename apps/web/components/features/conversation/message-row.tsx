@@ -1,6 +1,7 @@
 "use client";
 
 import { Icon } from "@/components/icon";
+import { cn } from "@/lib/cn";
 import { useT } from "@/lib/i18n/provider";
 import { MessageContent } from "./message-content";
 
@@ -21,13 +22,15 @@ export function RoleAttribution({
   agentRole,
   label,
   time,
+  className,
 }: {
   agentRole: string;
   label: string;
   time: string;
+  className?: string;
 }) {
   return (
-    <div className="mb-2 flex items-center gap-2">
+    <div className={cn("mb-2 flex items-center gap-2", className)}>
       <Icon
         name={roleIcon[agentRole] ?? "chat"}
         className="shrink-0 text-[13px] text-on-surface-variant"
@@ -50,16 +53,24 @@ export function RoleAttribution({
 export function UserMessage({
   msg,
   time,
+  grouped,
 }: {
   msg: import("@assistant-ui/react").ThreadMessageLike;
   time: string;
+  /** Same role as the previous message — mobile hides the attribution header (desktop keeps it) */
+  grouped?: boolean;
 }) {
   const t = useT();
   return (
     <div className="flex flex-col gap-1" data-testid="user-message">
-      <RoleAttribution agentRole="user" label={t("conversation.userRole")} time={time} />
+      <RoleAttribution
+        agentRole="user"
+        label={t("conversation.userRole")}
+        time={time}
+        className={grouped ? "hidden md:flex" : undefined}
+      />
       <div
-        className="rounded px-4 py-3"
+        className="rounded px-3 py-2.5 md:px-4 md:py-3"
         style={{
           border: "1px solid var(--color-outline-variant)",
           backgroundColor: "transparent",
@@ -81,18 +92,26 @@ export function AgentMessage({
   role,
   time,
   isStreaming,
+  grouped,
 }: {
   msg: import("@assistant-ui/react").ThreadMessageLike;
   roleLabel: string;
   role: string;
   time: string;
   isStreaming: boolean;
+  /** Same role as the previous message — mobile hides the attribution header (desktop keeps it) */
+  grouped?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-1" data-testid="agent-message">
-      <RoleAttribution agentRole={role} label={roleLabel} time={time} />
+      <RoleAttribution
+        agentRole={role}
+        label={roleLabel}
+        time={time}
+        className={grouped ? "hidden md:flex" : undefined}
+      />
       <div
-        className="rounded px-4 py-3"
+        className="rounded px-3 py-2.5 md:px-4 md:py-3"
         style={{ backgroundColor: "var(--color-surface-container)" }}
       >
         <MessageContent content={msg.content} />
@@ -158,10 +177,13 @@ export function MessageRow({
   msg,
   roleLabel,
   role,
+  grouped,
 }: {
   msg: import("@assistant-ui/react").ThreadMessageLike;
   roleLabel: string;
   role: string;
+  /** Same role as the previous message — mobile hides the attribution header (desktop keeps it) */
+  grouped?: boolean;
 }) {
   const t = useT();
   const isUser = msg.role === "user";
@@ -173,7 +195,7 @@ export function MessageRow({
     return <AwaitingMessage msg={msg} t={t} />;
   }
   if (isUser) {
-    return <UserMessage msg={msg} time={time} />;
+    return <UserMessage msg={msg} time={time} grouped={grouped} />;
   }
   return (
     <AgentMessage
@@ -182,6 +204,7 @@ export function MessageRow({
       role={role}
       time={time}
       isStreaming={isStreaming}
+      grouped={grouped}
     />
   );
 }
