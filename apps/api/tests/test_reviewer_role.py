@@ -466,9 +466,10 @@ def _reviewer_orchestrator():  # type: ignore[no-untyped-def]
 
 
 class TestReviewerWorktreeTools:
-    """_build_worktree_ro_tools binds run_tests/fs_read/repo_grep to the active
-    manager trial's worktree(s), multi-repo aware (the tools take a `repo` arg),
-    and only for repos whose worktree exists.  (The positive single-repo path is
+    """_build_worktree_ro_tools binds run_tests/fs_read/repo_grep for EVERY repo
+    registered in the project, multi-repo aware (the tools take a `repo` arg),
+    preferring the active manager trial's worktree and falling back to a repo's
+    base checkout when no worktree exists yet.  (The positive single-repo path is
     also exercised end-to-end by e2e/reviewer.spec.ts, whose fake reviewer calls
     fs_read on the manager trial's worktree.)"""
 
@@ -518,15 +519,44 @@ class TestReviewerWorktreeTools:
         assert unknown["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_missing_worktree_skips_worktree_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """A single-repo epic whose trial worktree does not exist gets NO worktree tools."""
+    async def test_missing_worktree_falls_back_to_base_checkout(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A registered repo with NO trial worktree still gets tools, reading the
+        repo's base checkout — inspection must work from Turn 0, before any task
+        has created a worktree."""
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-base", "EP-base"
+        await save_project(root, Project(id=pid, name=pid))
+        # Register a repo whose base checkout has a file — but never create a worktree.
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "base.txt").write_text("base checkout content")
+        await save_repo(root, pid, Repo(name="myrepo", path=str(repo_dir)))
+
+        orch = _reviewer_orchestrator()
+        # touched_repos is empty: the repo has not been touched by any task yet.
+        orch._epic = Epic(id=eid, slug="s", title="T", status="in_review", touched_repos=[])
+        tools = await orch._build_worktree_ro_tools(root, pid, eid)
+        by_name = {getattr(t, "tool_name", None): t for t in tools}
+        assert set(by_name) == {"run_tests", "fs_read", "repo_grep"}
+        # fs_read resolves against the base checkout when no worktree exists.
+        result = by_name["fs_read"](path="base.txt", repo="myrepo")
+        assert result["status"] == "success"
+        assert "base checkout content" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_no_registered_repos_yields_no_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A project with no registered repos gets no worktree tools."""
         from yukar.models.epic import Epic
 
         orch = _reviewer_orchestrator()
         orch._epic = Epic(
             id="EP-nw", slug="s", title="T", status="in_review", touched_repos=["myrepo"]
         )
-        # No worktree was ever created under (root, p, EP-nw, "manager", "myrepo").
+        # No project/repo was ever saved under (root, "p").
         tools = await orch._build_worktree_ro_tools(str(tmp_path / "ws"), "p", "EP-nw")
         assert tools == []
 

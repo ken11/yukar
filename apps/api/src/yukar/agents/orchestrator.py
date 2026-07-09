@@ -1516,7 +1516,7 @@ class EpicOrchestrator:
     async def _build_worktree_ro_tools(
         self, root: str, project_id: str, epic_id: str, *, include_run_tests: bool = True
     ) -> list[Any]:
-        """Read-only worktree tools bound to the active manager trial's worktree.
+        """Read-only inspection tools for EVERY repo registered in the project.
 
         Returns ``fs_read`` + ``repo_grep`` always, plus ``run_tests`` when
         *include_run_tests* is True.  Two callers:
@@ -1530,69 +1530,85 @@ class EpicOrchestrator:
           real files — and would resort to dispatching a Worker just to "check"
           existing work (which the Evaluator then rejects as an empty diff).
 
-        Bound to the ACTIVE MANAGER TRIAL's worktree(s) (the caller has no
-        worktree of its own).  Safe because a reviewer / continuation run is
-        mutually exclusive with the manager dispatch run, so nothing else is
-        writing those worktrees.
+        Every repo REGISTERED in the project is inspectable — NOT just repos a
+        task has already touched.  For each repo we bind the ACTIVE MANAGER
+        TRIAL's worktree when it exists (so results reflect the branch's work);
+        otherwise we fall back to the repo's base checkout (the default-branch
+        state the epic branch forks from).  Both are read-only views, so the
+        tools always work from Turn 0 — before any worktree exists — instead of
+        vanishing and leaving the agent to call a non-existent ``repo_grep``
+        ("Unknown tool").  (A reviewer / continuation run is mutually exclusive
+        with the manager dispatch run, so nothing else is writing those trees.)
 
-        Multi-repo aware: builds one read-only ``AgentContext`` per touched repo
-        whose worktree exists and returns overview tools that take a ``repo``
-        argument and dispatch to the right worktree (one tool name, no collision).
-        A single-repo epic lets the agent omit ``repo``.  Repos with no worktree
-        yet (e.g. no task has run for them) are skipped; if none have a worktree
-        (e.g. an investigation that changed no files), returns ``[]`` and the
-        caller relies on ``read_branch_diff`` + ``repo_search``.
+        Multi-repo aware: builds one read-only ``AgentContext`` per repo and
+        returns overview tools that take a ``repo`` argument and dispatch to the
+        right tree (one tool name, no collision).  Returns ``[]`` only when the
+        project has no registered repos (or none has a readable tree on disk).
         """
+        from pathlib import Path
+
         from yukar.agents.tools.overview_tools import make_overview_ro_tools
         from yukar.agents.trials import resolve_active_trial_id
-        from yukar.storage.project_repo import get_repo
+        from yukar.storage import project_repo
 
         assert self._epic is not None
-        touched = self._epic.touched_repos
-        if not touched:
+
+        # Inspect EVERY repo registered in the project, not only epic.touched_repos:
+        # a repo the project owns must be greppable/readable (and, for the Reviewer,
+        # testable) from Turn 0 — before any task has created a worktree.  Gating on
+        # touched_repos left the Manager/Reviewer with ZERO worktree tools until the
+        # first dispatch, so the prompt-advertised repo_grep/fs_read/run_tests came
+        # back as "Unknown tool".
+        all_repos = await project_repo.list_repos(root, project_id)
+        if not all_repos:
             return []
 
+        # The active trial keys the (branch+worktree) line of work.  It is None when
+        # every manager trial was archived (ghost-worktree fallback refused) — then no
+        # trial worktree exists and every repo simply uses its base checkout below.
         trial_id = await resolve_active_trial_id(root, project_id, epic_id, self._epic)
-        if trial_id is None:
-            return []
 
-        # Build a read-only AgentContext per touched repo whose worktree exists.
-        # The overview tools then take a `repo` argument and dispatch to the right
-        # worktree, so fixed tool names (fs_read / repo_grep / run_tests) no longer
-        # collide across repos.  Command allow/deny is the repo-level config (the
-        # same security boundary the Evaluator's run_tests uses); Manager/Reviewer
-        # have no profile of their own.  Each repo's context is independent, so
-        # build them concurrently (AgentContext.create runs a gitignore walk).
-        async def _ctx_for(repo_name: str) -> tuple[str, AgentContext] | None:
-            worktree_path = p.worktree_dir(root, project_id, epic_id, trial_id, repo_name)
-            if not await asyncio.to_thread(worktree_path.exists):
-                logger.info(
-                    "overview tools: worktree %s missing — skipping repo %s",
-                    worktree_path,
-                    repo_name,
-                )
-                return None
-            repo_obj = await get_repo(root, project_id, repo_name)
-            if repo_obj is None:
-                logger.info(
-                    "overview tools: repo %s not in project config — skipping "
-                    "(worktree %s exists)",
-                    repo_name,
-                    worktree_path,
-                )
-                return None
+        # Build a read-only AgentContext per repo.  Prefer the trial worktree (reflects
+        # the branch's committed work); fall back to the repo's base checkout when no
+        # worktree exists yet.  The overview tools take a `repo` argument and dispatch
+        # to the right tree, so fixed tool names (fs_read / repo_grep / run_tests) do
+        # not collide across repos.  Command allow/deny is the repo-level config (the
+        # same security boundary the Evaluator's run_tests uses); Manager/Reviewer have
+        # no profile of their own.  Each repo's context is independent, so build them
+        # concurrently (AgentContext.create runs a gitignore walk).
+        async def _ctx_for(repo_obj: Any) -> tuple[str, AgentContext] | None:
+            repo_name = repo_obj.name
+            worktree_path = (
+                p.worktree_dir(root, project_id, epic_id, trial_id, repo_name)
+                if trial_id is not None
+                else None
+            )
+            if worktree_path is not None and await asyncio.to_thread(worktree_path.exists):
+                tree_path = worktree_path
+            else:
+                # No trial worktree yet — inspect the repo's base checkout so the tool
+                # still works (read-only; run_tests just executes there).
+                base_path = Path(repo_obj.path)
+                if not await asyncio.to_thread(base_path.exists):
+                    logger.info(
+                        "overview tools: neither worktree nor base checkout exists for "
+                        "repo %s — skipping",
+                        repo_name,
+                    )
+                    return None
+                tree_path = base_path
             ctx = await AgentContext.create(
                 project_id=project_id,
                 epic_id=epic_id,
                 repo_name=repo_name,
-                worktree_path=worktree_path,
+                worktree_path=tree_path,
                 workspace_root=root,
                 allow=list(repo_obj.commands.allow),
                 deny=list(repo_obj.commands.deny),
             )
             return repo_name, ctx
 
-        built = await asyncio.gather(*(_ctx_for(r) for r in touched))
+        built = await asyncio.gather(*(_ctx_for(r) for r in all_repos))
         contexts: dict[str, AgentContext] = dict(b for b in built if b is not None)
 
         return make_overview_ro_tools(contexts, include_run_tests=include_run_tests)

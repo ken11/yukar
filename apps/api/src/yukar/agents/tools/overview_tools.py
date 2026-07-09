@@ -85,7 +85,8 @@ def make_overview_ro_tools(
 
         Reads the CURRENT epic branch's live worktree, so it reflects work
         already committed on the branch (unlike ``repo_search``, whose index is
-        the default branch).
+        the default branch).  Before any worktree exists (e.g. no task has run
+        yet) it reads the repo's base checkout, so it always works.
 
         Args:
             path: File path relative to the repo's worktree root.
@@ -106,7 +107,8 @@ def make_overview_ro_tools(
 
         Searches the CURRENT epic branch's live worktree, so results reflect the
         latest branch state (unlike ``repo_search``, whose index is the default
-        branch).
+        branch).  Before any worktree exists (e.g. no task has run yet) it
+        searches the repo's base checkout, so it always works.
 
         Args:
             pattern: Regex or literal pattern to search for.
