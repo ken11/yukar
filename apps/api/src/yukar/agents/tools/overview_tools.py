@@ -101,9 +101,12 @@ def make_overview_ro_tools(
 
     @tool
     async def repo_grep(
-        pattern: str, path: str = ".", max_results: int = 200, repo: str = ""
+        pattern: str, path: str = ".", max_results: int = 200, context: int = 0, repo: str = ""
     ) -> dict[str, Any]:
         """ripgrep search over a branch worktree (read-only, always current).
+
+        Returns the matching lines themselves as ``path:lineno:text`` (not just
+        a count), optionally with surrounding lines of context.
 
         Searches the CURRENT epic branch's live worktree, so results reflect the
         latest branch state (unlike ``repo_search``, whose index is the default
@@ -114,6 +117,8 @@ def make_overview_ro_tools(
             pattern: Regex or literal pattern to search for.
             path: Sub-path within the repo's worktree (default: whole worktree).
             max_results: Maximum matching lines to return (default 200).
+            context: Surrounding lines to show before/after each match
+                (like ``rg -C``; default 0, capped at 10).
             repo: Required — name the touched repo to search (e.g. a repo seen in
                 read_branch_diff / repo_summarize).
         """
@@ -121,7 +126,7 @@ def make_overview_ro_tools(
         if err is not None:
             return err
         assert name is not None  # _resolve returns a name whenever err is None
-        return await grep_worktree(contexts[name], pattern, path, max_results)
+        return await grep_worktree(contexts[name], pattern, path, max_results, context)
 
     tools: list[Any] = [fs_read, repo_grep]
 

@@ -786,14 +786,15 @@ class TestRepoGrep:
 
     @pytest.mark.asyncio
     async def test_successful_match_parsing(self, tmp_path: Path) -> None:
-        """rg output 'path:lineno:text' is parsed into structured results."""
+        """rg output 'path<US>lineno<US>text' is parsed into structured results
+        AND the matched line is rendered into the LLM-visible content text."""
         from yukar.agents.tools.grep_tools import make_grep_tools
 
         ctx = _make_agent_context(tmp_path)
         tools = make_grep_tools(ctx)
         repo_grep = tools[0]
 
-        rg_stdout = b"a/b.py:12:    def hello():\n"
+        rg_stdout = b"a/b.py\x1f12\x1f    def hello():\n"
         rg_stderr = b""
 
         mock_proc = MagicMock()
@@ -812,6 +813,10 @@ class TestRepoGrep:
         assert result["results"][0]["line"] == 12
         assert result["results"][0]["text"] == "    def hello():"
         assert result["truncated"] is False
+        # The content text (the ONLY part the LLM sees) must include the match
+        # itself, not just the count.
+        content_text = result["content"][0]["text"]
+        assert "a/b.py:12:    def hello():" in content_text
 
     @pytest.mark.asyncio
     async def test_no_match_rc1_is_success(self, tmp_path: Path) -> None:
@@ -863,7 +868,7 @@ class TestRepoGrep:
         tools = make_grep_tools(ctx)
         repo_grep = tools[0]
 
-        lines = [f"file.py:{i}:line {i}".encode() for i in range(1, 11)]
+        lines = [f"file.py\x1f{i}\x1fline {i}".encode() for i in range(1, 11)]
         rg_stdout = b"\n".join(lines) + b"\n"
 
         mock_proc = MagicMock()
@@ -880,6 +885,69 @@ class TestRepoGrep:
         assert len(result["results"]) == 5
         assert result["truncated"] is True
         assert "truncated" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_context_lines_rendered_and_flag_passed(self, tmp_path: Path) -> None:
+        """context>0 adds -C to argv; context lines (rg's 'path-lineno-text'
+        form) are shown in content but NOT parsed as structured matches, even
+        when their text happens to look like 'str:int:rest'."""
+        from yukar.agents.tools.grep_tools import make_grep_tools
+
+        ctx = _make_agent_context(tmp_path)
+        tools = make_grep_tools(ctx)
+        repo_grep = tools[0]
+
+        rg_stdout = (
+            b"a/b.py-11-    # started at 12:34:56\n"
+            b"a/b.py\x1f12\x1f    def hello():\n"
+            b"a/b.py-13-        pass\n"
+        )
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(rg_stdout, b""))
+
+        with patch(
+            "yukar.agents.tools.grep_tools.asyncio.create_subprocess_exec",
+            return_value=mock_proc,
+        ) as mock_exec:
+            result = await repo_grep(pattern="hello", context=2)
+
+        argv = mock_exec.call_args.args
+        assert "-C" in argv
+        assert argv[argv.index("-C") + 1] == "2"
+
+        assert result["status"] == "success"
+        # Only the real match is structured — the timestamp-looking context
+        # line must not be miscounted as a match.
+        assert len(result["results"]) == 1
+        assert result["results"][0]["line"] == 12
+        content_text = result["content"][0]["text"]
+        assert "a/b.py-11-    # started at 12:34:56" in content_text
+        assert "a/b.py:12:    def hello():" in content_text
+        assert "a/b.py-13-        pass" in content_text
+
+    @pytest.mark.asyncio
+    async def test_context_zero_omits_flag(self, tmp_path: Path) -> None:
+        """Default context=0 must not pass -C to rg."""
+        from yukar.agents.tools.grep_tools import make_grep_tools
+
+        ctx = _make_agent_context(tmp_path)
+        tools = make_grep_tools(ctx)
+        repo_grep = tools[0]
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        with patch(
+            "yukar.agents.tools.grep_tools.asyncio.create_subprocess_exec",
+            return_value=mock_proc,
+        ) as mock_exec:
+            result = await repo_grep(pattern="hello")
+
+        assert result["status"] == "success"
+        assert "-C" not in mock_exec.call_args.args
 
     @pytest.mark.asyncio
     async def test_rg_error_rc2_returns_error(self, tmp_path: Path) -> None:

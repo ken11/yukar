@@ -33,12 +33,22 @@ from yukar.agents.tools.response_builder import make_error, make_success
 from yukar.sandbox.env import build_subprocess_env
 from yukar.sandbox.path_guard import PathGuardError
 
+# Unit separator — cannot appear in file paths and effectively never in source
+# text, so match lines split unambiguously even when context lines are present
+# (context lines keep rg's default "path-lineno-text" form, which CAN look like
+# "str:int:rest" and must not be mistaken for a match).
+_MATCH_SEP = "\x1f"
+
+# Upper bound for the context-lines option (rg -C) — keeps output bounded.
+_MAX_CONTEXT_LINES = 10
+
 
 async def grep_worktree(
     ctx: AgentContext,
     pattern: str,
     path: str = ".",
     max_results: int = 200,
+    context: int = 0,
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Run ripgrep over *ctx*'s worktree (read-only core).
@@ -48,9 +58,15 @@ async def grep_worktree(
     implementation of the search + containment logic.  All paths are validated
     through ``ctx.path_guard`` so the search root can never escape the worktree.
 
+    The matched lines themselves (``path:lineno:text``, plus surrounding lines
+    when *context* > 0) are rendered into the ``content`` text — that is the
+    only part of the response the LLM can see, so a bare match count would be
+    useless to it.
+
     Returns a ``make_success``/``make_error`` dict (see ``repo_grep`` docstring).
     """
     worktree = ctx.worktree_path
+    context = max(0, min(context, _MAX_CONTEXT_LINES))
 
     # Validate search root through path_guard (same containment as fs_read).
     try:
@@ -74,6 +90,8 @@ async def grep_worktree(
         "--color=never",
         "--line-number",
         "--no-heading",
+        f"--field-match-separator={_MATCH_SEP}",
+        *(["-C", str(context)] if context > 0 else []),
         "-e",
         pattern,
         "--",
@@ -118,14 +136,20 @@ async def grep_worktree(
     lines = [ln for ln in raw.splitlines() if ln]
 
     results: list[dict[str, Any]] = []
+    display_lines: list[str] = []
     truncated = False
 
     for raw_line in lines:
+        if _MATCH_SEP not in raw_line:
+            # Context line ("path-lineno-text") or group separator ("--") —
+            # only emitted when context > 0.  Pass through for display.
+            display_lines.append(raw_line)
+            continue
         if len(results) >= max_results:
             truncated = True
             break
-        # rg --line-number --no-heading format: "path:lineno:text"
-        parts = raw_line.split(":", 2)
+        # Match line: "path<SEP>lineno<SEP>text" (see _MATCH_SEP).
+        parts = raw_line.split(_MATCH_SEP, 2)
         if len(parts) < 3:
             continue
         try:
@@ -133,10 +157,12 @@ async def grep_worktree(
         except ValueError:
             continue
         results.append({"path": parts[0], "line": line_no, "text": parts[2]})
+        display_lines.append(f"{parts[0]}:{line_no}:{parts[2]}")
 
     n = len(results)
     summary = f"{n} match(es)" + (" (truncated)" if truncated else "")
-    return make_success(summary, results=results, truncated=truncated)
+    text = summary if n == 0 else summary + "\n" + "\n".join(display_lines)
+    return make_success(text, results=results, truncated=truncated)
 
 
 def make_grep_tools(
@@ -162,8 +188,12 @@ def make_grep_tools(
         pattern: str,
         path: str = ".",
         max_results: int = 200,
+        context: int = 0,
     ) -> dict[str, Any]:
         """Search the worktree for a literal or regex pattern using ripgrep.
+
+        Returns the matching lines themselves as ``path:lineno:text`` (not just
+        a count), optionally with surrounding lines of context.
 
         Searches the live worktree files directly — results always reflect the
         most recent edits (repo_search / repo_summarize use a FAISS index that
@@ -183,16 +213,21 @@ def make_grep_tools(
             max_results: Maximum number of matching lines to return.
                 Defaults to 200.  Excess lines are discarded with
                 ``truncated=True`` in the response.
+            context: Number of surrounding lines to show before and after each
+                match (like ``rg -C``).  Defaults to 0 (match lines only);
+                capped at 10.  Use 2-3 to see the code around each match.
 
         Returns:
             A dict with:
             - ``"status"``: ``"success"`` or ``"error"``.
-            - ``"content"``: list of ``{"text": ...}`` — human-readable summary.
+            - ``"content"``: list of ``{"text": ...}`` — match count followed
+              by the matching lines (``path:lineno:text``), interleaved with
+              context lines when *context* > 0.
             - ``"results"``: list of ``{"path": str, "line": int, "text": str}``
               (empty on error or no match).
             - ``"truncated"``: ``True`` when more matches existed than
               *max_results* (only present on success).
         """
-        return await grep_worktree(ctx, pattern, path, max_results, timeout)
+        return await grep_worktree(ctx, pattern, path, max_results, context, timeout=timeout)
 
     return [repo_grep]
