@@ -53,3 +53,6 @@ build/
 .codex
 AGENTS.md
 CLAUDE.md
+
+# ローカル設計メモ（公開リポジトリに含めない）
+/docs/
