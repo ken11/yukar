@@ -21,6 +21,23 @@ Manager loop (spec §6.2 Agent-as-a-Tool):
     Manager retries (with feedback), replans, or gives up per task.
     Manager calls complete_epic() when satisfied.
 
+Turn-end semantics (canonical description):
+    A turn ends in one of three ways, all the agent's own decision: keep
+    calling tools (the turn continues), call ask_user (awaiting_input with a
+    question), or call complete_epic.  Ending a turn with none of these is
+    treated as yielding to the user.  The host never injects a command to keep
+    a run going (the explicit-restart resume prompt on a continuation's turn 0
+    is the one instruction-bearing host prompt, backed by the user pressing
+    restart).  Instead:
+    - A tool-less reply to a HUMAN message parks the run immediately in
+      question-less awaiting_input — a conversation must not be interrupted
+      with task state.
+    - A silent end after a host prompt gets a neutral STALL NOTICE (task
+      state + the three ways to end a turn; the decision stays with the
+      agent).  A notice-prompted turn that uses any tool — read-only
+      investigation included — keeps the run flowing (the notice repeats at
+      the next boundary); one that uses no tool at all parks.
+
 HITL
 ----
 ``inject_message(thread_id, text)`` appends to a pending queue.  The
@@ -133,6 +150,23 @@ _MAX_ATTEMPTS_PER_TASK = 3
 
 # Maximum manager turns in the agent loop before force-exiting.
 _MAX_MANAGER_TURNS = 50
+
+
+def _assistant_used_tools(messages: list[Any]) -> bool:
+    """True when any assistant message in *messages* contains a toolUse block.
+
+    Used by the turn-end handling with the slice of ``manager_agent.messages``
+    appended during the current turn: it detects whether the turn called ANY
+    tool (read-only ones included) without instrumenting each tool closure, so
+    new tools are counted correctly by construction.
+    """
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and "toolUse" in block:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +325,14 @@ class EpicOrchestrator:
         # The question/plan text the Manager wants to present to the user.
         self._pending_question: str = ""
 
+        # Turn-end semantics (canonical description: module docstring; decision
+        # logic: the turn-end block at the bottom of the manager loop).
+        # _turn_effector_used is set by the dispatch / task_update closures
+        # while a turn streams and reset before every manager turn — it lets a
+        # HUMAN-prompted turn distinguish "worked" (keep flowing) from
+        # "conversational reply" (park).
+        self._turn_effector_used: bool = False
+
         # Plan-approval gate (prevents the Manager from dispatching Workers
         # before the user has approved the current task plan).
         #   - dispatch is REJECTED by the host while the plan is not approved.
@@ -395,6 +437,23 @@ class EpicOrchestrator:
                 raise RuntimeError(f"Epic not found: {epic_id}")
 
             await self._run_loop(root, project_id, epic_id, run_id, epic, state, pub)
+
+            if self._stopped:
+                # Sentinel-based stop: stop() unblocks _wait_for_user_input (or a
+                # turn boundary) and the loop RETURNS NORMALLY — no CancelledError
+                # is raised, so the except arm below never runs.  Terminal
+                # handling must match that arm's user-stop branch: idle
+                # (restartable), thread left active, RunStoppedEvent — NOT
+                # completed.  Without this guard a stop on a live awaiting_input
+                # run was mislabelled completed (thread resolved, completion
+                # event fired).
+                state.status = "idle"
+                state.active_workers = []
+                state.pending_question = None
+                state.last_event_at = datetime.now(UTC)
+                pub(RunStoppedEvent(project_id=project_id, epic_id=epic_id, run_id=run_id))
+                await state_repo.save_state(root, project_id, epic_id, state)
+                return
 
             # Mark state.yaml completed.
             state.status = "completed"
@@ -632,7 +691,7 @@ class EpicOrchestrator:
             epic_id,
             run_id,
             self._tasks_holder,
-            on_change=self._invalidate_plan_approval,
+            on_change=self._on_task_mutation,
         )
         dispatch_tool = self._make_dispatch_tool()
         complete_epic_tool = self._make_complete_epic_tool()
@@ -964,8 +1023,10 @@ class EpicOrchestrator:
             #   need the task-state boilerplate repeated in the user bubble.
             #
             # When there is no user message:
-            #   prompt = the standard planning boilerplate as before.
-            #   FSM records it as a user message (the "host instruction" pattern).
+            #   turn 0 gets the initialisation / resume context; any later turn
+            #   only ever gets the one-shot neutral STALL NOTICE (never a
+            #   dispatch command) — see the turn-end semantics at the bottom of
+            #   the loop.  FSM records it as a user message (host origin).
             tf = self._tasks_holder[0]
 
             _human_authored = False  # whether this turn's prompt is human text
@@ -1033,11 +1094,9 @@ class EpicOrchestrator:
                         "is done. Call `ask_user` if you need human input."
                     )
             elif self._require_plan_approval and not self._plan_approved:
-                # Plan not yet approved by the user — do NOT nudge toward
-                # dispatch (it would be rejected by the host gate).  Instead
-                # steer the Manager to present the plan and wait for approval.
-                # This replaces the old auto-nudge that read like a synthetic
-                # "proceed with the work" user message.
+                # Stall notice, unapproved-plan variant: dispatch would be
+                # rejected by the host gate, so steer the Manager to present
+                # the plan via ask_user.
                 task_summary = _summarise_tasks(tf)
                 prompt = (
                     f"Current task state:\n{task_summary}\n\n"
@@ -1047,20 +1106,38 @@ class EpicOrchestrator:
                     "Do NOT call `dispatch` until the user approves."
                 )
             elif self._agent_role == "reviewer":
+                # Stall notice, reviewer variant: the reviewer ended its turn
+                # without reporting.  Neutral by design — it restates the ways
+                # to end a turn; the decision stays with the agent.
                 prompt = (
-                    "Continue your review. Gather any remaining evidence with "
-                    "`read_branch_diff` / `repo_search`, then call `ask_user` to "
-                    "report your verdict and findings to the user."
+                    "You ended your turn without calling `ask_user`. If your review "
+                    "is still in progress, continue gathering evidence with "
+                    "`read_branch_diff` / `repo_grep` / `repo_search`. When you have "
+                    "a verdict — or if you are waiting for the user — call `ask_user` "
+                    "to report your findings."
                 )
             else:
+                # Stall notice: the previous turn ended silently while the epic
+                # still has work.  Neutral by design — it reports state and
+                # restates the three ways to end a turn; it does NOT command
+                # dispatch.
                 task_summary = _summarise_tasks(tf)
                 prompt = (
                     f"Current task state:\n{task_summary}\n\n"
-                    "Select runnable tasks and call `dispatch` "
-                    "(pass multiple items for parallelism). "
-                    "Review each item's verdict: on rejection, retry with feedback or replan. "
-                    "When all work is done or tasks are blocked, call `complete_epic`."
+                    "You ended your turn without calling `ask_user` or "
+                    "`complete_epic`. If you are waiting for the user, call "
+                    "`ask_user` with what you want to ask or report. If you "
+                    "intended to keep working, continue now. If all work is done, "
+                    "call `complete_epic`."
                 )
+
+            # Structural fact, used by the turn-end handling below: the branch
+            # chain above is exhaustive for turn 0 (init / continuation) and
+            # for human input, so any non-human prompt after turn 0 IS one of
+            # the stall-notice variants.  Deriving this here (instead of
+            # setting a flag inside each notice branch) means a future prompt
+            # branch cannot forget it.
+            _prompt_is_stall_notice = not _human_authored and turn > 0
 
             # Set the hook flag so the FSM hook publishes only human-authored turns.
             _human_turn_flag[0] = _human_authored
@@ -1081,6 +1158,14 @@ class EpicOrchestrator:
                     turn=turn,
                 )
             )
+
+            # Reset the per-turn effector flag; the dispatch / task_update
+            # closures set it during stream_async so the turn-end handling can
+            # tell real work from a conversational (tool-less) turn.  The
+            # message-count baseline lets the same handling detect whether the
+            # turn used ANY tool at all (read-only tools included).
+            self._turn_effector_used = False
+            _turn_messages_start = len(manager_agent.messages)
 
             # Run one manager turn.
             try:
@@ -1129,11 +1214,36 @@ class EpicOrchestrator:
                     _turn_limit_reached = False
                     break
 
+            # --- Turn-end semantics: a silent turn end is the agent's yield ---
+            #
+            # Reaching here the run continues (no complete_epic / stop / guard
+            # exit) and the agent did not call ask_user.  The host honours a
+            # silent end instead of injecting a dispatch command (canonical
+            # description: module docstring):
+            #   - HUMAN-prompted turn that did no task work (dispatch /
+            #     task_update) → conversation; park immediately.  Read-only
+            #     tool use while answering still counts as conversation.
+            #   - Stall-notice turn that used NO tool at all → the agent was
+            #     told the state and still yielded; park.  Any tool use (even
+            #     read-only investigation) keeps the run flowing — the notice
+            #     is simply sent again at the next boundary.
+            #   - Anything else keeps the loop going; the next prompt is the
+            #     neutral stall notice built by the prompt builder above.
+            if not self._awaiting_user:
+                _conversational_reply = _human_authored and not self._turn_effector_used
+                _idle_notice_turn = _prompt_is_stall_notice and not _assistant_used_tools(
+                    manager_agent.messages[_turn_messages_start:]
+                )
+                if _conversational_reply or _idle_notice_turn:
+                    await self._park_awaiting_user()
+
         # Post-loop task bookkeeping is Manager-only.  A reviewer run has no
         # task/dispatch machinery — it must never mark tasks blocked or (below)
         # fabricate a default task, which would overwrite the Manager trial's
         # tasks.yaml with a phantom task for the epic under review.
-        if self._agent_role == "manager":
+        # Skipped on stop: a user-stopped run is restartable and its remaining
+        # tasks must stay todo, not be flipped to blocked.
+        if self._agent_role == "manager" and not self._stopped:
             # Mark any remaining non-done/blocked tasks as blocked.
             tf = self._tasks_holder[0]
             async with self._state_lock:
@@ -1214,33 +1324,7 @@ class EpicOrchestrator:
                 Confirmation that the question has been sent and the run is
                 waiting for the user's reply.
             """
-            self._awaiting_user = True
-            self._pending_question = question
-
-            # Persist awaiting_input status immediately so callers that check
-            # state.yaml right after receiving UserInputRequestedEvent see the
-            # correct status (rather than waiting until the next loop turn).
-            # Also persist the question text so GET /run/state can restore it
-            # after a page reload without relying on the SSE replay buffer.
-            if self._state is not None:
-                self._state.status = "awaiting_input"
-                self._state.pending_question = question
-                self._state.last_event_at = datetime.now(UTC)
-                await state_repo.save_state(
-                    self._root, self._project_id, self._epic_id, self._state
-                )
-
-            # Publish the event so the UI can show "awaiting input" immediately.
-            if self._pub is not None:
-                self._pub(
-                    UserInputRequestedEvent(
-                        project_id=self._project_id,
-                        epic_id=self._epic_id,
-                        run_id=self._run_id,
-                        thread_id=self._manager_thread_id,
-                        question=question,
-                    )
-                )
+            await self._enter_awaiting_input(question)
             return (
                 "Your question/plan has been sent to the user. "
                 "The run is now waiting for their approval or answer. "
@@ -1258,6 +1342,16 @@ class EpicOrchestrator:
         """
         if self._require_plan_approval:
             self._plan_approved = False
+
+    def _on_task_mutation(self) -> None:
+        """React to a successful ``task_update`` mutation.
+
+        Marks the turn as productive (a silent turn end after real work gets a
+        one-shot stall notice rather than an immediate park) and invalidates
+        plan approval so a changed plan must be re-confirmed before dispatch.
+        """
+        self._turn_effector_used = True
+        self._invalidate_plan_approval()
 
     def _make_dispatch_tool(self) -> Any:
         """Return the ``dispatch`` Strands tool bound to this orchestrator."""
@@ -1288,6 +1382,10 @@ class EpicOrchestrator:
                 Per-item result list, each with:
                 ``{task_id, accepted, status, feedback, worker_id, eval_id, reason?}``.
             """
+            # Even a gate-rejected dispatch shows work intent — mark the turn
+            # productive so the turn-end handling sends a corrective notice
+            # instead of parking the run.
+            self._turn_effector_used = True
             if self._require_plan_approval and not self._plan_approved:
                 # Host-enforced approval gate: refuse dispatch and tell the
                 # Manager to get the user's approval first.  Returned as a
@@ -1846,6 +1944,55 @@ class EpicOrchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _enter_awaiting_input(self, question: str) -> None:
+        """Single writer for the awaiting_input yield (ask_user AND park).
+
+        Sets the in-memory gate, persists status + pending_question immediately
+        (so callers that check state.yaml right after the event see the correct
+        status, and GET /run/state can restore the question after a page reload
+        without the SSE replay buffer), then publishes UserInputRequestedEvent
+        so the live UI switches to awaiting.  An empty *question* is normalised
+        to ``pending_question=None`` — the frontend treats an empty question as
+        "status only" and renders no question bubble.
+
+        ``_wait_for_user_input`` re-persists the same state idempotently on the
+        next loop iteration and then blocks until the user replies (or stop).
+        """
+        self._awaiting_user = True
+        self._pending_question = question
+
+        if self._state is not None:
+            self._state.status = "awaiting_input"
+            self._state.pending_question = question or None
+            self._state.last_event_at = datetime.now(UTC)
+            await state_repo.save_state(self._root, self._project_id, self._epic_id, self._state)
+
+        if self._pub is not None:
+            self._pub(
+                UserInputRequestedEvent(
+                    project_id=self._project_id,
+                    epic_id=self._epic_id,
+                    run_id=self._run_id,
+                    thread_id=self._manager_thread_id,
+                    question=question,
+                )
+            )
+
+    async def _park_awaiting_user(self) -> None:
+        """Enter question-less awaiting_input (conversational park).
+
+        Called when a turn ends silently in a context where the host used to
+        inject a dispatch command.  Under turn-end semantics the silent end is
+        the agent's own signal that it is yielding to the user, so the run
+        parks exactly like ask_user but with no question text: the agent's
+        final message is already visible in the conversation, so there is
+        nothing to repeat.
+        """
+        await self._enter_awaiting_input("")
+        logger.info(
+            "Run %s parked in awaiting_input (silent turn end — agent yielded)", self._run_id
+        )
 
     async def _wait_for_user_input(
         self,

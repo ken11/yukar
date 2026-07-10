@@ -1620,6 +1620,51 @@ describe("applyRunCachePatch — user_input_requested: runState becomes awaiting
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
     expect(getRunStateCache()).toBeUndefined();
   });
+
+  it("syncs pending_question with the event question", () => {
+    seedRunState(makeRunState({ status: "running" }));
+
+    const event: UserInputRequestedEvent = {
+      ...BASE_EVENT,
+      type: "user_input_requested",
+      thread_id: "manager",
+      question: "Please approve",
+    };
+    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
+
+    expect(getRunStateCache()?.pending_question).toBe("Please approve");
+  });
+
+  it("question-less park (question='') clears a stale cached pending_question", () => {
+    // Scenario: ask_user("Q") answered, then a conversational park re-enters
+    // awaiting_input with no question. The cache must not resurrect "Q" as the
+    // current question bubble on remount.
+    seedRunState(makeRunState({ status: "running", pending_question: "Q" }));
+
+    const event: UserInputRequestedEvent = {
+      ...BASE_EVENT,
+      type: "user_input_requested",
+      thread_id: "manager",
+      question: "",
+    };
+    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
+
+    expect(getRunStateCache()?.status).toBe("awaiting_input");
+    expect(getRunStateCache()?.pending_question).toBeNull();
+  });
+
+  it("user_input_resolved clears pending_question along with awaiting status", () => {
+    seedRunState(makeRunState({ status: "awaiting_input", pending_question: "Q" }));
+
+    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, {
+      ...BASE_EVENT,
+      type: "user_input_resolved",
+      thread_id: "manager",
+    });
+
+    expect(getRunStateCache()?.status).toBe("running");
+    expect(getRunStateCache()?.pending_question).toBeNull();
+  });
 });
 
 // ============================================================

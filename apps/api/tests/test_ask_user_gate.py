@@ -1151,8 +1151,9 @@ class TestSingleWriterUserMessages:
 
         seed = "can you add a /metrics endpoint?"
 
+        # complete_epic on turn-0: a tool-less text reply to the human seed
+        # would park the run in awaiting_input under turn-end semantics.
         manager_script = [
-            TextTurn("Understood."),
             ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]

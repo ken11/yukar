@@ -839,9 +839,11 @@ class TestContinuationFsmSoleWriter:
 
         seed = "please add a /health endpoint"
 
-        # Fake manager: one turn then complete_epic so _run_loop exits.
+        # Fake manager: complete_epic on turn-0 so _run_loop exits.  (A
+        # tool-less text reply to the human seed would now park the run in
+        # awaiting_input under turn-end semantics — a silent turn end is the
+        # agent yielding to the user.)
         manager_script = [
-            TextTurn("OK"),
             ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]

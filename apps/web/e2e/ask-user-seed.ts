@@ -24,13 +24,34 @@ export const ASK_USER_SEED = {
 /**
  * Fake LLM script for ask_user scenario.
  *
- * The manager calls ask_user on its first turn.
- * This puts the run into awaiting_input and displays the question bubble.
+ * Turn 0: the manager calls ask_user — the run enters awaiting_input and the
+ * question bubble is shown.
  *
- * Worker / Evaluator are empty (the run halts in awaiting_input, so they are not needed).
+ * Turn 1 (after the user replies with a QUESTION, not an approval): the
+ * manager answers in plain text without calling any tool.  Under turn-end
+ * semantics this parks the run in question-less awaiting_input — the host
+ * must NOT inject a dispatch command.  ask-user.spec test 5 verifies this.
+ *
+ * Worker / Evaluator are empty (no dispatch happens in this scenario).
  */
+export const ASK_USER_ANSWER_TEXT = "T1 は挨拶ファイルを1つ追加するだけの計画です。";
+
 export const ASK_USER_FAKE_SCRIPT = JSON.stringify({
   manager: [
+    // Plan first: T1 must EXIST (todo) for the conversational park to be
+    // reachable — with zero tasks the deadlock guard ends the run after the
+    // tool-less reply instead of parking it.
+    {
+      type: "tool_use",
+      tool_name: "task_update",
+      tool_input: {
+        task_id: "T1",
+        title: "Add greeting file",
+        status: "todo",
+        repo: "myrepo",
+        contract: "Add a greeting file. Verify: file exists.",
+      },
+    },
     {
       type: "tool_use",
       tool_name: "ask_user",
@@ -38,6 +59,10 @@ export const ASK_USER_FAKE_SCRIPT = JSON.stringify({
         question: "この計画で進めてよいですか？",
       },
     },
+    { type: "text", text: "Awaiting your approval." },
+    // Turn 1: tool-less conversational answer → the run parks (awaiting_input
+    // with no pending question).
+    { type: "text", text: ASK_USER_ANSWER_TEXT },
   ],
   worker: [],
   evaluator: [],

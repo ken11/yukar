@@ -19,9 +19,10 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { ASK_USER_SEED } from "./ask-user-seed";
+import { ASK_USER_ANSWER_TEXT, ASK_USER_SEED } from "./ask-user-seed";
 
 const QUESTION_TEXT = "この計画で進めてよいですか？";
+const AWAITING_BANNER_TEXT = "下の入力欄から回答すると実行が再開します";
 
 test.describe
   .serial("ask_user awaiting_input reload", () => {
@@ -131,5 +132,55 @@ test.describe
       // Confirm the question text is restored after reload.
       // Primary source of restoration is GET /run/state pending_question (REST); SSE backfill is secondary.
       await expect(questionBubble).toBeVisible({ timeout: 15_000 });
+    });
+
+    // ---- 5. Conversational reply → tool-less answer parks the run ----
+
+    test("5. question reply — manager answers in text and the run parks (no auto-dispatch)", async ({
+      page,
+    }) => {
+      expect(state.projectId, "projectId").toBeTruthy();
+      expect(state.epicId, "epicId").toBeTruthy();
+
+      await page.goto(`/projects/${state.projectId}/epics/${state.epicId}/threads/manager`);
+      await expect(page.getByText(QUESTION_TEXT)).toBeVisible({ timeout: 30_000 });
+
+      // Ask a question instead of approving.
+      const composer = page.getByTestId("thread-composer");
+      await expect(composer).toBeVisible({ timeout: 10_000 });
+      await composer.fill("その計画は具体的に何をしますか？");
+      await page
+        .locator("button")
+        .filter({ hasText: /send|送信/i })
+        .first()
+        .click();
+
+      // The manager answers in plain text (no tools) — visible as a new bubble.
+      await expect(page.getByText(ASK_USER_ANSWER_TEXT)).toBeVisible({ timeout: 30_000 });
+
+      // The run must park in question-less awaiting_input: status returns to
+      // awaiting_input but pending_question stays empty (no fabricated bubble).
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
+            );
+            const body = await res.json();
+            return `${body.status}:${body.pending_question ?? ""}`;
+          },
+          { timeout: 30_000, intervals: [500, 1000, 1000] },
+        )
+        .toBe("awaiting_input:");
+
+      // The awaiting banner invites the next reply; the OLD question bubble is
+      // resolved and must not linger as the "current" question.
+      await expect(page.getByText(AWAITING_BANNER_TEXT)).toBeVisible({ timeout: 15_000 });
+
+      // Reload: the question-less awaiting state must survive via REST restore
+      // (runStatus only — no question bubble reappears).
+      await page.reload();
+      await expect(page.getByText(AWAITING_BANNER_TEXT)).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText(ASK_USER_ANSWER_TEXT)).toBeVisible({ timeout: 15_000 });
     });
   });

@@ -6,10 +6,11 @@
  * running state causes the task to receive CancelledError and
  * state.status to become "idle" (the canonical idle path).
  *
- * 29 text turns are queued for the manager (dispatch/complete_epic are not called).
- * T1 remains "todo", bypassing the deadlock guard so that after the script is
- * exhausted "Script exhausted." turns continue until the turn limit.
- * The tests execute pause / resume / stop before that point.
+ * Turn-end semantics note: a manager turn that ends without an effector tool
+ * (dispatch / task_update) gets ONE stall notice; a second silent turn PARKS
+ * the run in awaiting_input.  To keep a long "running" window this script
+ * alternates task_update + text — every turn is productive, so the host keeps
+ * sending the one-shot notice and the run never parks.
  *
  * worker / evaluator are empty (they are never called because dispatch is not invoked).
  */
@@ -29,27 +30,9 @@ export const PAUSE_RESUME_SEED = {
   repoDir: path.join(base, "repo", "myrepo"),
 } as const;
 
-/**
- * Fake LLM script for pause/resume/stop scenario.
- *
- * Turn layout (used together with YUKAR_FAKE_SLEEP=6.0):
- *   - Turn 0: task_update sets T1 to "todo".
- *     runnable_exists becomes True, bypassing the deadlock guard
- *     (which would break immediately when turn>0 and runnable/in_flight are both zero).
- *     dispatch/complete_epic are not called, so the run keeps consuming manager turns.
- *   - Turns 1–29: 29 text turns (6.0s sleep × ~3 chunks each = ~18s/turn) → ~540s running window.
- *
- * Why FAKE_SLEEP=6.0 matters:
- *   supervisor.stop() waits 5s then cancels the asyncio.Task.
- *   If the manager is mid asyncio.sleep(6.0), it receives CancelledError and
- *   the orchestrator sets state.status = "idle" (the canonical idle path).
- *
- * worker / evaluator are empty (they are never called because dispatch is not invoked).
- */
-export const PAUSE_RESUME_FAKE_SCRIPT = JSON.stringify({
-  manager: [
-    // Turn 0: task_update registers T1 as "todo".
-    // runnable_exists becomes True and the deadlock guard is bypassed.
+/** One productive manager turn: refresh T1 (effector) then narrate. */
+function turn(step: number, total: number, narration: string) {
+  return [
     {
       type: "tool_use",
       tool_name: "task_update",
@@ -61,39 +44,48 @@ export const PAUSE_RESUME_FAKE_SCRIPT = JSON.stringify({
         contract: "Implement feature A. Verify: tests pass.",
       },
     },
-    // Turns 1–29: text turns (6.0s × ~3 sleeps/turn = ~18s/turn, total ~540s running window).
-    // Turns are not consumed while paused; tests 3-5 complete while paused.
-    // Test 6 stops from the running state → CancelledError → "idle".
-    { type: "text", text: "Analyzing requirements (step 1 of 29)." },
-    { type: "text", text: "Reviewing codebase structure (step 2 of 29)." },
-    { type: "text", text: "Identifying dependencies (step 3 of 29)." },
-    { type: "text", text: "Planning implementation approach (step 4 of 29)." },
-    { type: "text", text: "Estimating effort for each task (step 5 of 29)." },
-    { type: "text", text: "Checking for potential conflicts (step 6 of 29)." },
-    { type: "text", text: "Validating acceptance criteria (step 7 of 29)." },
-    { type: "text", text: "Preparing task breakdown (step 8 of 29)." },
-    { type: "text", text: "Reviewing risk factors (step 9 of 29)." },
-    { type: "text", text: "Assessing technical debt (step 10 of 29)." },
-    { type: "text", text: "Checking test coverage requirements (step 11 of 29)." },
-    { type: "text", text: "Reviewing API contracts (step 12 of 29)." },
-    { type: "text", text: "Checking database schema compatibility (step 13 of 29)." },
-    { type: "text", text: "Reviewing security requirements (step 14 of 29)." },
-    { type: "text", text: "Assessing performance requirements (step 15 of 29)." },
-    { type: "text", text: "Reviewing documentation needs (step 16 of 29)." },
-    { type: "text", text: "Checking integration points (step 17 of 29)." },
-    { type: "text", text: "Reviewing error handling strategy (step 18 of 29)." },
-    { type: "text", text: "Assessing monitoring requirements (step 19 of 29)." },
-    { type: "text", text: "Checking deployment requirements (step 20 of 29)." },
-    { type: "text", text: "Reviewing rollback strategy (step 21 of 29)." },
-    { type: "text", text: "Assessing data migration needs (step 22 of 29)." },
-    { type: "text", text: "Checking backwards compatibility (step 23 of 29)." },
-    { type: "text", text: "Reviewing feature flags (step 24 of 29)." },
-    { type: "text", text: "Assessing A/B testing requirements (step 25 of 29)." },
-    { type: "text", text: "Checking localization requirements (step 26 of 29)." },
-    { type: "text", text: "Reviewing accessibility requirements (step 27 of 29)." },
-    { type: "text", text: "Assessing caching strategy (step 28 of 29)." },
-    { type: "text", text: "Plan complete. Awaiting dispatch decision. (step 29 of 29)." },
-  ],
+    { type: "text", text: `${narration} (step ${step} of ${total}).` },
+  ];
+}
+
+/**
+ * Fake LLM script for pause/resume/stop scenario.
+ *
+ * Turn layout (used together with YUKAR_FAKE_SLEEP=6.0):
+ *   - Every turn: task_update keeps T1 "todo" (runnable_exists stays True,
+ *     bypassing the deadlock guard) AND marks the turn productive so the
+ *     turn-end semantics keep the run flowing (notice → next turn) instead
+ *     of parking it in awaiting_input.
+ *   - dispatch/complete_epic are never called, so the run keeps consuming
+ *     manager turns until the tests pause / resume / stop it.
+ *   - 15 turns × (task_update + text) × 6.0s sleeps ≈ a long running window;
+ *     turns are not consumed while paused.
+ *
+ * Why FAKE_SLEEP=6.0 matters:
+ *   supervisor.stop() waits 5s then cancels the asyncio.Task.
+ *   If the manager is mid asyncio.sleep(6.0), it receives CancelledError and
+ *   the orchestrator sets state.status = "idle" (the canonical idle path).
+ */
+const NARRATIONS = [
+  "Analyzing requirements",
+  "Reviewing codebase structure",
+  "Identifying dependencies",
+  "Planning implementation approach",
+  "Estimating effort for each task",
+  "Checking for potential conflicts",
+  "Validating acceptance criteria",
+  "Preparing task breakdown",
+  "Reviewing risk factors",
+  "Assessing technical debt",
+  "Checking test coverage requirements",
+  "Reviewing API contracts",
+  "Checking database schema compatibility",
+  "Reviewing security requirements",
+  "Assessing performance requirements",
+];
+
+export const PAUSE_RESUME_FAKE_SCRIPT = JSON.stringify({
+  manager: NARRATIONS.flatMap((narration, i) => turn(i + 1, NARRATIONS.length, narration)),
   worker: [],
   evaluator: [],
 });

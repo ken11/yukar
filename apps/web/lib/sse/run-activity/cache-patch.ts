@@ -183,15 +183,26 @@ export function applyRunCachePatch(
       break;
     case "user_input_requested":
       // narrowing: event is UserInputRequestedEvent
-      patchRunStatus(qc, projectId, epicId, "awaiting_input");
+      // Keep pending_question in sync with the event (empty question = a
+      // question-less conversational park → null). Leaving a stale question in
+      // the cache would resurrect an already-answered bubble when the page
+      // remounts and restores from this cache.
+      qc.setQueryData<RunState>(queryKeys.runState.get(projectId, epicId), (prev) =>
+        prev
+          ? { ...prev, status: "awaiting_input", pending_question: event.question || null }
+          : prev,
+      );
       break;
     case "user_input_resolved":
       // narrowing: event is UserInputResolvedEvent
       // Symmetric with reducer USER_INPUT_RESOLVED: revert to running only when awaiting_input.
       // Guard to prevent erroneously reverting to running when a delayed resolved arrives
       // after a terminal state (completed/failed/stopped/error).
+      // The answered question must not linger in the cache (see above).
       qc.setQueryData<RunState>(queryKeys.runState.get(projectId, epicId), (prev) =>
-        prev && prev.status === "awaiting_input" ? { ...prev, status: "running" } : prev,
+        prev && prev.status === "awaiting_input"
+          ? { ...prev, status: "running", pending_question: null }
+          : prev,
       );
       break;
     case "worker_started": {

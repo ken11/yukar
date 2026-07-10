@@ -3053,9 +3053,12 @@ class TestManagerTurnLimit:
     async def test_turn_limit_sets_error_state(self, git_repo: Path, tmp_path: Path) -> None:
         """Exhaust the turn limit and verify run state becomes 'error'.
 
-        The Manager creates a runnable task (so the deadlock guard does not exit
-        the loop early) but never dispatches or calls complete_epic, forcing the
-        loop to hit the patched turn limit.
+        The Manager stays PRODUCTIVE every turn (task_update keeps T1 todo, so
+        neither the deadlock guard nor the silent-stall park fires) but never
+        dispatches or calls complete_epic, forcing the loop to hit the patched
+        turn limit.  A manager that stalls silently now parks in awaiting_input
+        instead of burning turns — the limit remains the backstop for a manager
+        that keeps working without ever finishing.
         """
         from unittest.mock import patch
 
@@ -3067,11 +3070,8 @@ class TestManagerTurnLimit:
         root, project_id, epic_id = _make_workspace(tmp_path)
         await _bootstrap(root, project_id, epic_id, git_repo)
 
-        # Manager creates T1 (runnable) on turn 0, then emits text on subsequent
-        # turns without ever dispatching or calling complete_epic.  With T1
-        # still in 'todo', the deadlock guard does not fire, so the loop runs
-        # until the patched limit (3 turns) and raises _ManagerTurnLimitError.
-        manager_script = [
+        # One productive (task_update + text) pair per turn, patched limit = 3.
+        busy_turn = [
             ToolUseTurn(
                 tool_name="task_update",
                 tool_input={
@@ -3081,12 +3081,9 @@ class TestManagerTurnLimit:
                     "repo": git_repo.name,
                 },
             ),
-            TextTurn("Created T1."),
-            # turn 1 and turn 2: never dispatch, never complete
-            TextTurn("Still thinking..."),
-            TextTurn("Still thinking..."),
-            TextTurn("Still thinking..."),
+            TextTurn("Reworked T1; still not done."),
         ]
+        manager_script = [*busy_turn, *busy_turn, *busy_turn]
 
         with (
             patch("yukar.agents.orchestrator._MAX_MANAGER_TURNS", 3),
@@ -3116,8 +3113,9 @@ class TestManagerTurnLimit:
     ) -> None:
         """Exhausting the turn limit publishes a RunFailedEvent (not RunCompletedEvent).
 
-        Same setup as test_turn_limit_sets_error_state: Manager creates a
-        runnable task but never completes, hitting the patched limit.
+        Same setup as test_turn_limit_sets_error_state: the Manager stays
+        productive (task_update every turn) but never completes, hitting the
+        patched limit.
         """
         from unittest.mock import patch
 
@@ -3129,7 +3127,7 @@ class TestManagerTurnLimit:
         root, project_id, epic_id = _make_workspace(tmp_path)
         await _bootstrap(root, project_id, epic_id, git_repo)
 
-        manager_script = [
+        busy_turn = [
             ToolUseTurn(
                 tool_name="task_update",
                 tool_input={
@@ -3139,11 +3137,9 @@ class TestManagerTurnLimit:
                     "repo": git_repo.name,
                 },
             ),
-            TextTurn("Created T1."),
-            TextTurn("Still thinking..."),
-            TextTurn("Still thinking..."),
-            TextTurn("Still thinking..."),
+            TextTurn("Reworked T1; still not done."),
         ]
+        manager_script = [*busy_turn, *busy_turn, *busy_turn]
 
         events_received: list[Any] = []
 
