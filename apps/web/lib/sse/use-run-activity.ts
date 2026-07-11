@@ -53,8 +53,12 @@ export type {
 /**
  * Pure function that maps RunState to the corresponding RunActivityAction.
  * #4: Unified the identical if-else chain that was duplicated in 2 places inside use-run-activity.
- * #REST-restore: When awaiting_input, the bubble can be restored with REST alone if pending_question is non-empty.
- * Does nothing for status values that cannot be converted.
+ * P3: "waiting" is the resting state (your turn). A real parked run
+ * (run_id non-empty) dispatches USER_INPUT_REQUESTED so the your-turn banner
+ * is restored from REST alone; a never-run epic (synthesised run_id="") is
+ * left at the reducer's default waiting state without the parked marker.
+ * The question itself needs no restore path — it is the agent's final message
+ * in the thread (pending_question was removed with ask_user).
  *
  * @param primaryManagerThreadId - Highest-priority value for managerThreadId.
  *   Pass epic.active_thread_id when it has been confirmed.
@@ -65,15 +69,12 @@ export type {
  *   If also null, "manager" is used as the final fallback.
  */
 function dispatchForRunStatus(
-  runState: Pick<
-    import("@/lib/api/endpoints").RunState,
-    "status" | "pending_question" | "manager_thread"
-  >,
+  runState: Pick<import("@/lib/api/endpoints").RunState, "status" | "run_id" | "manager_thread">,
   dispatchFn: (action: import("./run-activity/actions").RunActivityAction) => void,
   primaryManagerThreadId?: string | null,
   fallbackManagerThreadId?: string | null,
 ): void {
-  const { status, pending_question, manager_thread } = runState;
+  const { status, run_id, manager_thread } = runState;
 
   // Resolution order: primaryManagerThreadId(epic.active_thread_id) → manager_thread → fallback → null
   // When epic.active_thread_id has been confirmed, it takes priority over RunState.manager_thread.
@@ -91,14 +92,13 @@ function dispatchForRunStatus(
   else if (status === "paused") dispatchFn({ type: "RUN_PAUSED" });
   else if (status === "completed") dispatchFn({ type: "RUN_COMPLETED" });
   else if (status === "error") dispatchFn({ type: "RUN_FAILED" });
-  else if (status === "interrupted") dispatchFn({ type: "RUN_INTERRUPTED" });
-  else if (status === "awaiting_input") {
-    // If pending_question is non-empty, restore the bubble immediately with REST alone (no SSE replay dependency).
-    // If null/empty, only confirm the status and wait for SSE replay to fill in the rest.
-    const question = pending_question ?? "";
+  else if (status === "waiting" && run_id) {
+    // A real run parked here (your turn) — restore the parked marker from REST
+    // alone (no SSE replay dependency). A synthesised never-run state
+    // (run_id="") stays at the reducer default: waiting without the marker.
     // Resolution order: manager_thread → fallback (epic.active_thread_id, etc.) → "manager"
     const mgrThreadId = resolvedMgrThreadId ?? "manager";
-    dispatchFn({ type: "USER_INPUT_REQUESTED", threadId: mgrThreadId, question });
+    dispatchFn({ type: "USER_INPUT_REQUESTED", threadId: mgrThreadId });
   }
 }
 
@@ -172,7 +172,6 @@ export function useRunActivity({
     const sourceRunState = cachedRunState ?? (epicChanged ? undefined : initialRunState);
     if (sourceRunState) {
       // #4: unified the duplicated if-else chain into dispatchForRunStatus
-      // #REST-restore: pass the full RunState so pending_question is also available
       // primaryMgrThreadId(epic.active_thread_id) is highest priority, fallbackFromThreads is third candidate
       dispatchForRunStatus(sourceRunState, dispatch, primaryMgrThreadId, fallbackFromThreads);
     } else {
@@ -234,7 +233,6 @@ export function useRunActivity({
     getRunState(projectId, epicId)
       .then((rs) => {
         // #4: unified the duplicated if-else chain into dispatchForRunStatus
-        // #REST-restore: pass the full RunState so pending_question is also available
         // Pass activeThreadId(epic.active_thread_id) as primaryMgrThreadId at highest priority.
         // This prevents a stale RunState.manager_thread from overwriting active_thread_id.
         const primaryMgrThreadId = activeThreadIdRef.current ?? null;

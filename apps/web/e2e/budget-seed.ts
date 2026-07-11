@@ -36,17 +36,24 @@ export const BUDGET_SEED = {
  * Fake LLM script for budget exceeded scenario.
  *
  * Injects a large usage into the Manager's first turn to record token consumption.
- * Calls complete_epic directly without task_update (no tasks exist, so runnable=[] succeeds).
- * After the run completes normally, sets a low positive limit (limit_usd=1) so the actual cost ($42) naturally exceeds it.
+ * The turn is a single task_update tool call (usage rides on the ToolUseTurn) followed
+ * by a report text — the text ends the turn and the run parks in "waiting" (P3).
+ * After the run parks, sets a low positive limit (limit_usd=1) so the actual cost ($42) naturally exceeds it.
  */
 export const BUDGET_FAKE_SCRIPT = JSON.stringify({
   manager: [
     {
-      // Call complete_epic without task_update (no tasks exist, so runnable=[] succeeds).
-      // Token consumption is recorded via usage injection (cost is calculated automatically from the model_id in settings).
+      // Token consumption is recorded via usage injection (cost is calculated
+      // automatically from the model_id in settings).
       type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
+      tool_name: "task_update",
+      tool_input: {
+        task_id: "T1",
+        title: "Budget probe task",
+        status: "todo",
+        repo: "myrepo",
+        contract: "No-op planning task used to carry the injected usage.",
+      },
       usage: {
         inputTokens: 9000000,
         outputTokens: 1000000,

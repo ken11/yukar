@@ -1,18 +1,18 @@
-"""End-to-end: a run parked in awaiting_input survives a server restart and
-resumes when the user replies.
+"""End-to-end: a run parked in ``waiting`` survives a server restart and
+resumes when the user replies (lifecycle redesign P3).
 
-This is the empirical proof for the recovery.py change (awaiting_input is NOT
-downgraded to interrupted) + the continuation-resume path. It drives a real
-orchestrator to awaiting_input (persisting a Strands session that ends on an
-``ask_user`` tool exchange), simulates a crash (abandon the task + force the
-on-disk state back to the awaiting snapshot), runs ``recover_interrupted_runs``
-(=restart), then starts a continuation orchestrator with the user's reply as the
-seed and asserts the Manager picks up the session, dispatches, and completes —
-without re-entering awaiting_input or crashing on session restore.
+This is the empirical proof for the recovery.py contract (a waiting run is
+preserved as-is) + the continuation-resume path.  It drives a real
+orchestrator to the park (the Manager presents its plan in the message body
+and ends its turn), simulates a crash (graceful-shutdown cancel of the live
+task), runs ``recover_interrupted_runs`` (=restart), then starts a
+continuation orchestrator with the user's reply as the seed and asserts the
+Manager picks up the session, dispatches, and parks again — without
+crashing on session restore or losing the conversation.
 
 Mechanics only (FakeModel): the model's semantic understanding of the prior
-ask_user is out of scope; what matters is that restore + continuation does not
-break, re-ask, or strand the run.
+question is out of scope; what matters is that restore + continuation does
+not break, strand the run, or park before doing the work.
 """
 
 from __future__ import annotations
@@ -25,12 +25,13 @@ from unittest.mock import patch
 import pytest
 
 from tests._helpers import make_git_repo as _make_bare_repo
+from tests._helpers import wait_for_run_status
 
 from .test_ask_user_gate import _bootstrap
 
 
 @pytest.mark.asyncio
-async def test_awaiting_input_survives_restart_and_resumes_on_reply(tmp_path: Path) -> None:
+async def test_waiting_survives_restart_and_resumes_on_reply(tmp_path: Path) -> None:
     from yukar.agents.orchestrator import EpicOrchestrator
     from yukar.config.settings import LLMSettings
     from yukar.events import bus as event_bus
@@ -49,7 +50,8 @@ async def test_awaiting_input_survives_restart_and_resumes_on_reply(tmp_path: Pa
     epic_id = "EP-1"
     await _bootstrap(root, project_id, epic_id, git_repo)
 
-    # --- Phase 1: drive a fresh run to awaiting_input (persist the session) ---
+    # --- Phase 1: drive a fresh run to the park (persist the session) ---
+    # The plan/question is plain message text; ending the turn parks the run.
     plan_script = [
         ToolUseTurn(
             tool_name="task_update",
@@ -60,19 +62,14 @@ async def test_awaiting_input_survives_restart_and_resumes_on_reply(tmp_path: Pa
                 "repo": git_repo.name,
             },
         ),
-        ToolUseTurn(
-            tool_name="ask_user",
-            tool_input={"question": "Plan: T1=Write hello.py. Proceed?"},
-        ),
-        TextTurn("Waiting for user approval."),
+        TextTurn("Plan: T1=Write hello.py. Proceed?"),
     ]
-    # Continuation manager (after the reply): dispatch then complete.
+    # Continuation manager (after the reply): dispatch then report.
     resume_script = [
         ToolUseTurn(
             tool_name="dispatch",
             tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
         ),
-        ToolUseTurn(tool_name="complete_epic", tool_input={}),
         TextTurn("Done!"),
     ]
     worker_script = [
@@ -120,40 +117,31 @@ async def test_awaiting_input_survives_restart_and_resumes_on_reply(tmp_path: Pa
     ):
         run1 = asyncio.create_task(orch1.start(root, project_id, epic_id, "run-1"))
         await asyncio.wait_for(awaiting.wait(), timeout=10.0)
-
-        state = await state_repo.get_state(root, project_id, epic_id)
-        assert state is not None and state.status == "awaiting_input"
-        assert state.pending_question == "Plan: T1=Write hello.py. Proceed?"
+        await wait_for_run_status(root, project_id, epic_id, "waiting", timeout=10.0)
 
         # --- Simulate a graceful server shutdown ---
-        # A `yukar serve` stop (SIGTERM/Ctrl-C) cancels the awaiting task WITHOUT
-        # an explicit supervisor.stop() — i.e. self._stopped stays False. The
+        # A `yukar serve` stop (SIGTERM/Ctrl-C) cancels the waiting task WITHOUT
+        # an explicit supervisor.stop() — i.e. self._stopped stays False.  The
         # orchestrator's CancelledError handler must NOT rewrite state.yaml in
-        # that case (the bug: it used to clobber awaiting_input → idle +
-        # pending_question=None at shutdown). We do NOT force-write the state
-        # back here on purpose: the assertion below proves shutdown preserves it.
+        # that case (the historical bug: it used to clobber the parked state at
+        # shutdown).  We do NOT force-write the state back here on purpose: the
+        # assertion below proves shutdown preserves it.
         run1.cancel()
         await asyncio.gather(run1, return_exceptions=True)
 
-    # The shutdown cancel must leave the awaiting snapshot intact on disk.
+    # The shutdown cancel must leave the waiting snapshot intact on disk.
     state = await state_repo.get_state(root, project_id, epic_id)
     assert state is not None
-    assert state.status == "awaiting_input", (
-        f"shutdown must NOT clobber awaiting_input, got {state.status!r}"
-    )
-    assert state.pending_question == "Plan: T1=Write hello.py. Proceed?", (
-        "shutdown must NOT clear pending_question"
+    assert state.status == "waiting", (
+        f"shutdown must NOT clobber the parked waiting state, got {state.status!r}"
     )
 
-    # --- Phase 2: restart recovery must PRESERVE awaiting_input ---
+    # --- Phase 2: restart recovery must PRESERVE waiting ---
     await recover_interrupted_runs(root)
     state = await state_repo.get_state(root, project_id, epic_id)
     assert state is not None, "state.yaml should still exist after recovery"
-    assert state.status == "awaiting_input", (
-        f"awaiting_input must survive restart, got {state.status!r}"
-    )
-    assert state.pending_question == "Plan: T1=Write hello.py. Proceed?", (
-        "pending_question must survive restart"
+    assert state.status == "waiting", (
+        f"waiting must survive restart untouched, got {state.status!r}"
     )
 
     # --- Phase 3: user approves the plan and replies -> continuation resumes ---
@@ -200,25 +188,51 @@ async def test_awaiting_input_survives_restart_and_resumes_on_reply(tmp_path: Pa
     with patch(
         "yukar.agents.orchestrator.create_model", side_effect=make_factory(resume_script)
     ):
-        await asyncio.wait_for(orch2.start(root, project_id, epic_id, "run-2"), timeout=30.0)
+        run2 = asyncio.create_task(orch2.start(root, project_id, epic_id, "run-2"))
+        # The continuation dispatches, reports, and parks (a conversation run
+        # never completes — the park is its resting point).  Wait for run-2's
+        # OWN park: the stale waiting file from run-1 is still on disk when
+        # the continuation starts, so key the wait on run_id.
+        from tests._helpers import wait_until
 
-    # orch2 publishes a None sentinel on completion → collector2 drains and ends.
+        async def _run2_parked() -> bool:
+            st = await state_repo.get_state(root, project_id, epic_id)
+            return st is not None and st.run_id == "run-2" and st.status == "waiting"
+
+        try:
+            await wait_until(_run2_parked, timeout=30.0, message="run-2 to park in waiting")
+        finally:
+            if not run2.done():
+                await orch2.stop()
+        await asyncio.wait_for(run2, timeout=10.0)
+
+    # orch2 publishes a None sentinel on teardown → collector2 drains and ends.
     await asyncio.wait_for(collector2, timeout=5.0)
 
-    # The continuation must have dispatched a worker and completed the run...
+    # The continuation must have dispatched a worker after the reply...
     assert any(isinstance(e, WorkerStartedEvent) for e in events2), (
         "continuation should dispatch a worker after the reply"
     )
-    assert any(isinstance(e, RunCompletedEvent) for e in events2), "continuation should complete"
-    # ...without re-entering awaiting_input during the resume turn. Filter by
-    # run_id: any UserInputRequestedEvent here is orch1's ("run-1"), replayed
-    # from the in-memory bus buffer (a real process restart wipes it; this
-    # single-process test does not). The continuation run is "run-2".
+    # ...and completed T1.
+    tf = await tasks_repo.get_tasks(root, project_id, epic_id)
+    t1 = next(t for t in tf.tasks if t.id == "T1")
+    assert t1.status == "done", f"continuation should finish T1, got {t1.status!r}"
+
+    # A conversation run never emits run_completed (P3).  Filter by run_id:
+    # any RunCompletedEvent here would be a regression.
     assert not any(
-        isinstance(e, UserInputRequestedEvent) and e.run_id == "run-2" for e in events2
-    ), "continuation (run-2) should NOT re-ask"
+        isinstance(e, RunCompletedEvent) and e.run_id == "run-2" for e in events2
+    ), "a conversation continuation must not emit run_completed"
+
+    # The continuation parks exactly once — AFTER doing the work (its terminal
+    # park), never before (which would strand the reply).
+    run2_parks = [
+        e for e in events2 if isinstance(e, UserInputRequestedEvent) and e.run_id == "run-2"
+    ]
+    assert len(run2_parks) == 1, (
+        f"continuation should park exactly once (terminal park), got {len(run2_parks)}"
+    )
 
     final = await state_repo.get_state(root, project_id, epic_id)
     assert final is not None
-    assert final.status == "completed", f"resumed run should complete, got {final.status!r}"
-    assert final.pending_question is None, "pending_question cleared after resume"
+    assert final.status == "waiting", f"resumed run should rest in waiting, got {final.status!r}"

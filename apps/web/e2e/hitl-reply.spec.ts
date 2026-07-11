@@ -1,60 +1,42 @@
 /**
- * HITL reply E2E test — sending a reply to a run stopped by ask_user resumes it.
+ * HITL reply E2E test — replying to a parked run wakes it.
  *
  * Purpose:
- *   After the manager calls ask_user and the run enters awaiting_input,
- *   verify in a real browser that submitting a reply from the thread-composer
- *   resumes the run, and that subsequent manager turns (task_update → dispatch →
- *   complete_epic), worker, and evaluator all execute until the run reaches completed.
+ *   After the manager asks its question in body text and the run parks in
+ *   "waiting" (your turn), verify in a real browser that submitting a reply
+ *   from the thread-composer wakes the run, and that subsequent manager turns
+ *   (task_update → dispatch), worker, and evaluator all execute until the work
+ *   is done (run parks in "waiting" with every task done — a conversation run
+ *   never "completes").
  *
  * Verification flow (serial):
  *   1. Create project
  *   2. Create epic
  *   3. Start run → navigate to manager thread
- *      Poll until the question text is shown and run/state.status is awaiting_input
+ *      Poll until the question text is shown and run/state.status is "waiting"
  *   4. Enter reply in thread-composer and submit
- *      Poll until run/state.status leaves awaiting_input and becomes completed
+ *      Poll until the work is done (waiting + all tasks done)
  *      Assert that subsequent agent bubbles (task_update / dispatch) appear
  *      Save screenshot (test-results/hitl-reply.png)
  *
  * Waiting / determinism:
- *   Everything waits on expect.poll(run/state status) or DOM visibility.
+ *   Everything waits on expect.poll(run/state + tasks) or DOM visibility.
  *   No fixed sleeps to assume state. retries:0 / workers:1.
  */
 
 import { expect, test } from "@playwright/test";
 import { HITL_REPLY_SEED } from "./hitl-reply-seed";
+import { waitForRunWaiting, waitForWorkDone } from "./wait-helpers";
 
 const QUESTION_TEXT = "この実装計画で進めてよいですか？";
 const REPLY_TEXT = "はい、進めてください。";
 
-// RunState.status enum (apps/api/src/yukar/models/run.py)
-type RunStatus =
-  | "idle"
-  | "running"
-  | "paused"
-  | "awaiting_input"
-  | "error"
-  | "completed"
-  | "interrupted";
-
 test.describe
-  .serial("hitl-reply: ask_user reply resumes run to completed", () => {
+  .serial("hitl-reply: replying to a parked run wakes it and drives the work to done", () => {
     const state = {
       projectId: "",
       epicId: "",
     };
-
-    // ---- helper: GET /api/projects/{p}/epics/{e}/run/state ----
-    async function getRunStatus(
-      page: import("@playwright/test").Page,
-      projectId: string,
-      epicId: string,
-    ): Promise<RunStatus> {
-      const res = await page.request.get(`/api/projects/${projectId}/epics/${epicId}/run/state`);
-      const body = await res.json();
-      return body.status as RunStatus;
-    }
 
     // ---- 1. Create project ----
 
@@ -88,8 +70,8 @@ test.describe
       await expect(page.getByRole("dialog")).toBeVisible();
 
       await page.getByTestId("epic-title-input").fill("hitl-reply epic");
-      await page.getByTestId("epic-description-input").fill("Test HITL ask_user reply flow.");
-      await page.getByTestId("epic-ac-input").fill("User replies and run completes.");
+      await page.getByTestId("epic-description-input").fill("Test the HITL reply flow.");
+      await page.getByTestId("epic-ac-input").fill("User replies and the work is done.");
 
       await page.getByTestId("form-dialog-submit").click();
 
@@ -107,9 +89,9 @@ test.describe
       expect(state.epicId).toBeTruthy();
     });
 
-    // ---- 3. Start run → awaiting_input → verify question bubble ----
+    // ---- 3. Start run → question bubble + waiting ----
 
-    test("3. start run, verify awaiting_input and question bubble", async ({ page }) => {
+    test("3. start run, verify the question bubble and the waiting park", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
 
@@ -122,29 +104,24 @@ test.describe
       // Redirect to the manager thread page
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // Wait until the question bubble appears (result of ask_user being called)
+      // Wait until the question bubble appears (an ordinary assistant message)
       const questionBubble = page.getByText(QUESTION_TEXT);
       await expect(questionBubble).toBeVisible({ timeout: 30_000 });
 
-      // Poll until run/state.status becomes awaiting_input
-      await expect
-        .poll(() => getRunStatus(page, state.projectId, state.epicId), {
-          timeout: 30_000,
-          intervals: [500, 1000, 1000],
-        })
-        .toBe("awaiting_input");
+      // Standard turn-end wait: the run parks in "waiting"
+      await waitForRunWaiting(page, state.projectId, state.epicId, { timeout: 30_000 });
     });
 
-    // ---- 4. Submit reply via composer → verify run reaches completed ----
+    // ---- 4. Submit reply via composer → verify the work is done ----
 
-    test("4. reply via composer — run resumes and reaches completed", async ({ page }) => {
+    test("4. reply via composer — the run wakes and drives the work to done", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
 
       // Navigate to the manager thread page
       await page.goto(`/projects/${state.projectId}/epics/${state.epicId}/threads/manager`);
 
-      // Confirm the question bubble and awaiting_input banner are visible
+      // Confirm the question bubble is visible
       const questionBubble = page.getByText(QUESTION_TEXT);
       await expect(questionBubble).toBeVisible({ timeout: 30_000 });
 
@@ -162,14 +139,11 @@ test.describe
         .first();
       await sendBtn.click();
 
-      // Poll until run/state.status leaves awaiting_input and finally becomes completed
-      // The sequence is: reply → running → (worker/evaluator) → completed. Wait up to 90s.
-      await expect
-        .poll(() => getRunStatus(page, state.projectId, state.epicId), {
-          timeout: 90_000,
-          intervals: [500, 1000, 2000],
-        })
-        .toBe("completed");
+      // Standard work-done wait: the reply wakes the run, the manager
+      // dispatches, worker/evaluator run, and the run parks in "waiting" with
+      // every task done. ("waiting" alone would match the pre-reply park —
+      // the all-tasks-done condition is what proves the wake happened.)
+      await waitForWorkDone(page, state.projectId, state.epicId);
 
       // Assert that subsequent agent bubbles appear after the reply
       // Tool-call entries from task_update / dispatch should be present in agent-message bubbles

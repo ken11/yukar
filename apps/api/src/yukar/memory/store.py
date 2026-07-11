@@ -4,7 +4,7 @@ Persists project-scoped cross-cutting knowledge (conventions, facts, past Epic l
 using FAISS + JSONL.
 
 - extraction=False: explicit add only (no BeforeInvocation extraction).
-- writable=True: written via the remember() tool / complete_epic learnings.
+- writable=True: written via the remember() tool.
 - search: query embed → FAISS top-k → MemoryEntry(content, metadata).
 - add: run embed outside the lock → acquire lock → dedup check + append_record
   + index append → release (B1 fix: reduces lock hold time, prevents orphans).

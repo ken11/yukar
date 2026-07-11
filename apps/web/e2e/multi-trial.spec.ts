@@ -5,15 +5,20 @@
  *   "New thread is read-only with no composer" (no navigation / composer absent)
  *
  * Verification items:
- *   1. setup: create project + epic → complete fake run
+ *   1. setup: create project + epic → fake run until work done (run parks in waiting)
  *   2. Create new trial → navigate to new URL (should not stay on "manager")
+ *      (the previous trial is still "active" — conversations never resolve —
+ *      so the modal's archive_active=true archives it atomically)
  *   3. New trial has composer visible and no readonly banner
- *   4. API: old trial=archived / new trial=active / branches differ / epic.active_thread_id points to new trial
- *   5. List pane: active/archived sections are separate
+ *   4. API: old trial=archived / new trial=active / epic.active_thread_id points to new trial
+ *   5. List pane: both trials are listed (active + archived sections)
+ *   6. Archiving the ACTIVE trial while a live run is parked in waiting is
+ *      allowed (the parked run is shelved, not a 409) — P3 shelving semantics
  */
 
 import { expect, test } from "@playwright/test";
 import { SEED } from "./seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 const SHOTS = "playwright-report";
 
@@ -29,7 +34,7 @@ test.describe
     // -------------------------------------------------------------------------
     // 1. setup — same pattern as smoke.spec.ts
     // -------------------------------------------------------------------------
-    test("setup: create project + epic, run to completion", async ({ page }) => {
+    test("setup: create project + epic, run until work is done", async ({ page }) => {
       // --- project ---
       await page.goto("/projects");
       await page.getByTestId("new-project-btn").click();
@@ -65,18 +70,8 @@ test.describe
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // Poll run/state via API until completed (fake run is deterministic)
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("completed");
+      // Standard work-done wait: the run parks in "waiting" and all tasks are done.
+      await waitForWorkDone(page, state.projectId, state.epicId);
 
       // Record the manager thread id immediately after the run
       const tRes = await page.request.get(
@@ -181,12 +176,12 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // 3b. Old trial (resolved) becomes read-only
+    // 3b. Old trial (archived by the new-trial creation) becomes read-only
     //
     // Once the active trial (newTrialId) is established, opening firstManagerId directly
     // should show the readonly banner rather than the composer.
     // -------------------------------------------------------------------------
-    test("Opening the old trial (resolved) shows the readonly banner and no composer", async ({
+    test("Opening the old trial (archived) shows the readonly banner and no composer", async ({
       page,
     }) => {
       expect(state.firstManagerId, "Old trial id should have been captured").toBeTruthy();
@@ -196,9 +191,11 @@ test.describe
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.firstManagerId}`,
       );
 
-      // Readonly banner should appear (old trial does not match managerThreadId)
-      const readonlyBanner = page.getByTestId("thread-readonly-banner");
-      await expect(readonlyBanner, "Old trial should show the readonly banner").toBeVisible({
+      // The archived banner should appear (the old trial was archived by the
+      // new-trial creation — conversations never "resolve" under P3, so the
+      // read-only presentation for a superseded trial is the archived state).
+      const archivedBanner = page.getByTestId("thread-archived-banner");
+      await expect(archivedBanner, "Old trial should show the archived banner").toBeVisible({
         timeout: 15_000,
       });
 
@@ -239,10 +236,14 @@ test.describe
         "There should be at least 2 threads with the manager role",
       ).toBeGreaterThanOrEqual(2);
 
-      // Old trial is not active (after run completion it is "resolved"; after explicit archive it is "archived")
+      // Old trial is archived. Under P3 a conversation never "resolves" — the
+      // run parks in waiting and the trial stays active until the new-trial
+      // creation (archive_active=true) archives it atomically.
       const old = managerThreads.find((t) => t.id === state.firstManagerId);
       expect(old, "Old trial should exist in the list").toBeDefined();
-      expect(old?.status, "Old trial should not be active").not.toBe("active");
+      expect(old?.status, "Old trial should be archived by the new-trial creation").toBe(
+        "archived",
+      );
 
       // New trial = active
       const newT = managerThreads.find((t) => t.id === state.newTrialId);
@@ -266,10 +267,8 @@ test.describe
     // -------------------------------------------------------------------------
     // 5. List pane: both manager threads are displayed
     //
-    // Note: the old trial after run completion has status="resolved", not "archived".
-    // thread-list-pane.tsx puts status!=="archived" into the active list, so
-    // both Trial 1 and the new trial appear in the active section.
-    // The archived section heading is only shown when a status="archived" thread exists.
+    // The old trial was archived by the new-trial creation, so it appears in
+    // the archived section while the new trial sits in the active section.
     // -------------------------------------------------------------------------
     test("Both old and new trials appear in the thread list pane", async ({ page }) => {
       expect(state.newTrialId).toBeTruthy();
@@ -304,35 +303,29 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // 6. Archiving the currently viewed thread navigates to the active trial
+    // 6. Archiving the ACTIVE trial is allowed while no turn is executing
     //
-    // Before fix: after a successful archive, stale props kept the composer visible
-    //             until router.refresh() landed.
-    // After fix: if the archived thread is the currentThreadId, immediately push to
-    //            managerThreadId (new trial).
-    //
-    // Scenario:
-    //   Archive the old trial (firstManagerId, resolved) while viewing it
-    //   → managerThreadId = newTrialId → push destination = newTrialId
-    //   → composer is shown on the new trial after navigation (active trial).
+    // P3 shelving semantics: only an EXECUTING turn (running/paused) holds the
+    // run slot and returns 409. A run parked in "waiting" never blocks trial
+    // mutations (it is shelved). The old trial is already archived (test 2),
+    // so we archive the active trial itself while viewing it and assert the
+    // page flips to its archived read-only presentation.
     // -------------------------------------------------------------------------
-    test("Archiving the old trial while viewing it navigates to the new trial", async ({
+    test("Archiving the active trial while viewing it succeeds and turns read-only", async ({
       page,
     }) => {
       expect(state.newTrialId, "New trial id should have been captured").toBeTruthy();
-      expect(state.firstManagerId, "Old trial id should have been captured").toBeTruthy();
 
-      // View the old trial (resolved)
       await page.goto(
-        `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.firstManagerId}`,
+        `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.newTrialId}`,
       );
       const nav = page.locator('nav[aria-label="Threads"]');
       await expect(nav).toBeVisible({ timeout: 10_000 });
 
-      // Hover over the old trial row to reveal the archive button and click it
+      // Hover over the active trial row to reveal the archive button and click it
       // aria-label is locale-dependent (ja: "アーカイブ" / en: "Archive") so use a regex
-      const firstTrialRow = nav.locator(`a[href*="/threads/${state.firstManagerId}"]`).first();
-      await firstTrialRow.hover();
+      const activeTrialRow = nav.locator(`a[href*="/threads/${state.newTrialId}"]`).first();
+      await activeTrialRow.hover();
       const archiveBtnInRow = nav.getByRole("button", { name: /archive|アーカイブ/i }).first();
       await expect(archiveBtnInRow).toBeVisible({ timeout: 5_000 });
 
@@ -346,20 +339,31 @@ test.describe
         ),
         archiveBtnInRow.click(),
       ]);
-      expect(archiveResp.status(), "Archive API should return 200").toBe(200);
+      expect(
+        archiveResp.status(),
+        "Archive API should return 200 (no run is executing — a parked run never blocks)",
+      ).toBe(200);
 
-      // After archive: immediately navigate to managerThreadId (new trial)
-      await page.waitForURL(new RegExp(`/threads/${state.newTrialId}`), { timeout: 10_000 });
-
-      // After navigating to the new trial, the composer should be visible (active trial)
-      const composer = page.getByTestId("thread-composer");
+      // The archived trial page becomes read-only: archived banner, no composer.
       await expect(
-        composer,
-        "Composer should be visible on the new trial after archive redirect",
-      ).toBeVisible({ timeout: 10_000 });
+        page.getByTestId("thread-archived-banner"),
+        "Archived banner should appear on the archived trial",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByTestId("thread-composer"),
+        "Composer should disappear on the archived trial",
+      ).not.toBeVisible();
+
+      // The epic no longer has an active trial.
+      const eRes = await page.request.get(`/api/projects/${state.projectId}/epics/${state.epicId}`);
+      const epic: { active_thread_id?: string | null } = await eRes.json();
+      expect(
+        epic.active_thread_id,
+        "active_thread_id is cleared by archiving the active trial",
+      ).toBeNull();
 
       await page.screenshot({
-        path: `${SHOTS}/multi-trial-6-archive-redirect.png`,
+        path: `${SHOTS}/multi-trial-6-archive-active.png`,
         fullPage: true,
       });
     });

@@ -2,8 +2,8 @@
  * Arbiter merge E2E test — bulk merge of multiple Epics.
  *
  * Scenario:
- *   1. Create project → create Epic 1 → run → completed
- *   2. Create Epic 2 → run → completed
+ *   1. Create project → create Epic 1 → run → work done (waiting + tasks done)
+ *   2. Create Epic 2 → run → work done
  *   3. Select both from Epics board → Merge Selected
  *   4. MergeProgressPanel shows SSE progress → phase=finished
  *   5. Confirm both Epics carry the merge fact (merged_at) via GET /epics —
@@ -17,6 +17,7 @@
 
 import { expect, test } from "@playwright/test";
 import { ARBITER_MERGE_SEED } from "./arbiter-merge-seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 test.describe
   .serial("Arbiter merge — bulk merge of multiple Epics", () => {
@@ -25,26 +26,6 @@ test.describe
       epicId1: "",
       epicId2: "",
     };
-
-    // ---- Helper: wait for run/state status via API polling ----
-    async function waitForRunStatus(
-      page: import("@playwright/test").Page,
-      epicId: string,
-      expectedStatus: string,
-      timeoutMs = 120_000,
-    ): Promise<void> {
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: timeoutMs, intervals: [500, 1000, 2000] },
-        )
-        .toBe(expectedStatus);
-    }
 
     // ---- Helper: wait for the merge fact (epic.merged_at) via API polling ----
     async function waitForMergedFact(
@@ -93,7 +74,7 @@ test.describe
     });
 
     // -----------------------------------------------------------------------
-    test("2. create Epic 1 and wait for run → completed", async ({ page }) => {
+    test("2. create Epic 1 and wait for run → work done", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
 
       await page.goto(`/projects/${state.projectId}`);
@@ -121,13 +102,13 @@ test.describe
       // Start run
       await startRun(page, state.epicId1);
 
-      // Wait for completed (1st run uses per_call[0] = writes epic1.py)
-      await waitForRunStatus(page, state.epicId1, "completed");
-      console.log(`[arbiter-merge] Epic 1 completed`);
+      // Standard work-done wait (1st run uses per_call[0] = writes epic1.py)
+      await waitForWorkDone(page, state.projectId, state.epicId1, { timeout: 120_000 });
+      console.log(`[arbiter-merge] Epic 1 work done`);
     });
 
     // -----------------------------------------------------------------------
-    test("3. create Epic 2 and wait for run → completed", async ({ page }) => {
+    test("3. create Epic 2 and wait for run → work done", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
 
       await page.goto(`/projects/${state.projectId}`);
@@ -162,9 +143,9 @@ test.describe
       // Start run
       await startRun(page, state.epicId2);
 
-      // Wait for completed (2nd run uses per_call[1] = writes epic2.py)
-      await waitForRunStatus(page, state.epicId2, "completed");
-      console.log(`[arbiter-merge] Epic 2 completed`);
+      // Standard work-done wait (2nd run uses per_call[1] = writes epic2.py)
+      await waitForWorkDone(page, state.projectId, state.epicId2, { timeout: 120_000 });
+      console.log(`[arbiter-merge] Epic 2 work done`);
     });
 
     // -----------------------------------------------------------------------
@@ -176,8 +157,9 @@ test.describe
       // Navigate to Epics board (/epics is the board; /projects/{id} is the overview)
       await page.goto(`/projects/${state.projectId}/epics`);
 
-      // Both epics stay open after their runs (runs never transition the epic),
-      // so they appear under the "all" filter with a merge checkbox
+      // Both epics stay open after their runs (runs never transition the epic;
+      // their runs are live-parked in "waiting" — the merge shelves them), so
+      // they appear under the "all" filter with a merge checkbox
       // (isMergeable = open + has branch + no merge fact yet).
 
       // Click Epic 1 checkbox

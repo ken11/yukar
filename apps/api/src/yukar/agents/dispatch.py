@@ -82,10 +82,9 @@ class DispatchContext:
     # Live callable — always returns the current stop flag from the orchestrator.
     # This is set once in orchestrator._run_dispatch and never mutated here.
     is_stopped: Callable[[], bool]
-    # "awaiting_input" is included for type completeness (matches orchestrator's
-    # _run_status field), but dispatch is only ever entered from a running or
-    # paused state — the ask_user gate blocks dispatch until the user answers.
-    run_status: Literal["running", "paused", "awaiting_input"]
+    # Dispatch is only ever entered from a running or paused turn — a parked
+    # (waiting) run has no in-flight dispatch by construction.
+    run_status: Literal["running", "paused"]
     pub: Callable[[object], None]
     max_attempts: int
     # Git author identity used by the host commit after Evaluator acceptance (issue④).

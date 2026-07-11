@@ -1,15 +1,15 @@
-"""Tests for turn-end semantics: a silent turn end is the agent's yield.
+"""Tests for turn-end semantics (lifecycle redesign P3).
 
-The host never injects a dispatch command.  A manager turn that ends without
-ask_user / complete_epic and without an effector tool (dispatch / task_update)
-is honoured as the agent yielding to the user:
+EVERY ended turn is the agent's yield: the run parks in ``waiting`` (the
+user's turn) and the next user message drives exactly one more turn.  The
+host never injects a prompt to keep a run going — no stall notices, no
+dispatch nudges, no completion tool:
 
-- A tool-less reply to a HUMAN message parks the run immediately in
-  question-less awaiting_input (conversation must not be interrupted).
-- A silent end after a HOST prompt gets ONE neutral stall notice; a second
-  consecutive silent end parks.
-- Real work (dispatch / task_update) resets the notice one-shot, so
-  multi-batch autonomous runs keep flowing.
+- A turn that ends (tool-using or not) parks the run in ``waiting`` and
+  publishes a question-less UserInputRequestedEvent (pure "your turn" signal).
+- The ONLY host-authored user prompt is turn-0 initialisation.
+- stop() on a live waiting run settles the state as ``waiting`` (restartable),
+  never ``completed`` — a conversation run has no completed state.
 """
 
 from __future__ import annotations
@@ -19,10 +19,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pytest
+from tests._helpers import make_git_repo, wait_for_run_status
 
-from tests._helpers import make_git_repo
-
+# Legacy host-injected prompts that must NEVER appear again.
 _STALL_NOTICE_MARKER = "You ended your turn without calling"
 _OLD_NUDGE_MARKER = "Select runnable tasks"
 
@@ -75,9 +74,9 @@ def _fsm_user_texts(root: str, project_id: str, epic_id: str) -> list[str]:
 
 
 class TestParkHelper:
-    """Unit: _park_awaiting_user persists question-less awaiting_input."""
+    """Unit: _park_awaiting_user persists ``waiting`` and signals "your turn"."""
 
-    async def test_park_publishes_empty_question_and_persists(self, tmp_path: Path) -> None:
+    async def test_park_persists_waiting_and_publishes_your_turn(self, tmp_path: Path) -> None:
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
         from yukar.models.epic import Epic
@@ -109,23 +108,29 @@ class TestParkHelper:
         await orch._park_awaiting_user()
 
         assert orch._awaiting_user is True
-        assert orch._pending_question == ""
+        assert orch.is_parked is True
 
         persisted = await state_repo.get_state(root, "proj", "ep")
         assert persisted is not None
-        assert persisted.status == "awaiting_input"
-        assert persisted.pending_question is None
+        assert persisted.status == "waiting"
 
         uir = [e for e in emitted if isinstance(e, UserInputRequestedEvent)]
         assert len(uir) == 1
-        assert uir[0].question == ""
+        assert uir[0].question == "", "P3: the your-turn signal carries no question text"
         assert uir[0].thread_id == "manager"
 
 
-class TestConversationalPark:
-    """E2E: a tool-less reply to a human message parks; a later reply resumes work."""
+class TestEveryTurnParks:
+    """E2E: every ended turn parks; a user reply drives exactly one more turn.
 
-    async def test_toolless_reply_parks_then_user_resumes(self, tmp_path: Path) -> None:
+    Reproduces the old conversational flow without ask_user/complete_epic:
+    turn 0 presents a plan in the message body and ends → park; the user's
+    question is answered in text → park; the user approves (explicit
+    operation) and says go → dispatch runs → park.  The host never injects
+    a stall notice or a dispatch nudge.
+    """
+
+    async def test_plan_question_approve_dispatch_flow(self, tmp_path: Path) -> None:
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
@@ -142,7 +147,7 @@ class TestConversationalPark:
         await _bootstrap(root, project_id, epic_id, git_repo)
 
         manager_script = [
-            # Turn 0: plan + ask_user.
+            # Turn 0: plan, then present it in the message body and end.
             ToolUseTurn(
                 tool_name="task_update",
                 tool_input={
@@ -152,18 +157,15 @@ class TestConversationalPark:
                     "repo": git_repo.name,
                 },
             ),
-            ToolUseTurn(tool_name="ask_user", tool_input={"question": "Plan: T1. OK?"}),
-            TextTurn("Waiting for your reply."),
-            # Turn 1: the user asked a QUESTION — the manager answers in text
-            # without any tool.  This must park (not trigger a dispatch nudge).
+            TextTurn("Plan: T1 writes hello.py. Approve to proceed."),
+            # Turn 1: the user asked a question — answer in text, no tools.
             TextTurn("T1 writes hello.py — nothing else."),
-            # Turn 2: the user said proceed — real work then complete.
+            # Turn 2: the user approved and said go — dispatch, then report.
             ToolUseTurn(
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("Done!"),
+            TextTurn("T1 done — hello.py written and accepted."),
         ]
         worker_script = [
             ToolUseTurn(
@@ -186,17 +188,17 @@ class TestConversationalPark:
             return FakeModel(script=list(evaluator_script))
 
         events_received: list[Any] = []
-        ask_user_seen = asyncio.Event()
-        park_seen = asyncio.Event()
+        park_count = 0
+        park_events: list[asyncio.Event] = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
 
         async def _collect() -> None:
+            nonlocal park_count
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
                 if isinstance(ev, UserInputRequestedEvent):
-                    if ev.question:
-                        ask_user_seen.set()
-                    else:
-                        park_seen.set()
+                    if park_count < len(park_events):
+                        park_events[park_count].set()
+                    park_count += 1
 
         collector = asyncio.create_task(_collect())
         await asyncio.sleep(0)
@@ -210,27 +212,19 @@ class TestConversationalPark:
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
             run_task = asyncio.create_task(orch.start(root, project_id, epic_id, run_id))
 
-            # Turn 0 ends in ask_user.
-            await asyncio.wait_for(ask_user_seen.wait(), timeout=10.0)
-
-            # The user asks a question (does NOT approve-and-command work).
-            orch.inject_message("manager", "what exactly does T1 do?")
-
-            # The manager answers in plain text → the run must park
-            # (question-less awaiting_input), NOT dispatch.
-            await asyncio.wait_for(park_seen.wait(), timeout=10.0)
-
+            # Turn 0 ends → park #1.
+            await asyncio.wait_for(park_events[0].wait(), timeout=10.0)
             state = await state_repo.get_state(root, project_id, epic_id)
             assert state is not None
-            assert state.status == "awaiting_input"
-            assert state.pending_question is None, (
-                "A conversational park must not fabricate a pending question"
-            )
+            assert state.status == "waiting"
 
-            # The user approves the plan (explicit operation recorded on disk —
-            # what POST /plan/approval does; a chat reply alone would leave
-            # dispatch gate-rejected), then resumes; the manager dispatches
-            # and completes.
+            # The user asks a question; the tool-less text answer parks again.
+            orch.inject_message("manager", "what exactly does T1 do?")
+            await asyncio.wait_for(park_events[1].wait(), timeout=10.0)
+
+            # The user approves the plan — an explicit operation recorded on
+            # disk (what POST /plan/approval does; a chat reply alone would
+            # leave dispatch gate-rejected) — then says go.
             from datetime import UTC, datetime
 
             from yukar.models.task import PlanApproval, compute_plan_hash
@@ -247,23 +241,46 @@ class TestConversationalPark:
                 ),
             )
             orch.inject_message("manager", "great — go ahead")
-            await asyncio.wait_for(run_task, timeout=30.0)
+
+            # Turn 2 dispatches and ends → park #3.  The run task stays alive.
+            await asyncio.wait_for(park_events[2].wait(), timeout=30.0)
+            await orch.stop()
+            await asyncio.wait_for(run_task, timeout=10.0)
 
         await asyncio.wait_for(collector, timeout=5.0)
 
         event_types = [getattr(ev, "type", None) for ev in events_received]
-        assert "run_completed" in event_types
         assert "worker_completed" in event_types
+        assert "eval_result" in event_types
+        # A conversation run never completes; it parks and is finally stopped.
+        assert "run_completed" not in event_types
+        assert "run_stopped" in event_types
 
-        # The host must never have injected the old dispatch command.
-        for text in _fsm_user_texts(root, project_id, epic_id):
+        # The host never injected any prompt besides turn-0 initialisation:
+        # no stall notice, no dispatch nudge.
+        user_texts = _fsm_user_texts(root, project_id, epic_id)
+        for text in user_texts:
+            assert _STALL_NOTICE_MARKER not in text
             assert _OLD_NUDGE_MARKER not in text
+        # turn-0 boilerplate + 2 human messages.
+        assert len(user_texts) == 3, (
+            f"Expected exactly 3 user messages (turn-0 + 2 replies), got: {user_texts}"
+        )
+
+        # Final state stays waiting.
+        state = await state_repo.get_state(root, project_id, epic_id)
+        assert state is not None
+        assert state.status == "waiting"
 
 
-class TestStallNoticeThenPark:
-    """E2E: silent end after a host prompt → one notice; silent again → park."""
+class TestToolUsingTurnAlsoParks:
+    """E2E: a turn that used effector tools STILL parks when it ends.
 
-    async def test_one_notice_then_park(self, tmp_path: Path) -> None:
+    Under the old semantics an effector turn re-armed a stall notice and the
+    host kept the loop flowing; under P3 the host never continues on its own.
+    """
+
+    async def test_effector_turn_parks_without_notice(self, tmp_path: Path) -> None:
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
@@ -273,14 +290,13 @@ class TestStallNoticeThenPark:
 
         root = str(tmp_path / "ws")
         project_id = "proj"
-        epic_id = "EP-STALL"
-        run_id = "run-stall-park"
+        epic_id = "EP-EFFECTOR"
+        run_id = "run-effector-park"
 
         git_repo = make_git_repo(tmp_path, "myrepo")
         await _bootstrap(root, project_id, epic_id, git_repo)
 
         manager_script = [
-            # Turn 0: creates a task (effector) then stops with text.
             ToolUseTurn(
                 tool_name="task_update",
                 tool_input={
@@ -291,8 +307,6 @@ class TestStallNoticeThenPark:
                 },
             ),
             TextTurn("Planned. Stopping here."),
-            # Turn 1 (stall notice): stalls again — must park, not loop.
-            TextTurn("Still thinking."),
         ]
 
         def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
@@ -304,7 +318,7 @@ class TestStallNoticeThenPark:
         async def _collect() -> None:
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
-                if isinstance(ev, UserInputRequestedEvent) and not ev.question:
+                if isinstance(ev, UserInputRequestedEvent):
                     park_seen.set()
 
         collector = asyncio.create_task(_collect())
@@ -324,238 +338,37 @@ class TestStallNoticeThenPark:
 
             state = await state_repo.get_state(root, project_id, epic_id)
             assert state is not None
-            assert state.status == "awaiting_input"
-            assert state.pending_question is None
+            assert state.status == "waiting"
 
-            # Exactly ONE stall notice was sent, and never the old dispatch command.
+            # No stall notice was ever injected — the only user message is
+            # the turn-0 initialisation prompt.
             user_texts = _fsm_user_texts(root, project_id, epic_id)
-            notices = [t for t in user_texts if _STALL_NOTICE_MARKER in t]
-            assert len(notices) == 1, f"Expected exactly one stall notice, got: {user_texts}"
+            assert len(user_texts) == 1, f"Expected only the turn-0 prompt, got: {user_texts}"
+            assert all(_STALL_NOTICE_MARKER not in t for t in user_texts)
             assert all(_OLD_NUDGE_MARKER not in t for t in user_texts)
 
-            # Stop the parked run (user-initiated stop path).
-            orch._stopped = True
-            run_task.cancel()
-            with pytest.raises((asyncio.CancelledError, Exception)):
-                await run_task
+            await orch.stop()
+            await asyncio.wait_for(run_task, timeout=10.0)
 
         await asyncio.wait_for(collector, timeout=5.0)
 
 
-class TestEffectorResetsNotice:
-    """E2E: each productive turn re-arms the one-shot notice — autonomy flows."""
-
-    async def test_multi_batch_autonomy_completes(self, tmp_path: Path) -> None:
-        from yukar.agents.orchestrator import EpicOrchestrator
-        from yukar.config.settings import LLMSettings
-        from yukar.events import bus as event_bus
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.models.events import UserInputRequestedEvent
-
-        root = str(tmp_path / "ws")
-        project_id = "proj"
-        epic_id = "EP-BATCH"
-        run_id = "run-batch"
-
-        git_repo = make_git_repo(tmp_path, "myrepo")
-        await _bootstrap(root, project_id, epic_id, git_repo)
-
-        manager_script = [
-            # Turn 0: plan (effector) then stop.  T1 stays todo so the epic
-            # keeps runnable work across turn boundaries (the deadlock guard
-            # would otherwise end the run before the second notice).
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T1",
-                    "title": "Some work",
-                    "status": "todo",
-                    "repo": git_repo.name,
-                },
-            ),
-            TextTurn("Planned."),
-            # Turn 1 (notice): work again (effector) then stop — the notice
-            # one-shot must re-arm instead of parking.
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T2",
-                    "title": "More work",
-                    "status": "todo",
-                    "repo": git_repo.name,
-                },
-            ),
-            TextTurn("Added T2."),
-            # Turn 2 (notice): close everything out and finish in one turn.
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T1",
-                    "title": "Some work",
-                    "status": "done",
-                    "repo": git_repo.name,
-                },
-            ),
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T2",
-                    "title": "More work",
-                    "status": "done",
-                    "repo": git_repo.name,
-                },
-            ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("All done."),
-        ]
-
-        def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
-            return FakeModel(script=list(manager_script))
-
-        events_received: list[Any] = []
-
-        async def _collect() -> None:
-            async for ev in event_bus.event_stream(project_id, epic_id):
-                events_received.append(ev)
-
-        collector = asyncio.create_task(_collect())
-        await asyncio.sleep(0)
-
-        orch = EpicOrchestrator(
-            llm_settings=LLMSettings(provider="fake"),
-            git_author_name="yukar",
-            git_author_email="yukar@localhost",
-            require_plan_approval=False,
-        )
-
-        with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            await asyncio.wait_for(
-                orch.start(root, project_id, epic_id, run_id),
-                timeout=30.0,
-            )
-
-        await asyncio.wait_for(collector, timeout=5.0)
-
-        event_types = [getattr(ev, "type", None) for ev in events_received]
-        assert "run_completed" in event_types
-
-        # The run never parked (no question-less UserInputRequestedEvent).
-        parks = [
-            e
-            for e in events_received
-            if isinstance(e, UserInputRequestedEvent) and not e.question
-        ]
-        assert parks == [], "Autonomous multi-batch run must not park"
-
-        # One notice per silent inter-batch boundary (turns 1 and 2).
-        user_texts = _fsm_user_texts(root, project_id, epic_id)
-        notices = [t for t in user_texts if _STALL_NOTICE_MARKER in t]
-        assert len(notices) == 2, f"Expected two stall notices, got: {user_texts}"
-        assert all(_OLD_NUDGE_MARKER not in t for t in user_texts)
-
-
-class TestReadOnlyToolsKeepFlowing:
-    """E2E: a notice-prompted turn that only READS still keeps the run alive.
-
-    Read-only investigation (docs, branch diff, repo greps) is real engagement:
-    it must not be classified as a silent yield, or a manager/reviewer doing
-    multi-turn verification would be parked mid-work.
-    """
-
-    async def test_read_only_notice_turn_does_not_park(self, tmp_path: Path) -> None:
-        from yukar.agents.orchestrator import EpicOrchestrator
-        from yukar.config.settings import LLMSettings
-        from yukar.events import bus as event_bus
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.models.events import UserInputRequestedEvent
-
-        root = str(tmp_path / "ws")
-        project_id = "proj"
-        epic_id = "EP-READONLY"
-        run_id = "run-readonly"
-
-        git_repo = make_git_repo(tmp_path, "myrepo")
-        await _bootstrap(root, project_id, epic_id, git_repo)
-
-        manager_script = [
-            # Turn 0: plan (effector) then stop.
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T1",
-                    "title": "Some work",
-                    "status": "todo",
-                    "repo": git_repo.name,
-                },
-            ),
-            TextTurn("Planned."),
-            # Turn 1 (notice): READ-ONLY tool use only, then text.  Must keep
-            # flowing (next notice), NOT park.
-            ToolUseTurn(tool_name="read_epic_docs", tool_input={}),
-            TextTurn("Checked the docs; verifying next."),
-            # Turn 2 (notice): close out and finish.
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T1",
-                    "title": "Some work",
-                    "status": "done",
-                    "repo": git_repo.name,
-                },
-            ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("All done."),
-        ]
-
-        def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
-            return FakeModel(script=list(manager_script))
-
-        events_received: list[Any] = []
-
-        async def _collect() -> None:
-            async for ev in event_bus.event_stream(project_id, epic_id):
-                events_received.append(ev)
-
-        collector = asyncio.create_task(_collect())
-        await asyncio.sleep(0)
-
-        orch = EpicOrchestrator(
-            llm_settings=LLMSettings(provider="fake"),
-            git_author_name="yukar",
-            git_author_email="yukar@localhost",
-            require_plan_approval=False,
-        )
-
-        with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            await asyncio.wait_for(orch.start(root, project_id, epic_id, run_id), timeout=30.0)
-
-        await asyncio.wait_for(collector, timeout=5.0)
-
-        event_types = [getattr(ev, "type", None) for ev in events_received]
-        assert "run_completed" in event_types
-        parks = [
-            e
-            for e in events_received
-            if isinstance(e, UserInputRequestedEvent) and not e.question
-        ]
-        assert parks == [], "A read-only investigating turn must not be parked"
-
-
-class TestStopOnLiveAwaitingRun:
-    """A user stop on a LIVE awaiting_input run must end idle, not completed.
+class TestStopOnLiveWaitingRun:
+    """A user stop on a LIVE waiting run must settle as waiting, not completed.
 
     stop() unblocks _wait_for_user_input via the __stop__ sentinel and the loop
     returns NORMALLY (no CancelledError), so start() must branch on _stopped —
-    otherwise the run was mislabelled completed, its thread resolved, and its
-    remaining tasks flipped to blocked.
+    the regression this guards: a stop mislabelled as completion, the thread
+    resolved, and remaining tasks flipped to blocked (e771261 lineage).
     """
 
-    async def test_sentinel_stop_sets_idle_and_preserves_tasks(self, tmp_path: Path) -> None:
+    async def test_sentinel_stop_keeps_waiting_and_preserves_tasks(self, tmp_path: Path) -> None:
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
         from yukar.storage import state_repo, tasks_repo
+        from yukar.storage.threads_repo import get_threads
 
         root = str(tmp_path / "ws")
         project_id = "proj"
@@ -575,8 +388,7 @@ class TestStopOnLiveAwaitingRun:
                     "repo": git_repo.name,
                 },
             ),
-            ToolUseTurn(tool_name="ask_user", tool_input={"question": "Proceed?"}),
-            TextTurn("Waiting."),
+            TextTurn("Plan ready — waiting for your approval."),
         ]
 
         def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
@@ -600,14 +412,8 @@ class TestStopOnLiveAwaitingRun:
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
             run_task = asyncio.create_task(orch.start(root, project_id, epic_id, run_id))
 
-            # Wait for the run to persist awaiting_input.
-            for _ in range(100):
-                st = await state_repo.get_state(root, project_id, epic_id)
-                if st is not None and st.status == "awaiting_input":
-                    break
-                await asyncio.sleep(0.1)
-            else:
-                pytest.fail("run never reached awaiting_input")
+            # Wait for the run to park (persisted waiting).
+            await wait_for_run_status(root, project_id, epic_id, "waiting", timeout=10.0)
 
             # Production stop path: runner.stop() injects the sentinel; the
             # task then finishes NORMALLY (supervisor only cancels after 5s).
@@ -618,8 +424,7 @@ class TestStopOnLiveAwaitingRun:
 
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "idle", f"Expected idle after stop, got {state.status!r}"
-        assert state.pending_question is None
+        assert state.status == "waiting", f"Expected waiting after stop, got {state.status!r}"
 
         event_types = [getattr(ev, "type", None) for ev in events_received]
         assert "run_stopped" in event_types
@@ -631,3 +436,9 @@ class TestStopOnLiveAwaitingRun:
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         t1 = next(t for t in tf.tasks if t.id == "T1")
         assert t1.status == "todo", f"Task must stay todo after stop, got {t1.status!r}"
+
+        # The conversation stays active (no resolved vocabulary for managers).
+        threads = await get_threads(root, project_id, epic_id)
+        manager = next((t for t in threads.threads if t.id == "manager"), None)
+        assert manager is not None
+        assert manager.status == "active"

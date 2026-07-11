@@ -305,6 +305,7 @@ class TestSameBranchSession:
         handle.task = MagicMock()
         handle.task.done.return_value = False
         handle.manager_thread_id = first["id"]
+        handle.runner = MagicMock(is_parked=False)  # executing (not parked)
         sup._runs[sup._key(pid, epic_id)] = handle
         try:
             r = await app_client.post(

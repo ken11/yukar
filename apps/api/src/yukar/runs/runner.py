@@ -254,9 +254,12 @@ class DummyRunner:
 
             await wait()
 
-            # Complete — update state.yaml only (epic.yaml.status is
-            # user-owned and untouched by run completion).
-            state.status = "completed"
+            # Scripted sequence done — settle into "waiting" (a DummyRunner
+            # stands in for a conversation run, which never writes
+            # "completed"; only job runs do).  epic.yaml.status is user-owned
+            # and untouched.  The RunCompletedEvent below is kept as the
+            # legacy end-of-script signal for SSE smoke tests.
+            state.status = "waiting"
             state.active_workers = []
             state.last_event_at = datetime.now(UTC)
             await state_repo.save_state(root, project_id, epic_id, state)

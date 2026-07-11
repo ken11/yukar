@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from yukar.api.routers import get_epic_or_404
+from yukar.api.routers import get_epic_or_404, shelve_or_409
 from yukar.deps import SupervisorDep, UsageTrackerDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
 from yukar.events.sse import (
@@ -50,7 +50,9 @@ async def start_run(
     - If no run is currently active: start a new run.  For epics that have an
       existing Strands session (previously run), the Manager will see its prior
       conversation history via FileSessionManager (continuation semantics).
-    - If a run is currently active (is_running=True): return 409 Conflict.
+    - If a run is currently EXECUTING a turn: return 409 Conflict.  A live
+      run parked in ``waiting`` is shelved first (state preserved) — Start on
+      a parked conversation behaves like a restart, not a 409 dead-end.
     - Budget exhausted: return 409 Conflict.
 
     Open epics may be (re-)started freely — the existing session history allows
@@ -73,11 +75,16 @@ async def start_run(
         raise HTTPException(
             status_code=409, detail="Epic is completed — reopen it before starting a run"
         )
-    # 409 only when a live run is already executing — not for terminal states.
-    if supervisor.is_running(project_id, epic_id):
+    # 409 only when a live run is actually EXECUTING a turn.  A live run
+    # parked in ``waiting`` does not hold the slot (P3 rule): pressing Start
+    # on a parked conversation shelves the live task (state preserved) and
+    # restarts — same semantics as restarting after a stop, instead of the
+    # dead-end 409 the parked-live case used to produce.
+    if supervisor.is_executing(project_id, epic_id):
         raise HTTPException(status_code=409, detail="Run already active for this epic")
     if usage_tracker.is_over_budget():
         raise HTTPException(status_code=409, detail="Budget limit reached")
+    await shelve_or_409(supervisor, project_id, epic_id)
 
     # TOCTOU guard: hold epic_thread_lock while resolving the active trial and
     # registering the run.  This serialises against archive_thread / create_thread
@@ -145,7 +152,6 @@ async def run_action(
     epic_id: str,
     action: Literal["pause", "resume", "stop"],
     supervisor: SupervisorDep,
-    root: WorkspaceRootDep,
 ) -> dict[str, str]:
     if supervisor.is_running(project_id, epic_id):
         if action == "pause":
@@ -153,14 +159,13 @@ async def run_action(
         elif action == "resume":
             await supervisor.resume(project_id, epic_id)
         elif action == "stop":
+            # A live run parked in waiting is shelved (task cancel, state stays
+            # waiting) + RunStoppedEvent; an executing run gets the full stop.
             await supervisor.stop(project_id, epic_id)
         return {"status": action}
-    # No live run for this epic.  A stop may still target a run *parked* in
-    # awaiting_input (persisted across a server restart, per recovery.py): the UI
-    # shows a Stop button driven by the persisted RunState.  Clear it so Stop
-    # works instead of 404ing.  pause/resume only make sense on a live run.
-    if action == "stop" and await supervisor.stop_parked_awaiting(root, project_id, epic_id):
-        return {"status": "stop"}
+    # No live run for this epic.  ``waiting`` with no live task is the normal
+    # resting state (nothing to stop — the next message resumes it), so there
+    # is no parked-stop special case any more.
     raise HTTPException(status_code=404, detail="No active run for this epic")
 
 
@@ -172,15 +177,16 @@ async def get_run_state(
 ) -> RunState:
     """Return the current RunState for an epic.
 
-    Returns a default idle RunState when no state.yaml exists yet (epic has
-    never been run).  Returns 404 only when the epic itself does not exist.
+    Returns a default ``waiting`` RunState when no state.yaml exists yet (an
+    epic that has never run is simply "your turn").  Returns 404 only when
+    the epic itself does not exist.
     """
     from yukar.storage import state_repo
 
     await get_epic_or_404(root, project_id, epic_id)
     state = await state_repo.get_state(root, project_id, epic_id)
     if state is None:
-        return RunState(run_id="", status="idle")
+        return RunState(run_id="", status="waiting")
     return state
 
 

@@ -5,6 +5,16 @@ Invariants:
   - max_parallel_epics is enforced via a semaphore.
   - pause/resume/stop are forwarded to the underlying runner.
 
+Run slot (lifecycle redesign P3):
+  - The epic's run slot is held only while a turn is actually EXECUTING
+    (``is_executing``: running / paused).  A conversation run parked in
+    ``waiting`` keeps its asyncio task alive for instant reply injection, but
+    it does NOT hold the slot for guard purposes — operations that need the
+    slot (new trial, review, archive, merge, completion) SHELVE it via
+    ``shelve_waiting``: the task is cancelled without the stop flag, state.yaml
+    stays ``waiting`` (same contract as a graceful shutdown), and the
+    conversation resumes as a continuation run on the next user message.
+
 Epic / state status (architecture.md §3.2):
   - epic.yaml.status is USER-owned (open ⇄ completed via PATCH /epics/{id}).
     The supervisor NEVER transitions it: starting, finishing, or failing a run
@@ -12,11 +22,11 @@ Epic / state status (architecture.md §3.2):
     a completed epic rejects new manager runs (the user must reopen it first);
     reviewer runs are read-only and stay allowed.
   - state.yaml (RunState.status managed by orchestrator):
-      idle    → running   : orchestrator.start() begins
-      running → completed : successful full-loop completion
-      running → idle      : CancelledError (explicit supervisor.stop() call)
-                            — "idle" means "not running, no error, restartable"
+      waiting → running   : orchestrator.start() begins a turn
+      running → waiting   : the turn ends (park), stop, or turn-limit backstop
+                            — "waiting" means "the user's turn; restartable"
       running → error     : unhandled internal exception inside orchestrator
+      running → completed : JOB runs only (resolve / arbiter / dummy)
 
 Settings resolution (architecture.md §5 decision#7):
   - Settings changes must apply to new Runs but NOT to already-running Runs.
@@ -35,7 +45,7 @@ import contextlib
 import logging
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -99,6 +109,11 @@ class _RunHandle:
     # defaults); callers may also pass a pre-built dict to share the reference
     # with the closure (see start() / start_continuation() for the pattern).
     _stop_flag: dict[str, bool] = field(default_factory=lambda: {"requested": False})
+    # True while shelve_waiting is cancelling this handle's task.  The inject
+    # path refuses to enqueue into a dying run (the in-memory queue would be
+    # lost with the task), so the message routes to the continuation path
+    # instead — user speech is never silently dropped by a shelve.
+    shelving: bool = False
 
     @property
     def stop_requested(self) -> bool:
@@ -262,8 +277,8 @@ def _fire_and_forget(coro: Any, *, name: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _update_state_idle(root: str, project_id: str, epic_id: str) -> None:
-    """Update state.yaml to idle after a preparing-phase stop.
+async def _update_state_waiting(root: str, project_id: str, epic_id: str) -> None:
+    """Update state.yaml to waiting after a preparing-phase stop.
 
     Called as a fire-and-forget background task from ``_emit_preparing_stopped``
     so that the await does not run inside a CancelledError handler.
@@ -272,18 +287,17 @@ async def _update_state_idle(root: str, project_id: str, epic_id: str) -> None:
 
     from yukar.storage import state_repo
 
-    # Update state.yaml: idle + clear transient fields.
+    # Update state.yaml: waiting + clear transient fields.
     # The Manager never started, so state.yaml may not exist yet; we create or
     # update it to reflect the "stopped, restartable" state.
     existing = await state_repo.get_state(root, project_id, epic_id)
     if existing is not None:
-        existing.status = "idle"
+        existing.status = "waiting"
         existing.active_workers = []
-        existing.pending_question = None
         existing.last_event_at = datetime.now(UTC)
         await state_repo.save_state(root, project_id, epic_id, existing)
     # If state.yaml does not exist (Manager never wrote it), leave it absent —
-    # the UI will treat a missing state as idle, which is the correct outcome.
+    # the UI will treat a missing state as waiting, which is the correct outcome.
 
 
 def _emit_preparing_stopped(
@@ -303,15 +317,15 @@ def _emit_preparing_stopped(
     1. Publishes ``RunStoppedEvent`` (replayable) so the UI transitions away
        from "preparing" to "stopped".
     2. Publishes the SSE sentinel ``None`` to close the stream.
-    3. Schedules a fire-and-forget task to update state.yaml to ``idle``
-       (restartable) with empty active_workers and no pending_question —
-       identical semantics to orchestrator stop.
+    3. Schedules a fire-and-forget task to update state.yaml to ``waiting``
+       (restartable) with empty active_workers — identical semantics to
+       orchestrator stop.
 
     This function is intentionally synchronous because it may be called from
     within an ``except asyncio.CancelledError`` handler where the enclosing
     task has already been cancelled.  Any ``await`` inside that handler would
     immediately re-raise ``CancelledError``, swallowing the events.  The
-    state.yaml update is therefore deferred to ``_update_state_idle`` which is
+    state.yaml update is therefore deferred to ``_update_state_waiting`` which is
     scheduled as a fire-and-forget background task so that the SSE events are
     always published before the ``raise`` that follows.
 
@@ -334,7 +348,7 @@ def _emit_preparing_stopped(
     # the await does not run inside the CancelledError handler (which would
     # immediately re-raise CancelledError and swallow the update).
     _fire_and_forget(
-        _update_state_idle(root, project_id, epic_id),
+        _update_state_waiting(root, project_id, epic_id),
         name=f"preparing-stop-state-{epic_id}",
     )
 
@@ -360,6 +374,25 @@ class RunSupervisor:
     def _key(self, project_id: str, epic_id: str) -> tuple[str, str]:
         return (project_id, epic_id)
 
+    @contextlib.asynccontextmanager
+    async def epic_mutation_lock(self) -> AsyncIterator[None]:
+        """Participate in the supervisor's run-start lock.
+
+        ``PATCH /epics/{id} {status: completed}`` runs its guard + write inside
+        this lock so it cannot interleave with a concurrent run start:
+        ``start`` / ``start_continuation`` re-check ``epic.status`` under the
+        same lock, so the flip either happens before the re-check (run is
+        rejected) or after the run registered (the PATCH sees ``is_executing``
+        and 409s).  This closes the millisecond TOCTOU window carried over
+        from the old close endpoint (P2 leftover).
+
+        Lock order: callers must NOT hold ``epic_thread_lock`` when entering
+        (run-start paths acquire epic_thread_lock → _start_lock; acquiring
+        them in the opposite order would deadlock).
+        """
+        async with self._start_lock:
+            yield
+
     def _register(self, key: tuple[str, str], handle: _RunHandle) -> None:
         """Register *handle* under *key* and arm self-cleanup on completion.
 
@@ -383,10 +416,70 @@ class RunSupervisor:
         handle.task.add_done_callback(_on_run_done)
 
     def is_running(self, project_id: str, epic_id: str) -> bool:
+        """True while a live run task exists for this epic (executing OR parked)."""
         key = self._key(project_id, epic_id)
         if key not in self._runs:
             return False
         return not self._runs[key].task.done()
+
+    def is_executing(self, project_id: str, epic_id: str) -> bool:
+        """True only while a live run is actually EXECUTING a turn (running/paused).
+
+        A conversation run parked in ``waiting`` keeps a live task (for instant
+        reply injection) but does NOT count as executing: it no longer holds
+        the epic's run slot for guard purposes — callers that need the slot
+        shelve it first (``shelve_waiting``).  Job runs (resolve / arbiter /
+        dummy) never park, so for them this is equivalent to ``is_running``.
+        """
+        key = self._key(project_id, epic_id)
+        handle = self._runs.get(key)
+        if handle is None or handle.task.done():
+            return False
+        return not bool(getattr(handle.runner, "is_parked", False))
+
+    async def shelve_waiting(self, project_id: str, epic_id: str) -> bool:
+        """Shelve a live run parked in ``waiting``: yield the run slot, keep the state.
+
+        Cancels the run task WITHOUT setting the stop flag, so the
+        orchestrator's not-stopped CancelledError arm preserves state.yaml
+        exactly as a graceful shutdown would (status stays ``waiting``, the
+        conversation is untouched).  The next user message resumes it as a
+        continuation run.  No ``RunStoppedEvent`` is published — shelving is
+        not a stop; the conversation merely gives up its live task.
+
+        Returns:
+            True if a parked run was shelved; False if there is no live run or
+            the live run is executing (callers must 409 on that instead).
+        """
+        key = self._key(project_id, epic_id)
+        handle = self._runs.get(key)
+        if handle is None or handle.task.done():
+            return False
+        # Handshake with the inject path: mark the handle as shelving BEFORE
+        # the parked re-check.  Everything from here to task.cancel() is
+        # synchronous (no await), so within this event-loop step no inject can
+        # interleave; an inject that ran just before us made is_parked False
+        # (pending message) and we refuse; one that runs after us sees
+        # ``shelving`` and routes to the continuation path instead of
+        # enqueueing into the dying task.
+        handle.shelving = True
+        try:
+            if not bool(getattr(handle.runner, "is_parked", False)):
+                return False
+            handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await handle.task
+            if self._runs.get(key) is handle:
+                del self._runs[key]
+            logger.info(
+                "Shelved waiting run %s for epic %s/%s (state preserved)",
+                handle.run_id,
+                project_id,
+                epic_id,
+            )
+            return True
+        finally:
+            handle.shelving = False
 
     async def start(
         self,
@@ -457,61 +550,82 @@ class RunSupervisor:
             # stop() can signal "user stop" vs "server shutdown" to the preparing phase.
             _stop_flag: dict[str, bool] = {"requested": False}
 
-            async def _run_with_semaphore() -> None:
-                async with self._semaphore:
-                    # Refresh indexes before starting the Manager.
-                    # IndexNotReadyError → surface as RunFailedEvent and stop.
-                    # CancelledError → propagate (stop lifecycle).
-                    from yukar.events import bus as event_bus
-                    from yukar.models.events import RunFailedEvent, RunPreparingEvent
+            async def _prepare() -> bool:
+                """Preparing phase (index refresh).  Returns False to abort.
 
+                Runs under the semaphore in both branches of
+                ``_run_with_semaphore`` so heavy refreshes stay bounded.
+                """
+                # Refresh indexes before starting the Manager.
+                # IndexNotReadyError → surface as RunFailedEvent and stop.
+                # CancelledError → propagate (stop lifecycle).
+                from yukar.events import bus as event_bus
+                from yukar.models.events import RunFailedEvent, RunPreparingEvent
+
+                event_bus.publish(
+                    project_id,
+                    epic_id,
+                    RunPreparingEvent(project_id=project_id, epic_id=epic_id, run_id=run_id),
+                )
+                try:
+                    # Reviewer runs skip the fatal index guard: their ground
+                    # truth is the git branch diff (read_branch_diff), so a
+                    # missing/stale index must not block the review.
+                    if _is_manager:
+                        await _ensure_repos_indexed(root, project_id, _indexer_service)
+                except IndexNotReadyError as idx_err:
                     event_bus.publish(
                         project_id,
                         epic_id,
-                        RunPreparingEvent(
-                            project_id=project_id, epic_id=epic_id, run_id=run_id
+                        RunFailedEvent(
+                            project_id=project_id,
+                            epic_id=epic_id,
+                            run_id=run_id,
+                            error=str(idx_err),
                         ),
                     )
-                    try:
-                        # Reviewer runs skip the fatal index guard: their ground
-                        # truth is the git branch diff (read_branch_diff), so a
-                        # missing/stale index must not block the review.
-                        if _is_manager:
-                            await _ensure_repos_indexed(root, project_id, _indexer_service)
-                    except IndexNotReadyError as idx_err:
-                        event_bus.publish(
-                            project_id,
-                            epic_id,
-                            RunFailedEvent(
-                                project_id=project_id,
-                                epic_id=epic_id,
-                                run_id=run_id,
-                                error=str(idx_err),
-                            ),
-                        )
-                        return
-                    except asyncio.CancelledError:
-                        # CancelledError during the preparing phase.  If the stop was
-                        # user-initiated (_stop_flag["requested"]), emit terminal lifecycle
-                        # events so the UI transitions away from "preparing".  Otherwise
-                        # (server shutdown) preserve state.yaml for restart recovery.
-                        # _emit_preparing_stopped is synchronous so the await-re-raise
-                        # problem inside a CancelledError handler is avoided.
-                        if _stop_flag["requested"]:
-                            _emit_preparing_stopped(root, project_id, epic_id, run_id)
-                        raise
-
-                    # Indexing completed normally.  Check whether stop() was called
-                    # while we were blocked — if so, skip starting the Manager and
-                    # emit the same terminal events as the CancelledError branch.
+                    return False
+                except asyncio.CancelledError:
+                    # CancelledError during the preparing phase.  If the stop was
+                    # user-initiated (_stop_flag["requested"]), emit terminal lifecycle
+                    # events so the UI transitions away from "preparing".  Otherwise
+                    # (server shutdown) preserve state.yaml for restart recovery.
+                    # _emit_preparing_stopped is synchronous so the await-re-raise
+                    # problem inside a CancelledError handler is avoided.
                     if _stop_flag["requested"]:
                         _emit_preparing_stopped(root, project_id, epic_id, run_id)
-                        return
+                    raise
 
+                # Indexing completed normally.  Check whether stop() was called
+                # while we were blocked — if so, skip starting the Manager and
+                # emit the same terminal events as the CancelledError branch.
+                if _stop_flag["requested"]:
+                    _emit_preparing_stopped(root, project_id, epic_id, run_id)
+                    return False
+                return True
+
+            async def _run_with_semaphore() -> None:
+                # P3 slot rule: a conversation runner (EpicOrchestrator) manages
+                # the max_parallel_epics permit itself — held only while a turn
+                # is EXECUTING, released while parked in waiting — so parked
+                # conversations cannot starve other epics' runs.  Job runners
+                # (resolve/arbiter/dummy) never park and keep the plain wrapper.
+                _set_slot = getattr(runner, "set_turn_slot", None)
+                if callable(_set_slot):
+                    _set_slot(self._semaphore)
+                    async with self._semaphore:
+                        ok = await _prepare()
+                    if not ok:
+                        return
                     # Run the agent.  The run finishing (or failing) does NOT
                     # touch epic.yaml.status — the epic is user-owned (1-bit)
                     # and run outcomes are reported via Run* events only.
                     await runner.start(root, project_id, epic_id, run_id)
+                else:
+                    async with self._semaphore:
+                        if not await _prepare():
+                            return
+                        await runner.start(root, project_id, epic_id, run_id)
 
             task: asyncio.Task[None] = asyncio.create_task(
                 _run_with_semaphore(),
@@ -603,6 +717,25 @@ class RunSupervisor:
         if key not in self._runs:
             return
         handle = self._runs[key]
+        # A live run parked in ``waiting`` has no in-flight work to halt: stop
+        # means "cancel the live task" only.  Shelve it (state.yaml stays
+        # ``waiting`` — the conversation is intact and resumes as a
+        # continuation) and announce the stop so subscribed clients converge.
+        if bool(getattr(handle.runner, "is_parked", False)):
+            from yukar.events import bus as event_bus
+            from yukar.models.events import RunStoppedEvent
+
+            if await self.shelve_waiting(project_id, epic_id):
+                event_bus.publish(
+                    project_id,
+                    epic_id,
+                    RunStoppedEvent(
+                        project_id=project_id, epic_id=epic_id, run_id=handle.run_id
+                    ),
+                )
+                return
+            # A message raced the park→stop window and the run is executing
+            # again — fall through to the normal stop path below.
         # Mark this as a user-initiated stop BEFORE awaiting runner.stop() so that
         # any CancelledError raised in _run_with_semaphore's preparing phase (or
         # after the 5-second timeout + task.cancel()) can read the flag correctly.
@@ -632,43 +765,6 @@ class RunSupervisor:
             del self._runs[key]
         if cancelled_error is not None:
             raise cancelled_error
-
-    async def stop_parked_awaiting(self, root: str, project_id: str, epic_id: str) -> bool:
-        """Stop a run that is *parked* in awaiting_input with no live task.
-
-        ``recovery.py`` intentionally preserves an awaiting_input run on disk
-        across a server restart rather than resuming it (the user is expected to
-        reply, which starts a continuation).  Such a run has NO live task, so
-        ``is_running`` is False — yet the persisted ``RunState`` still drives the
-        UI's awaiting banner *and* Stop button.  Without this, ``POST /run/stop``
-        would 404 and the user could not dismiss the parked question (a reviewer
-        parked at ``ask_user`` after an auto-reload is the common case).
-
-        Reset the persisted state to idle (restartable) and publish
-        ``RunStoppedEvent`` so subscribed clients converge — mirroring a live
-        stop's cleanup (see ``_update_state_idle`` and orchestrator.py stop arm).
-
-        Returns:
-            True if a parked awaiting_input run was cleared; False if a live run
-            exists (callers must use ``stop()`` for that) or nothing is parked.
-        """
-        from yukar.events import bus as event_bus
-        from yukar.models.events import RunStoppedEvent
-        from yukar.storage import state_repo
-
-        if self.is_running(project_id, epic_id):
-            return False
-        state = await state_repo.get_state(root, project_id, epic_id)
-        if state is None or state.status != "awaiting_input":
-            return False
-        run_id = state.run_id
-        await _update_state_idle(root, project_id, epic_id)
-        event_bus.publish(
-            project_id,
-            epic_id,
-            RunStoppedEvent(project_id=project_id, epic_id=epic_id, run_id=run_id),
-        )
-        return True
 
     def get_run_id(self, project_id: str, epic_id: str) -> str | None:
         key = self._key(project_id, epic_id)
@@ -814,18 +910,25 @@ class RunSupervisor:
 
         Returns the run_id.  Raises ``RuntimeError`` if:
         - an arbiter is already running for this project, OR
-        - any epic_id in *epic_ids* has an active run (they must be idle), OR
+        - any epic_id in *epic_ids* has an EXECUTING run (running/paused), OR
         - the budget is exhausted.
+
+        A live run merely parked in ``waiting`` does not block the merge: it is
+        shelved (task cancelled, state.yaml stays ``waiting``, conversation
+        intact) so the batch merge can proceed — same rule as the single-epic
+        merge endpoint.
         """
         async with self._start_lock:
             if self.is_arbiter_running(project_id):
                 raise RuntimeError("A merge (arbiter) is already running for this project")
 
-            busy = [eid for eid in epic_ids if self.is_running(project_id, eid)]
+            busy = [eid for eid in epic_ids if self.is_executing(project_id, eid)]
             if busy:
                 raise RuntimeError(
-                    f"The following epics have active runs and cannot be merged: {busy}"
+                    f"The following epics have executing runs and cannot be merged: {busy}"
                 )
+            for eid in epic_ids:
+                await self.shelve_waiting(project_id, eid)
 
             if self._usage_tracker is not None and self._usage_tracker.is_over_budget():
                 raise RuntimeError("Budget limit reached")
@@ -916,6 +1019,11 @@ class RunSupervisor:
         if key not in self._runs:
             return False
         handle = self._runs[key]
+        if handle.shelving or handle.task.done():
+            # The live task is being (or has been) torn down — its in-memory
+            # queue dies with it.  Refuse so the caller routes the message to
+            # the continuation path instead of losing it.
+            return False
         inject = getattr(handle.runner, "inject_message", None)
         if callable(inject):
             inject(thread_id, text)
@@ -1001,52 +1109,64 @@ class RunSupervisor:
             # the _RunHandle so stop() can signal user-initiated stop to preparing.
             _stop_flag_cont: dict[str, bool] = {"requested": False}
 
-            async def _run_with_semaphore() -> None:
-                async with self._semaphore:
-                    # Same index-guard as start(): continuation runs also need
-                    # fresh indexes before re-starting the Manager.
-                    from yukar.events import bus as event_bus
-                    from yukar.models.events import RunFailedEvent, RunPreparingEvent
+            async def _prepare() -> bool:
+                """Preparing phase (index refresh).  Returns False to abort."""
+                # Same index-guard as start(): continuation runs also need
+                # fresh indexes before re-starting the Manager.
+                from yukar.events import bus as event_bus
+                from yukar.models.events import RunFailedEvent, RunPreparingEvent
 
+                event_bus.publish(
+                    project_id,
+                    epic_id,
+                    RunPreparingEvent(project_id=project_id, epic_id=epic_id, run_id=run_id),
+                )
+                try:
+                    # Reviewer continuations skip the fatal index guard for
+                    # the same reason as start(): the branch diff is git-based.
+                    if _is_manager:
+                        await _ensure_repos_indexed(root, project_id, _indexer_service_cont)
+                except IndexNotReadyError as idx_err:
                     event_bus.publish(
                         project_id,
                         epic_id,
-                        RunPreparingEvent(
-                            project_id=project_id, epic_id=epic_id, run_id=run_id
+                        RunFailedEvent(
+                            project_id=project_id,
+                            epic_id=epic_id,
+                            run_id=run_id,
+                            error=str(idx_err),
                         ),
                     )
-                    try:
-                        # Reviewer continuations skip the fatal index guard for
-                        # the same reason as start(): the branch diff is git-based.
-                        if _is_manager:
-                            await _ensure_repos_indexed(
-                                root, project_id, _indexer_service_cont
-                            )
-                    except IndexNotReadyError as idx_err:
-                        event_bus.publish(
-                            project_id,
-                            epic_id,
-                            RunFailedEvent(
-                                project_id=project_id,
-                                epic_id=epic_id,
-                                run_id=run_id,
-                                error=str(idx_err),
-                            ),
-                        )
-                        return
-                    except asyncio.CancelledError:
-                        if _stop_flag_cont["requested"]:
-                            _emit_preparing_stopped(root, project_id, epic_id, run_id)
-                        raise
-
-                    # Indexing completed; check for a stop that arrived late.
+                    return False
+                except asyncio.CancelledError:
                     if _stop_flag_cont["requested"]:
                         _emit_preparing_stopped(root, project_id, epic_id, run_id)
-                        return
+                    raise
 
+                # Indexing completed; check for a stop that arrived late.
+                if _stop_flag_cont["requested"]:
+                    _emit_preparing_stopped(root, project_id, epic_id, run_id)
+                    return False
+                return True
+
+            async def _run_with_semaphore() -> None:
+                # Same P3 slot rule as start(): conversation runners manage the
+                # permit themselves (held only while executing a turn).
+                _set_slot = getattr(runner, "set_turn_slot", None)
+                if callable(_set_slot):
+                    _set_slot(self._semaphore)
+                    async with self._semaphore:
+                        ok = await _prepare()
+                    if not ok:
+                        return
                     # Run the agent.  As with start(), the run outcome never
                     # touches epic.yaml.status (user-owned, 1-bit).
                     await runner.start(root, project_id, epic_id, run_id)
+                else:
+                    async with self._semaphore:
+                        if not await _prepare():
+                            return
+                        await runner.start(root, project_id, epic_id, run_id)
 
             task: asyncio.Task[None] = asyncio.create_task(
                 _run_with_semaphore(),
@@ -1127,9 +1247,12 @@ class RunSupervisor:
         Behaviour:
         - If a run is currently active AND the active run is for the same
           manager-trial thread_id AND can accept injection (the EpicOrchestrator):
-          call ``inject_hitl_message`` (unblocks awaiting_input or next turn).
-        - If a run is currently active for a *different* manager trial: raise
-          ``RuntimeError`` (HTTP 409 — stop the other trial first).
+          call ``inject_hitl_message`` (wakes a waiting run or queues for the
+          next turn).
+        - If a run is currently active for a *different* conversation: shelve
+          it when it is merely parked in ``waiting`` (the slot is free — a
+          continuation for THIS conversation starts below); raise
+          ``RuntimeError`` (HTTP 409) only when it is actually executing.
         - If a run is currently active but CANNOT accept injection (a resolve or
           arbiter run, which have no ``inject_message``): raise ``RuntimeError``
           instead of silently dropping the manager message.  The router maps this
@@ -1160,7 +1283,7 @@ class RunSupervisor:
                 (resolve/arbiter or different-trial conflict).
         """
         if self.is_running(project_id, epic_id):
-            # Check for a different-trial conflict before can_inject.
+            # Check for a different-conversation conflict before can_inject.
             key = self._key(project_id, epic_id)
             active_handle = self._runs.get(key)
             if (
@@ -1168,16 +1291,32 @@ class RunSupervisor:
                 and not active_handle.task.done()
                 and active_handle.manager_thread_id != thread_id
             ):
-                raise RuntimeError(
-                    f"A run for manager trial {active_handle.manager_thread_id!r} is active. "
-                    "Stop it before sending messages to a different trial."
-                )
-            if not self.can_inject(project_id, epic_id):
+                # A live run bound to ANOTHER conversation.  If it is merely
+                # parked in ``waiting`` it does not hold the slot: shelve it
+                # (state preserved) and start this conversation's continuation
+                # below.  Only an actually EXECUTING run is a 409 conflict.
+                if bool(getattr(active_handle.runner, "is_parked", False)) and (
+                    await self.shelve_waiting(project_id, epic_id)
+                ):
+                    pass  # fall through to the continuation path below
+                else:
+                    raise RuntimeError(
+                        f"A run for {active_handle.manager_thread_id!r} is executing. "
+                        "Stop it before sending messages to a different conversation."
+                    )
+            elif not self.can_inject(project_id, epic_id):
                 raise RuntimeError(
                     "A conflict-resolution or merge run is in progress for this "
                     "epic and cannot receive messages; please retry once it finishes."
                 )
-            return self.inject_hitl_message(project_id, epic_id, thread_id, content)
+            elif self.inject_hitl_message(project_id, epic_id, thread_id, content):
+                return True
+            else:
+                # The live run refused the injection — it is being shelved (or
+                # died between the checks above).  Finish tearing it down and
+                # fall through to the continuation path so the message becomes
+                # the seed instead of being lost with the dying task's queue.
+                await self.shelve_waiting(project_id, epic_id)
         # No active run — start a continuation bound to this thread_id, in the
         # requested role (manager trial or reviewer conversation).
         await self.start_continuation(

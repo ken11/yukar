@@ -203,7 +203,7 @@ export function handleTree(
       const threadId = tree.manager.threadId;
       return {
         ...state,
-        runStatus: state.runStatus === "awaiting_input" ? "running" : state.runStatus,
+        runStatus: state.runStatus === "waiting" ? "running" : state.runStatus,
         awaitingInput: null,
         treeState: {
           ...tree,

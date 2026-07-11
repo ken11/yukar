@@ -6,7 +6,7 @@ Items covered:
   3. Attached-short-option path escape in _arg_escapes_worktree (A2-01)
   4a. run_startup integrity checksum logging (A3-01)
   4b. SensitiveFileWrittenEvent published from write_agent_config / write_skill /
-      write_agent_profile / remember / complete_epic learnings (A3-01/-02)
+      write_agent_profile / remember (A3-01/-02)
   5. Bounded read in fs_read and fs_edit._read_file (A1-02)
   6. One-liner hardening: summarizer symlink guard, ignore.py follow_symlinks=False,
      docs router existence gates, write_mcp_server path-sep and secret-key rejection

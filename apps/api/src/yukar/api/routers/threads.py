@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from yukar.api.routers import get_epic_or_404
+from yukar.api.routers import get_epic_or_404, shelve_or_409
 from yukar.deps import UsageTrackerDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
 from yukar.events.sse import format_keepalive, run_event_to_sse, sse_response
@@ -97,11 +97,11 @@ def _is_active_manager_thread(epic: Epic, tf: ThreadsFile, thread_id: str) -> bo
        epics that predate this field).
     2. The thread_id must match the resolved active id.
     3. The corresponding ThreadEntry (if present) must have role=manager and
-       status != "archived".  Completed (resolved/failed) or interrupted trials
-       are still continuable; only archived ones are read-only.  If no
-       ThreadEntry exists for the resolved id, accept it only when the resolved
-       id is "manager" (backward compat: orchestrator registers the thread
-       lazily on run start).
+       status != "archived".  A conversation has no end: only archived trials
+       are read-only (legacy resolved/failed entries on disk are treated as
+       continuable too).  If no ThreadEntry exists for the resolved id, accept
+       it only when the resolved id is "manager" (backward compat: orchestrator
+       registers the thread lazily on run start).
 
     Args:
         epic: The loaded Epic object (needed for active_thread_id).
@@ -262,24 +262,24 @@ async def create_thread(
             )
 
         # A trial's lifecycle (new trial / archive+new / same-branch continuation)
-        # must not change while ANY run holds this epic's single run slot — this
-        # includes a read-only REVIEWER run, whose ``manager_thread_id`` is the
-        # reviewer thread, so a run check scoped to the manager trial would miss
-        # it.  Without this guard, "continue on current branch" (or "new trial")
-        # during an active review would archive the manager conversation and
-        # repoint ``active_thread_id`` while the reviewer keeps the run slot —
-        # wedging the epic: the new trial can be neither run (409 run active) nor
-        # messaged (409 different trial) until the reviewer is stopped.  The
-        # epic-level ``is_running`` catches the reviewer and the manager
-        # same-trial case alike.
-        if body.role == "manager" and supervisor.is_running(project_id, epic_id):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "An active run is in progress for this epic (a manager or "
-                    "reviewer run). Stop it before creating or continuing a trial."
-                ),
-            )
+        # must not change while a turn is EXECUTING on this epic's single run
+        # slot — this includes a read-only REVIEWER run, whose
+        # ``manager_thread_id`` is the reviewer thread, so a run check scoped to
+        # the manager trial would miss it.  The epic-level ``is_executing``
+        # catches the reviewer and the manager same-trial case alike.  A live
+        # run merely parked in ``waiting`` does NOT hold the slot: it is shelved
+        # (task cancelled, state.yaml stays waiting, conversation intact) so the
+        # trial mutation can proceed.
+        if body.role == "manager":
+            if supervisor.is_executing(project_id, epic_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "A run is executing for this epic (a manager or reviewer "
+                        "turn). Stop it before creating or continuing a trial."
+                    ),
+                )
+            await shelve_or_409(supervisor, project_id, epic_id)
 
         if body.role == "manager" and body.same_branch:
             # "Continue on current branch" = start a FRESH conversation that keeps
@@ -515,18 +515,19 @@ async def start_review(
     Creates a fresh ``reviewer`` conversation, seeds it with the active Manager↔
     user conversation, and starts a reviewer run bound to that thread.  The
     reviewer independently checks the active trial's branch against the epic's
-    intent and reports to the USER via ``ask_user``.
+    intent and reports to the USER in its message body.
 
-    The reviewer runs while the Manager is idle (it is mutually exclusive with a
-    manager run — only one run per epic).  It does NOT change ``epic.status`` or
-    ``epic.active_thread_id``: the manager trial remains the active trial, and the
-    reviewer's ``read_branch_diff`` reads that trial's branch via ``epic.branch``.
+    The reviewer is mutually exclusive with an EXECUTING manager turn (only one
+    run per epic); a manager run merely waiting for a reply is shelved first.
+    It does NOT change ``epic.status`` or ``epic.active_thread_id``: the manager
+    trial remains the active trial, and the reviewer's ``read_branch_diff``
+    reads that trial's branch via ``epic.branch``.
 
     A completed epic still allows a review: the reviewer is read-only, so
     inspecting finished work never requires reopening the epic.
 
     Raises:
-        409: If a run is already active for this epic, an arbiter merge is in
+        409: If a turn is executing for this epic, an arbiter merge is in
             progress, or the budget is exhausted.
     """
     from yukar.storage.epic_repo import get_epic
@@ -536,14 +537,16 @@ async def start_review(
 
     # Pre-checks (outside the lock) so we never create an orphan reviewer thread
     # for a request that supervisor.start would reject anyway.  These mirror every
-    # RuntimeError supervisor.start can raise for a reviewer (running / arbiter /
+    # RuntimeError supervisor.start can raise for a reviewer (executing / arbiter /
     # budget); supervisor.start re-checks them under its own lock, but doing it
     # here first means a rejected request never leaves a persisted-but-unrunnable
     # reviewer thread behind (reviewer threads cannot be archived).
-    if supervisor.is_running(project_id, epic_id):
+    # Only an EXECUTING turn blocks a review; a live run parked in ``waiting``
+    # is shelved under the lock below.
+    if supervisor.is_executing(project_id, epic_id):
         raise HTTPException(
             status_code=409,
-            detail="A run is already active for this epic. Stop it before starting a review.",
+            detail="A run is executing for this epic. Stop it before starting a review.",
         )
     if supervisor.is_arbiter_running(project_id):
         raise HTTPException(
@@ -557,11 +560,16 @@ async def start_review(
         if epic is None:
             raise HTTPException(status_code=404, detail=f"Epic not found: {epic_id!r}")
         # Re-check under the lock (serialises against a concurrent run start).
-        if supervisor.is_running(project_id, epic_id):
+        if supervisor.is_executing(project_id, epic_id):
             raise HTTPException(
                 status_code=409,
-                detail="A run is already active for this epic. Stop it before starting a review.",
+                detail="A run is executing for this epic. Stop it before starting a review.",
             )
+        # A live run parked in ``waiting`` (e.g. the Manager waiting for a
+        # reply) does not hold the run slot: shelve it so the reviewer run can
+        # start.  Its conversation resumes as a continuation on the next
+        # message.
+        await shelve_or_409(supervisor, project_id, epic_id)
 
         review_context = await _build_review_context(root, project_id, epic_id, epic)
 
@@ -661,19 +669,22 @@ async def archive_thread(
                 "Only manager threads can be archived.",
             )
 
-        # Refuse to archive while ANY run holds this epic's run slot.  A run check
-        # scoped to this manager thread would miss a read-only REVIEWER run (bound
-        # to the reviewer thread), yet archiving tears down the manager trial's
-        # worktree that the reviewer is reading.  The epic-level ``is_running``
-        # blocks both the this-trial run and the reviewer.
-        if supervisor.is_running(project_id, epic_id):
+        # Refuse to archive while a turn is EXECUTING on this epic's run slot.
+        # A run check scoped to this manager thread would miss a read-only
+        # REVIEWER run (bound to the reviewer thread), yet archiving tears down
+        # the manager trial's worktree that the reviewer is reading.  The
+        # epic-level ``is_executing`` blocks both the this-trial run and the
+        # reviewer.  A live run parked in ``waiting`` does not hold the slot —
+        # shelve it (state preserved) and proceed with the archive.
+        if supervisor.is_executing(project_id, epic_id):
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Thread {thread_id!r} cannot be archived: an active run is in progress "
-                    "for this epic (a manager or reviewer run). Stop the run first."
+                    f"Thread {thread_id!r} cannot be archived: a run is executing "
+                    "for this epic (a manager or reviewer turn). Stop the run first."
                 ),
             )
+        await shelve_or_409(supervisor, project_id, epic_id)
 
         # Transition thread status to archived.
         entry.status = "archived"
@@ -766,9 +777,9 @@ async def post_message(
 
     # Reviewer thread (non-archived, checked above): route like the manager thread
     # through start_or_inject, but in reviewer mode:
-    #   - active reviewer run → inject the reply (unblocks its awaiting_input)
-    #   - no active run       → start a reviewer continuation (FSM restores the
-    #                           prior review from its session history)
+    #   - live reviewer run → inject the reply (wakes it if waiting)
+    #   - no live run       → start a reviewer continuation (FSM restores the
+    #                         prior review from its session history)
     # The FSM is the sole writer, so (like the manager path) we do NOT persist the
     # message here and return a synthetic 201 ack.
     #
@@ -801,13 +812,13 @@ async def post_message(
         )
 
     # HITL: for user messages on the active manager thread, use start_or_inject:
-    # - active run  → inject directly (unblocks awaiting_input or queued for next turn)
-    # - no active run → start a continuation run with the message as seed (I4/K3)
+    # - live run    → inject directly (wakes a waiting run / queued for next turn)
+    # - no live run → start a continuation run with the message as seed (I4/K3)
 
     if _is_active_manager_thread(epic, tf, thread_id):
         # HITL / continuation path.  start_or_inject either:
-        #   - active run  → inject directly (unblocks awaiting_input or next turn)
-        #   - no active run → start a continuation run with the message as seed
+        #   - live run    → inject directly (wakes a waiting run / next turn)
+        #   - no live run → start a continuation run with the message as seed
         #
         # The user message is NOT persisted here.  The FSM is the sole writer:
         # - inject path: orchestrator drains the queue; on the next turn

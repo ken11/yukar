@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from yukar.api.routers import get_epic_or_404, get_repo_or_404
+from yukar.api.routers import get_epic_or_404, get_repo_or_404, shelve_or_409
 from yukar.config import paths as p
 from yukar.deps import SettingsDep, SupervisorDep, UsageTrackerDep, WorkspaceRootDep
 from yukar.git.diff import (
@@ -205,13 +205,17 @@ async def git_merge(
     settings: SettingsDep,
     supervisor: SupervisorDep,
 ) -> dict[str, str]:
-    if supervisor.is_running(project_id, epic_id):
-        raise HTTPException(status_code=409, detail="A run is already active for this epic")
+    # A merge needs the epic quiescent: an EXECUTING turn is a 409; a live run
+    # merely parked in ``waiting`` is shelved (task cancelled, state.yaml stays
+    # waiting, conversation intact) so the merge can proceed.
+    if supervisor.is_executing(project_id, epic_id):
+        raise HTTPException(status_code=409, detail="A run is executing for this epic")
     if supervisor.is_arbiter_running(project_id):
         raise HTTPException(
             status_code=409,
             detail="A batch merge (arbiter) is in progress for this project",
         )
+    await shelve_or_409(supervisor, project_id, epic_id)
 
     epic = await get_epic(root, project_id, epic_id)
     if epic is None or not epic.branch:
@@ -297,10 +301,13 @@ async def git_resolve(
             status_code=409, detail="Epic is completed — reopen it before resolving conflicts"
         )
 
-    if supervisor.is_running(project_id, epic_id):
-        raise HTTPException(status_code=409, detail="A run is already active for this epic")
+    # An EXECUTING turn blocks the resolve run; a live run parked in
+    # ``waiting`` is shelved so the resolve run can take the slot.
+    if supervisor.is_executing(project_id, epic_id):
+        raise HTTPException(status_code=409, detail="A run is executing for this epic")
     if usage_tracker.is_over_budget():
         raise HTTPException(status_code=409, detail="Budget limit reached")
+    await shelve_or_409(supervisor, project_id, epic_id)
 
     try:
         run_id = await supervisor.start_resolve(

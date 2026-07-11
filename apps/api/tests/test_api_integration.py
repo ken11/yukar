@@ -762,7 +762,6 @@ class TestOrchestratorWithRepoTools:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": repo_name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Task defined."),
         ]
 
@@ -790,33 +789,38 @@ class TestOrchestratorWithRepoTools:
 
         llm = LLMSettings(provider="fake")
 
-        def _fake_model_factory(role: str | None = None) -> FakeModel:
+        def _fake_model_factory(
+            settings: Any, role: str | None = None, **kwargs: Any
+        ) -> FakeModel:
             if role == "manager":
-                return FakeModel(script=manager_script)
+                return FakeModel(script=list(manager_script))
             if role == "evaluator":
-                return FakeModel(script=evaluator_script)
-            return FakeModel(script=worker_script)
+                return FakeModel(script=list(evaluator_script))
+            return FakeModel(script=list(worker_script))
 
         orchestrator = EpicOrchestrator(
             llm_settings=llm,
             git_author_name="Test",
             git_author_email="test@test.com",
             indexer_service=svc,
+            require_plan_approval=False,
         )
 
-        with patch("yukar.llm.factory.create_model", side_effect=_fake_model_factory):
-            run_id = "run-test"
-            try:
-                await asyncio.wait_for(
-                    orchestrator.start(workspace, project_id, epic_id, run_id),
-                    timeout=30.0,
-                )
-            except TimeoutError:
-                pytest.fail("Orchestrator timed out — repo_search may have blocked")
+        from tests._helpers import run_until_parked
 
-        # Verify the run completed by checking state.
+        with patch("yukar.agents.orchestrator.create_model", side_effect=_fake_model_factory):
+            run_id = "run-test"
+            await run_until_parked(orchestrator, workspace, project_id, epic_id, run_id)
+
+        # Verify the scripted turn ran to its park: T1 done, state waiting.
         from yukar.storage.state_repo import get_state
+        from yukar.storage.tasks_repo import get_tasks
 
         state = await get_state(workspace, project_id, epic_id)
         assert state is not None
-        assert state.status == "completed"
+        assert state.status == "waiting"
+        tf = await get_tasks(workspace, project_id, epic_id)
+        t1 = next(t for t in tf.tasks if t.id == "T1")
+        assert t1.status == "done", (
+            f"T1 should be done (repo_search + fs_write worker accepted), got {t1.status!r}"
+        )

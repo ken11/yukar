@@ -60,7 +60,7 @@ class TestRecoveryIsolatesBadRunDir:
         assert count == 1
         ok_state = await state_repo.get_state(root, pid, "EP-OK")
         assert ok_state is not None
-        assert ok_state.status == "interrupted"
+        assert ok_state.status == "waiting"
 
         # EP-BAD was left untouched (still "running"); it was skipped, not crashed.
         # Restore the real path lookup so we can read it back.
@@ -96,4 +96,4 @@ class TestRecoveryIsolatesBadRunDir:
         assert count == 1
         ok_state = await state_repo.get_state(root, "proj-ok", "EP-1")
         assert ok_state is not None
-        assert ok_state.status == "interrupted"
+        assert ok_state.status == "waiting"

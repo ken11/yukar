@@ -2,8 +2,10 @@
  * Notifications E2E test — SSE unread badge through the run lifecycle → navigation
  *
  * Purpose:
- *   Run a fake run to completion and verify in a real browser that the notification
- *   unread badge increments when the run_completed SSE event is received.
+ *   Run a fake run and verify in a real browser that the notification unread
+ *   badge increments from run-lifecycle SSE events. Under P3 a conversation
+ *   run never emits run_completed (it parks in "waiting"), so the badge source
+ *   here is run_started; a richer "your turn" inbox is P4 territory.
  *   Then open the popover, click a notification entry, and confirm navigation
  *   to the epics/{id}/tasks page.
  *
@@ -16,7 +18,7 @@
  * Verification flow:
  *   1. Create project → create epic
  *   2. Start a run while staying on the project page
- *   3. Poll the API until the run reaches completed
+ *   3. Poll the API until the work is done (run "waiting" + all tasks done)
  *      → confirm the notification badge appears
  *      → open the popover and verify the notification entry
  *      → click the notification to navigate to /epics/{id}/tasks
@@ -24,6 +26,7 @@
 
 import { expect, test } from "@playwright/test";
 import { NOTIF_SEED } from "./notifications-seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 test.describe
   .serial("Notifications — run lifecycle SSE unread badge", () => {
@@ -76,36 +79,32 @@ test.describe
 
     // ---- 3. Start run → notification badge → popover → click navigation (all in the same page) ----
 
-    test("3. run completes → badge → popover → navigate", async ({ page }) => {
+    test("3. work done → badge → popover → navigate", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
-      // Navigate to the epic page (the page that has the start-run button)
-      await page.goto(`/projects/${state.projectId}/epics/${state.epicId}`);
-
-      const startBtn = page.getByTestId("start-run-btn");
-      await expect(startBtn).toBeVisible({ timeout: 10_000 });
-      await startBtn.click();
-
-      // The UI navigates to the thread page, but we move to the project page to receive SSE notifications
-      // (NotificationsPopover is part of the project-header)
+      // Mount the project page FIRST (NotificationsPopover is part of the
+      // project-header) so its SSE subscription is live before the run starts:
+      // under P3 the only badge source is run_started, which fires immediately
+      // on POST /run — a fake run can start and park before a subsequent
+      // page.goto could connect, and notification state is in-memory.
       await page.goto(`/projects/${state.projectId}`);
+      await expect(page.locator('[data-testid^="epic-card-"]').first()).toBeVisible({
+        timeout: 15_000,
+      });
 
-      // Poll the API until the run reaches completed (up to 90 seconds)
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            if (!res.ok()) return null;
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 2000] },
-        )
-        .toBe("completed");
+      // Start the run via REST from the mounted page (no navigation).
+      const runRes = await page.request.post(
+        `/api/projects/${state.projectId}/epics/${state.epicId}/run`,
+      );
+      expect(runRes.ok(), `POST /run should succeed: ${runRes.status()}`).toBeTruthy();
 
-      // Wait for the run_completed SSE event to arrive and update the badge
+      // Standard work-done wait (up to 90 seconds): the run parks in "waiting"
+      // with every task done.
+      await waitForWorkDone(page, state.projectId, state.epicId);
+
+      // The run_started SSE event has updated the badge (P3: no run_completed
+      // for conversation runs — the "your turn" inbox is P4).
       // The notification button must become visible with "(N unread)" in its aria-label
       const notifBtn = page.getByRole("button", { name: /notifications.*unread/i });
       await expect(notifBtn).toBeVisible({ timeout: 30_000 });

@@ -252,6 +252,7 @@ class TestConflictingRun:
 
         # Simulate an active run for "manager-2".
         mock_runner = MagicMock()
+        mock_runner.is_parked = False  # executing (not parked)
         mock_runner.inject_message = MagicMock()
         mock_task = MagicMock()
         mock_task.done.return_value = False
@@ -283,6 +284,7 @@ class TestConflictingRun:
         inject_calls: list[tuple[str, str, str, str]] = []
 
         mock_runner = MagicMock()
+        mock_runner.is_parked = False  # executing (not parked)
         mock_runner.inject_message = lambda tid, text: inject_calls.append(("p", "EP-1", tid, text))
         mock_task = MagicMock()
         mock_task.done.return_value = False
@@ -313,6 +315,7 @@ class TestConflictingRun:
         sup = RunSupervisor()
 
         mock_runner = MagicMock()
+        mock_runner.is_parked = False  # executing (not parked)
         mock_task = MagicMock()
         mock_task.done.return_value = False
 
@@ -754,6 +757,7 @@ class TestAtomicCreateThread:
         # Inject a fake active run for tid1 into the singleton supervisor.
         sup = get_supervisor()
         mock_runner = MagicMock()
+        mock_runner.is_parked = False  # executing (not parked)
         mock_task = MagicMock()
         mock_task.done.return_value = False
         fake_handle = _RunHandle(
@@ -774,7 +778,7 @@ class TestAtomicCreateThread:
                 json={"title": "Trial 2", "role": "manager", "archive_active": True},
             )
             assert r2.status_code == 409, r2.text
-            assert "active run" in r2.json()["detail"].lower()
+            assert "executing" in r2.json()["detail"].lower()
 
             # Trial 1 must NOT have been archived.
             root = app_client._transport.app.state.settings.workspace_root  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
@@ -1401,7 +1405,7 @@ class TestArchiveRunTOCTOU:
         mock_task.done.return_value = False
         fake_handle = _RunHandle(
             run_id="run-toctou",
-            runner=MagicMock(),
+            runner=MagicMock(is_parked=False),  # executing (not parked)
             task=mock_task,
             root="/tmp",
             project_id="toctou-arch-proj",
@@ -1416,7 +1420,7 @@ class TestArchiveRunTOCTOU:
             )
             # Must be 409 — run is active.
             assert r_arch.status_code == 409, r_arch.text
-            assert "active run" in r_arch.json()["detail"].lower()
+            assert "executing" in r_arch.json()["detail"].lower()
 
             # Trial must still be active (not archived).
             root = app_client._transport.app.state.settings.workspace_root  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]

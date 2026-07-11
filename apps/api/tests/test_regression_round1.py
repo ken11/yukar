@@ -373,7 +373,12 @@ class TestEpicStatusUntouchedByRuns:
         assert epic.status == "open"
 
     async def test_epic_status_via_api_run(self, app_client: AsyncClient) -> None:
-        """POST /run leaves the epic status open before, during, and after the run."""
+        """POST /run leaves the epic status open before, during, and after the turn.
+
+        P3: a conversation run never completes — the scripted turn ends by
+        parking in ``waiting`` (user_input_requested), which is the new
+        "the run's turn is over" signal.
+        """
         from yukar.events.bus import subscribe
 
         await app_client.post("/api/projects", json={"id": "sp", "name": "SP", "repos": []})
@@ -383,7 +388,7 @@ class TestEpicStatusUntouchedByRuns:
         r = await app_client.get("/api/projects/sp/epics/EP-1")
         assert r.json()["status"] == "open"
 
-        completed = asyncio.Event()
+        parked = asyncio.Event()
 
         async def collect() -> None:
             async with subscribe("sp", "EP-1") as q:
@@ -392,8 +397,8 @@ class TestEpicStatusUntouchedByRuns:
                         event = await asyncio.wait_for(q.get(), timeout=10.0)
                         if event is None:
                             break
-                        if hasattr(event, "type") and event.type == "run_completed":
-                            completed.set()
+                        if hasattr(event, "type") and event.type == "user_input_requested":
+                            parked.set()
                     except TimeoutError:
                         break
 
@@ -403,13 +408,17 @@ class TestEpicStatusUntouchedByRuns:
         r = await app_client.post("/api/projects/sp/epics/EP-1/run")
         assert r.status_code == 202
 
-        await asyncio.wait_for(completed.wait(), timeout=20.0)
-        await asyncio.wait_for(collector, timeout=3.0)
+        await asyncio.wait_for(parked.wait(), timeout=20.0)
 
-        # The run finished (run_completed observed) — the epic status is
-        # untouched: no in_review, no completed, just open.
+        # The turn ended (park observed) — the epic status is untouched:
+        # no in_review, no completed, just open.
         r = await app_client.get("/api/projects/sp/epics/EP-1")
         assert r.json()["status"] == "open"
+
+        # Clean up: stop the live parked run so no task leaks past the test.
+        r = await app_client.post("/api/projects/sp/epics/EP-1/run/stop")
+        assert r.status_code == 200, r.text
+        await asyncio.wait_for(collector, timeout=5.0)
 
 
 # ---------------------------------------------------------------------------

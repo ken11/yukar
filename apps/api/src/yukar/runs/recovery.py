@@ -1,26 +1,23 @@
 """Startup state recovery — reconcile orphaned running/paused runs.
 
 On lifespan startup, scan all epic state.yaml files.  Any run whose status is
-``running`` or ``paused`` was interrupted mid-flight (e.g. a process crash).
-We mark those as ``interrupted`` so the UI can show an interrupted state
-instead of a stale "running" indicator.
+``running`` or ``paused`` was executing a turn when the process died (e.g. a
+crash).  The turn died with the server, but the conversation itself is intact
+on disk, so we settle those runs into ``waiting`` — "your turn" — and the user
+simply continues by sending a message (start_or_inject → start_continuation).
+Surfacing "the previous run stopped abnormally" to the user is the inbox's job
+(P4); here we only log it.
 
-``awaiting_input`` runs are intentionally **preserved as-is** (not transitioned
-to ``interrupted``).  An ``awaiting_input`` run has no in-flight async work —
-the Manager called ``ask_user`` and parked itself waiting for a human reply.
-The Strands session, ``state.yaml`` (including ``pending_question``), and
-tasks are all consistent on disk.  After restart the front-end restores the
-question bubble from ``pending_question`` (GET /run/state), and the user's
-reply triggers ``start_or_inject`` → ``start_continuation`` (no active run)
-which re-opens the session via ``FileSessionManager`` and passes the reply as
-``seed_prompt``.  Forcing ``awaiting_input`` → ``interrupted`` would break that
-path and lose the question bubble.
+Runs already in ``waiting`` are left untouched: a waiting run has no in-flight
+async work (the agent ended its turn and parked), and the Strands session,
+``state.yaml``, and tasks are all consistent on disk.  Legacy statuses
+(``idle`` / ``awaiting_input`` / ``interrupted``) are read back as ``waiting``
+by the RunState validator, so they are preserved the same way.
 
 Additionally, for ``running``/``paused`` runs any tasks in tasks.yaml with
 status ``in_progress`` are rolled back to ``todo``.  This matches the stop-path
 in the orchestrator and prevents orphaned in_progress tasks from blocking
-subsequent runs.  ``awaiting_input`` tasks are NOT rolled back (they were not
-in-flight at crash time).
+subsequent runs.  Waiting runs are NOT rolled back (nothing was in-flight).
 
 The scan is best-effort: if a state file is malformed or a directory is missing
 it is skipped silently (we do not crash the server for a stale run).
@@ -97,24 +94,23 @@ async def recover_interrupted_runs(root: str) -> int:
     """Scan all state.yaml files and reconcile orphaned running/paused runs.
 
     For each run found in ``running`` or ``paused`` state:
-    - Sets state.status = ``interrupted`` (crash-recovery marker).
+    - Sets state.status = ``waiting`` (the turn died with the process; the
+      conversation is intact and it is now the user's turn).
     - Rolls back any ``in_progress`` tasks to ``todo`` so subsequent runs
       can re-execute them cleanly.
 
-    Runs in ``awaiting_input`` state are intentionally left untouched.
-    They have no in-flight async work (the Manager parked itself waiting for
-    a human reply).  ``pending_question`` and session history are consistent
-    on disk.  The front-end restores the question bubble from
-    ``pending_question`` (GET /run/state), and the user's reply triggers
-    ``start_or_inject`` → ``start_continuation`` which passes the reply as
-    ``seed_prompt`` to a new continuation run — no task rollback needed.
+    Runs already in ``waiting`` are intentionally left untouched.  They have
+    no in-flight async work (the agent ended its turn and parked).  The user's
+    next message triggers ``start_or_inject`` → ``start_continuation`` (no
+    live run) which re-opens the session via ``FileSessionManager`` and passes
+    the message as ``seed_prompt``.
 
     Args:
         root: Workspace root (``settings.workspace_root``).
 
     Returns:
-        The number of runs that were reconciled (awaiting_input runs are not
-        counted since they are not modified).
+        The number of runs that were reconciled (waiting runs are not counted
+        since they are not modified).
     """
     workspace = Path(root)
     if not workspace.exists():
@@ -172,22 +168,22 @@ async def recover_interrupted_runs(root: str) -> int:
                 if state is None:
                     continue
 
-                # awaiting_input is preserved as-is: the Manager is parked
-                # waiting for a human reply, not executing in-flight work.
-                # The reply path (start_or_inject → start_continuation) handles
-                # resumption cleanly after restart — no task rollback needed.
+                # ``waiting`` is preserved as-is: the run is parked with no
+                # in-flight work (the agent ended its turn), so the next user
+                # message resumes it as a continuation — no rollback needed.
                 if state.status not in ("running", "paused"):
                     continue
 
                 logger.info(
-                    "Reconciling orphaned run %s for epic %s/%s (was %s → interrupted)",
+                    "Reconciling orphaned run %s for epic %s/%s "
+                    "(was %s at process death → waiting)",
                     state.run_id,
                     project_id,
                     epic_id,
                     state.status,
                 )
 
-                state.status = "interrupted"
+                state.status = "waiting"
                 state.active_workers = []
                 state.last_event_at = datetime.now(UTC)
 
@@ -217,6 +213,6 @@ async def recover_interrupted_runs(root: str) -> int:
                 continue
 
     if reconciled:
-        logger.info("Recovery complete: %d run(s) reconciled to interrupted state", reconciled)
+        logger.info("Recovery complete: %d run(s) settled into waiting", reconciled)
 
     return reconciled

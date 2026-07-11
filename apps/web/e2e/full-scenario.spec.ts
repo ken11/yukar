@@ -8,8 +8,8 @@
  * Block 1 — Same-trial new session (also the basic-scenario regression):
  *   basic HITL (plan → user revises → re-plan → user approves via the explicit
  *   approve-plan operation (P2: snapshot-hash bound; a chat reply alone does
- *   not approve) → gated dispatch → evaluate → manager self-check → run
- *   completed; the epic stays open) → user merges (merge fact recorded, epic
+ *   not approve) → gated dispatch → evaluate → manager self-check → run parks
+ *   in "waiting" with all tasks done; the epic stays open) → user merges (merge fact recorded, epic
  *   still open) → user starts a NEW session on the SAME trial
  *   (continue-on-branch) with an extra request → the new session's Manager
  *   re-runs the basic scenario on the same branch; its re-plan reproduces the
@@ -17,15 +17,16 @@
  *   plain reply (not a re-approval) wakes it into the allowed dispatch.
  *
  * Block 2 — Reviewer:
- *   basic HITL → run completed → user invokes the Reviewer → the Reviewer reads
+ *   basic HITL → work done → user invokes the Reviewer → the Reviewer reads
  *   the branch (read_branch_diff + fs_read on the manager trial's worktree) and
- *   reports to the user via ask_user, WITHOUT changing the epic lifecycle → user
- *   reviews → user can instruct a fix on the Manager thread (composer available)
- *   → user merges.
+ *   reports to the user in BODY TEXT (its turn end parks the run in "waiting"),
+ *   WITHOUT changing the epic lifecycle → user reviews → user can instruct a
+ *   fix on the Manager thread (composer available) → user merges.
  */
 
 import { expect, type Page, test } from "@playwright/test";
 import { FULL_SCENARIO_SEED, Q_PLAN, Q_REVIEW, Q_REVISED } from "./full-scenario-seed";
+import { getRunState, waitForRunWaiting, waitForWorkDone } from "./wait-helpers";
 
 const SHOTS = "playwright-report/full-scenario";
 
@@ -45,11 +46,6 @@ async function getEpic(
 }> {
   const res = await page.request.get(`/api/projects/${projectId}/epics/${epicId}`);
   return res.json();
-}
-
-async function getRunStatus(page: Page, projectId: string, epicId: string): Promise<string> {
-  const res = await page.request.get(`/api/projects/${projectId}/epics/${epicId}/run/state`);
-  return (await res.json()).status as string;
 }
 
 async function getTaskStatus(
@@ -115,21 +111,22 @@ async function replyOnThread(page: Page, replyText: string): Promise<void> {
 }
 
 /**
- * Drive the Manager HITL dance from the plan question to run completion,
+ * Drive the Manager HITL dance from the plan question to work done,
  * assuming the Manager has already started and the page is on its thread: it
- * presents a plan (Q_PLAN), the user requests a revision (a plain reply — it
- * does NOT approve), it re-plans (Q_REVISED), the user approves via the
- * explicit approve-plan operation (P2: snapshot-hash bound), and only then
- * does the gated dispatch run through to completion (run/state "completed" —
- * the epic itself stays open; finishing a run never transitions the 1-bit
- * epic status).
+ * presents a plan (Q_PLAN, body text — the turn end parks the run in
+ * "waiting"), the user requests a revision (a plain reply — it does NOT
+ * approve), it re-plans (Q_REVISED), the user approves via the explicit
+ * approve-plan operation (P2: snapshot-hash bound), and only then does the
+ * gated dispatch run through; the run parks in "waiting" with every task done
+ * (P3: a conversation run never "completes"; the epic itself stays open —
+ * finishing work never transitions the 1-bit epic status).
  *
  * `alreadyApproved` covers the continuation session: its re-plan reproduces a
  * snapshot identical to the one the user already approved, so the recorded
  * hash still matches — no approve button is offered and a plain reply wakes
  * the agent into the (allowed) dispatch.
  */
-async function approvePlanToCompletion(
+async function approvePlanToWorkDone(
   page: Page,
   projectId: string,
   epicId: string,
@@ -137,21 +134,18 @@ async function approvePlanToCompletion(
 ): Promise<void> {
   await expect(page.getByText(Q_PLAN)).toBeVisible({ timeout: 60_000 });
   // The approval gate: before approval no Worker runs — T1 stays "todo".
-  await expect
-    .poll(() => getRunStatus(page, projectId, epicId), { timeout: 30_000, intervals: [500, 1000] })
-    .toBe("awaiting_input");
+  await waitForRunWaiting(page, projectId, epicId, { timeout: 30_000 });
   expect(await getTaskStatus(page, projectId, epicId, "T1"), "T1 stays todo pre-approval").toBe(
     "todo",
   );
 
   await replyOnThread(page, "テストの観点も計画に含めてください。");
+  // Q_REVISED appearing is the deterministic marker that the woken turn has
+  // ended (plain "waiting" polling would match the previous park); the approve
+  // banner (if any) has had its plan snapshot refreshed by the re-plan's
+  // task_update event.
   await expect(page.getByText(Q_REVISED)).toBeVisible({ timeout: 60_000 });
-  // Park confirmed before waking: polling for "completed" below cannot
-  // false-positive on a stale state, and the approve banner (if any) has had
-  // its plan snapshot refreshed by the re-plan's task_update event.
-  await expect
-    .poll(() => getRunStatus(page, projectId, epicId), { timeout: 30_000, intervals: [500, 1000] })
-    .toBe("awaiting_input");
+  await waitForRunWaiting(page, projectId, epicId, { timeout: 30_000 });
 
   if (opts.alreadyApproved) {
     // Snapshot identity: the re-plan reproduced the approved plan, so the
@@ -177,12 +171,9 @@ async function approvePlanToCompletion(
     await approveBtn.click();
   }
 
-  await expect
-    .poll(() => getRunStatus(page, projectId, epicId), {
-      timeout: 90_000,
-      intervals: [500, 1000, 2000],
-    })
-    .toBe("completed");
+  // Standard work-done wait: the gated dispatch runs the Worker/Evaluator and
+  // the Manager's final report parks the run in "waiting" with T1 done.
+  await waitForWorkDone(page, projectId, epicId);
 }
 
 async function mergeEpic(page: Page, projectId: string, epicId: string): Promise<void> {
@@ -217,9 +208,7 @@ test.describe
       contId: "",
     };
 
-    test("basic scenario: plan → revise → approve → implement → run completed", async ({
-      page,
-    }) => {
+    test("basic scenario: plan → revise → approve → implement → work done", async ({ page }) => {
       const ids = await createProjectAndEpic(
         page,
         "same-trial-project",
@@ -232,7 +221,7 @@ test.describe
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      await approvePlanToCompletion(page, s.projectId, s.epicId);
+      await approvePlanToWorkDone(page, s.projectId, s.epicId);
 
       // The Worker actually implemented + Evaluator accepted → T1 done, and the
       // branch carries hello.py (the Manager self-checked it via read_branch_diff).
@@ -291,7 +280,7 @@ test.describe
       // approved in the first session, so no re-approval is needed (P2:
       // approval is bound to the plan snapshot, not to a run or a session).
       await replyOnThread(page, "util.py も追加してください。");
-      await approvePlanToCompletion(page, s.projectId, s.epicId, { alreadyApproved: true });
+      await approvePlanToWorkDone(page, s.projectId, s.epicId, { alreadyApproved: true });
 
       // The continuation ran on the SAME branch (the epic stayed open the whole
       // time); the active trial is now the continuation conversation.
@@ -311,7 +300,7 @@ test.describe
   .serial("reviewer (basic HITL → review → report → fix-entry + merge)", () => {
     const s = { projectId: "", epicId: "", reviewerId: "" };
 
-    test("basic scenario to run completion", async ({ page }) => {
+    test("basic scenario to work done", async ({ page }) => {
       const ids = await createProjectAndEpic(
         page,
         "reviewer-project",
@@ -323,7 +312,7 @@ test.describe
 
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
-      await approvePlanToCompletion(page, s.projectId, s.epicId);
+      await approvePlanToWorkDone(page, s.projectId, s.epicId);
     });
 
     test("user invokes the Reviewer → it reviews and reports, epic untouched", async ({ page }) => {
@@ -345,7 +334,22 @@ test.describe
 
       await page.waitForURL(new RegExp(`/threads/${s.reviewerId}`), { timeout: 15_000 });
 
-      // The Reviewer reports to the user (ask_user) → parks at awaiting_input.
+      // The Reviewer reports to the user in body text → its turn end parks the
+      // run in "waiting", with the reviewer thread driving the run. Gate on
+      // the REST run state first: the SPA mount can fetch the thread before
+      // the (index-refresh-delayed) reviewer run writes its first message, and
+      // live SSE attribution of a reviewer run is the known P4 work — so
+      // assert the rendered report on a fresh load below, like reviewer.spec.
+      await expect
+        .poll(
+          async () => {
+            const st = await getRunState(page, s.projectId, s.epicId);
+            return `${st.status}:${st.manager_thread ?? ""}`;
+          },
+          { timeout: 60_000, intervals: [500, 1000] },
+        )
+        .toBe(`waiting:${s.reviewerId}`);
+      await page.reload({ waitUntil: "domcontentloaded" });
       await expect(page.getByText(Q_REVIEW)).toBeVisible({ timeout: 60_000 });
 
       // It read the branch first-hand: fs_read on the manager trial's worktree
@@ -366,15 +370,14 @@ test.describe
     }) => {
       expect(s.reviewerId).toBeTruthy();
 
-      // User acknowledges the report → the reviewer run wraps up.
+      // User acknowledges the report → the reviewer wraps up in body text and
+      // its run parks in "waiting" again (a conversation never ends).
       await page.goto(`/projects/${s.projectId}/epics/${s.epicId}/threads/${s.reviewerId}`);
       await replyOnThread(page, "確認しました。ありがとうございました。");
-      await expect
-        .poll(() => getRunStatus(page, s.projectId, s.epicId), {
-          timeout: 60_000,
-          intervals: [500, 1000, 2000],
-        })
-        .toBe("completed");
+      await expect(page.getByText("承知しました。ご確認ありがとうございました。")).toBeVisible({
+        timeout: 60_000,
+      });
+      await waitForRunWaiting(page, s.projectId, s.epicId, { timeout: 30_000 });
 
       // Path "issue found": the user can instruct a fix on the Manager thread —
       // its composer is available (the reviewer run did not hijack the trial).

@@ -15,6 +15,7 @@
 
 import { expect, test } from "@playwright/test";
 import { SEED } from "./seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 const SHOTS = "playwright-report";
 
@@ -22,7 +23,7 @@ test.describe
   .serial("6-issue fake smoke", () => {
     const state = { projectId: "", epicId: "", workerThreadId: "" };
 
-    test("setup: create project + epic, run to completion", async ({ page }) => {
+    test("setup: create project + epic, run until work is done", async ({ page }) => {
       // --- project ---
       await page.goto("/projects");
       await page.getByTestId("new-project-btn").click();
@@ -59,20 +60,11 @@ test.describe
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // Wait for completion via the API (deterministic fake run). Finishing a
-      // run never transitions the epic (1-bit lifecycle) — the completion
-      // signal is the run state, not epic.status.
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("completed");
+      // Standard work-done wait (deterministic fake run): the conversation run
+      // parks in "waiting" and every task is done. Finishing work never
+      // transitions the epic (1-bit lifecycle) nor "completes" the run
+      // (a conversation has no end).
+      await waitForWorkDone(page, state.projectId, state.epicId);
 
       // Discover the worker thread id for the hand-off assertion.
       const tRes = await page.request.get(
@@ -91,7 +83,7 @@ test.describe
       const count = await bubbles.count();
       expect(
         count,
-        "Manager turn (task_update → dispatch → complete_epic → text) must render as separate bubbles, not one crammed bubble",
+        "Manager turn (task_update → dispatch → report text) must render as separate bubbles, not one crammed bubble",
       ).toBeGreaterThanOrEqual(3);
     });
 

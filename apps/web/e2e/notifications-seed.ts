@@ -21,8 +21,9 @@ export const NOTIF_SEED = {
 } as const;
 
 /**
- * Fake LLM script — scenario where the run completes and run_completed arrives via SSE.
- * Equivalent to FAKE_SCRIPT in seed.ts (task_update → dispatch → complete_epic → text).
+ * Fake LLM script — the run does its work and parks in "waiting" (P3: no
+ * run_completed for conversation runs; the badge source is run_started).
+ * Equivalent to FAKE_SCRIPT in seed.ts (task_update → dispatch → report text).
  */
 export const NOTIF_FAKE_SCRIPT = JSON.stringify({
   manager: [
@@ -42,12 +43,7 @@ export const NOTIF_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
-    },
-    { type: "text", text: "Epic complete." },
+    { type: "text", text: "Epic work is done." },
   ],
   worker: [
     {

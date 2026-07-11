@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from tests._helpers import make_git_repo
+from tests._helpers import make_git_repo, run_until_parked
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -253,7 +253,6 @@ class TestOrchestratorIncrementalStreaming:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             # Long text turn — must produce multiple TokenEvents on the manager thread.
             TextTurn(manager_text),
         ]
@@ -299,7 +298,7 @@ class TestOrchestratorIncrementalStreaming:
                 require_plan_approval=False,
                 git_author_email="yukar@localhost",
             )
-            await orch.start(root, project_id, epic_id, "run-streaming")
+            await run_until_parked(orch, root, project_id, epic_id, "run-streaming")
 
         await asyncio.wait_for(collector, timeout=10.0)
         return events_received

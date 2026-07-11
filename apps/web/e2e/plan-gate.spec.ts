@@ -3,8 +3,9 @@
  *
  * Proves the host-enforced approval gate in a real browser + real backend:
  *   - The Manager tries to `dispatch` BEFORE the user approves the plan. The
- *     host REJECTS it, so no Worker runs and the task stays "todo" — the run
- *     halts at ask_user (awaiting_input) instead of running away.
+ *     host REJECTS it, so no Worker runs and the task stays "todo" — the
+ *     Manager presents the plan in body text and the run parks in "waiting"
+ *     instead of running away.
  *   - Approval is an EXPLICIT user operation: clicking approve-plan-btn records
  *     the approval (POST /plan/approval, bound to the plan-snapshot hash) and
  *     auto-posts the i18n "plan approved" user message, which wakes the parked
@@ -14,7 +15,8 @@
  *     approval is stale → the next dispatch is rejected AGAIN and the user must
  *     re-approve the updated plan.
  *   - After the second approval the dispatch runs the Worker, the task reaches
- *     "done", and the run completes.
+ *     "done", and the run parks in "waiting" (work done — a conversation run
+ *     never "completes").
  *
  * The gate is proved deterministically via the tasks API: `run_dispatch` marks a
  * task in_progress before running the Worker, so a blocked dispatch leaves T1
@@ -24,20 +26,12 @@
 import { expect, test } from "@playwright/test";
 import ja from "../locales/ja";
 import { PLAN_GATE_QUESTION, PLAN_GATE_REVISED_QUESTION, PLAN_GATE_SEED } from "./plan-gate-seed";
+import { waitForRunWaiting, waitForWorkDone } from "./wait-helpers";
 
 /** ja is the app's default locale — the exact message the approve button
  * auto-posts. Imported from the locale so a wording change cannot silently
  * desynchronise this spec. */
 const APPROVAL_MESSAGE = ja.conversation.planApprovedMessage;
-
-type RunStatus =
-  | "idle"
-  | "running"
-  | "paused"
-  | "awaiting_input"
-  | "error"
-  | "completed"
-  | "interrupted";
 
 interface TasksApproval {
   plan_hash: string;
@@ -49,16 +43,6 @@ interface TasksApproval {
 test.describe
   .serial("plan-gate: dispatch is blocked until the user approves the plan snapshot", () => {
     const state = { projectId: "", epicId: "" };
-
-    async function getRunStatus(
-      page: import("@playwright/test").Page,
-      projectId: string,
-      epicId: string,
-    ): Promise<RunStatus> {
-      const res = await page.request.get(`/api/projects/${projectId}/epics/${epicId}/run/state`);
-      const body = await res.json();
-      return body.status as RunStatus;
-    }
 
     async function getTasksApproval(
       page: import("@playwright/test").Page,
@@ -132,16 +116,11 @@ test.describe
 
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // The plan question appears (ask_user was reached) …
+      // The plan question appears (the Manager's body-text plan presentation) …
       await expect(page.getByText(PLAN_GATE_QUESTION)).toBeVisible({ timeout: 30_000 });
 
-      // … and the run is parked in awaiting_input rather than running workers.
-      await expect
-        .poll(() => getRunStatus(page, state.projectId, state.epicId), {
-          timeout: 30_000,
-          intervals: [500, 1000, 1000],
-        })
-        .toBe("awaiting_input");
+      // … and the run is parked in "waiting" rather than running workers.
+      await waitForRunWaiting(page, state.projectId, state.epicId, { timeout: 30_000 });
 
       // THE GATE: the pre-approval dispatch was rejected, so the Worker never ran
       // and T1 is still "todo" (a failed gate would have moved it to in_progress/done).
@@ -176,13 +155,10 @@ test.describe
 
       // The woken Manager re-titles T1 (plan snapshot changes → hash changes),
       // tries to dispatch — REJECTED again (stale approval) — and re-asks.
+      // The revised-question text is the deterministic marker that the woken
+      // turn has ended (plain "waiting" polling would match the previous park).
       await expect(page.getByText(PLAN_GATE_REVISED_QUESTION)).toBeVisible({ timeout: 60_000 });
-      await expect
-        .poll(() => getRunStatus(page, state.projectId, state.epicId), {
-          timeout: 30_000,
-          intervals: [500, 1000, 1000],
-        })
-        .toBe("awaiting_input");
+      await waitForRunWaiting(page, state.projectId, state.epicId, { timeout: 30_000 });
 
       // Snapshot binding: an approval IS recorded (approved_hash non-null) but
       // it no longer matches the changed plan → unapproved again, T1 still todo.
@@ -201,7 +177,7 @@ test.describe
       await expect(approveBtn).toBeVisible({ timeout: 15_000 });
     });
 
-    // ---- 5. Second approval → dispatch runs the Worker → task done, run completed ----
+    // ---- 5. Second approval → dispatch runs the Worker → task done, run parks ----
     test("5. after re-approval the dispatch runs and the task completes", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
@@ -213,13 +189,9 @@ test.describe
       await expect(approveBtn).toBeVisible({ timeout: 15_000 });
       await approveBtn.click();
 
-      // The run resumes and completes: approval → running → worker/evaluator → completed.
-      await expect
-        .poll(() => getRunStatus(page, state.projectId, state.epicId), {
-          timeout: 90_000,
-          intervals: [500, 1000, 2000],
-        })
-        .toBe("completed");
+      // The run resumes and finishes the work: approval → running →
+      // worker/evaluator → the run parks in "waiting" with every task done.
+      await waitForWorkDone(page, state.projectId, state.epicId);
 
       // The post-approval dispatch actually ran the Worker → T1 is done, and
       // the recorded approval matches the (unchanged) final plan snapshot.

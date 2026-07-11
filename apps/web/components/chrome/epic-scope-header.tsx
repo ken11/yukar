@@ -31,19 +31,25 @@ import { useT } from "@/lib/i18n/provider";
 import { useEpicRun } from "./epic-run-context";
 import { EpicSwitcher } from "./epic-switcher";
 
-function resolveStatus(epicStatus: string | undefined, runStatus: string): StatusValue {
+function resolveStatus(
+  epicStatus: string | undefined,
+  runStatus: string,
+  hasParkedRun: boolean,
+): StatusValue {
   // Active run states (from SSE) take priority — they reflect live execution.
   if (runStatus === "preparing") return "preparing";
   if (runStatus === "running") return "running";
   if (runStatus === "paused") return "paused";
-  if (runStatus === "awaiting_input") return "awaiting";
-  if (runStatus === "interrupted") return "interrupted";
   // Epic status is a single user-owned bit: completed wins over any stale run
   // state (no run can be active on a completed epic). "Merged" is a fact
   // attribute (epic.merged_at) rendered as a separate badge, not a status.
   if (epicStatus === "completed") return "completed";
-  // Open epic without an active run: fall back to the run status.
-  if (runStatus === "completed") return "completed";
+  // A parked conversation (your turn) — "waiting" alone is the universal
+  // resting state (a never-run epic is waiting too), so only the parked
+  // marker shows the your-turn badge.
+  if (runStatus === "waiting" && hasParkedRun) return "awaiting";
+  // Open epic without an executing turn: fall back to the run status.
+  if (runStatus === "completed") return "completed"; // JOB runs (resolve / arbiter)
   if (runStatus === "error") return "error";
   return "idle";
 }
@@ -67,7 +73,6 @@ const MOBILE_STATUS_GLYPH: Record<string, { icon: string; color?: string; labelK
     labelKey: "epic.status.awaiting",
   },
   paused: { icon: "pause", labelKey: "epic.status.paused" },
-  interrupted: { icon: "warning", labelKey: "epic.status.interrupted" },
   completed: { icon: "check", labelKey: "epic.status.completed" },
   error: { icon: "error", color: "var(--color-error)", labelKey: "epic.status.error" },
   idle: { icon: "circle", labelKey: "epic.status.idle" },
@@ -117,7 +122,11 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
 
   const isRunning =
     activityState.runStatus === "running" || activityState.runStatus === "preparing";
-  const status = resolveStatus(epic?.status, activityState.runStatus);
+  const status = resolveStatus(
+    epic?.status,
+    activityState.runStatus,
+    activityState.awaitingInput != null,
+  );
 
   // Task progress — same query key as EpicTabBar, so this will be a cache hit
   const { data: tasksFile } = useQuery({

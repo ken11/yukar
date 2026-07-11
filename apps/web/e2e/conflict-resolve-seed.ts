@@ -10,7 +10,8 @@
  *   4. UI: Resolve with Agent → POST /git/resolve → resolve run starts.
  *   5. Resolve worker: writes conflict.txt with the "RESOLVED" version, then git_add → git_commit.
  *      (MERGE_HEAD is removed and merge_in_progress becomes false)
- *   6. Resolve run completed → UI: Merge to default again → succeeds → epic = merged.
+ *   6. Resolve run completed (a JOB run — job runs do have an end) →
+ *      UI: Merge to default again → succeeds → the merge fact (merged_at) is recorded.
  *
  * Worker script uses the per_call format:
  *   per_call[0] = epic run worker (writes conflict.txt with EPIC version)
@@ -50,12 +51,8 @@ export const CONFLICT_RESOLVE_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
-    },
-    { type: "text", text: "Epic complete." },
+    // Report and end the turn — the conversation run parks in "waiting" (P3).
+    { type: "text", text: "Epic work is done." },
   ],
 
   // per_call format:

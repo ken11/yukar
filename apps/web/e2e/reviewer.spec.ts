@@ -4,19 +4,24 @@
  * spawns after the run to check the branch and report back).
  *
  * Verification items:
- *   1. setup: create project + epic → run fake to completion (run/state)
- *   2. "Ask Reviewer" → creates a reviewer thread (role=reviewer) and navigates
- *      to it; the reviewer conversation shows a composer (it is repliable)
- *   3. The reviewer runs read-only: it inspects read_branch_diff and parks at
- *      ask_user (awaiting_input), WITHOUT changing epic.status or
+ *   1. setup: create project + epic → fake run until work done (the manager
+ *      run parks in "waiting" — a conversation never completes)
+ *   2. "Ask Reviewer" works while the manager run is parked in waiting (the
+ *      parked run is shelved, not a 409) → creates a reviewer thread
+ *      (role=reviewer) and navigates to it; the composer is shown (repliable)
+ *   3. The reviewer runs read-only: it inspects read_branch_diff, reports in
+ *      plain BODY TEXT and parks at "waiting", WITHOUT changing epic.status or
  *      epic.active_thread_id (the manager trial stays the active trial)
  *   4. The reviewer thread is listed in the sidebar; the manager thread keeps
  *      its composer (a reviewer run must not hijack the active-trial pointer)
  *   5. The user can reply to the reviewer (post_message routes in reviewer mode)
+ *   6. A reviewer parked in waiting does NOT block manager operations
+ *      (new-trial creation succeeds — shelving semantics)
  */
 
 import { expect, test } from "@playwright/test";
 import { SEED } from "./seed";
+import { getRunState, waitForWorkDone } from "./wait-helpers";
 
 const SHOTS = "playwright-report";
 
@@ -29,7 +34,7 @@ test.describe
       reviewerId: "",
     };
 
-    test("setup: create project + epic, run to completion", async ({ page }) => {
+    test("setup: create project + epic, run until work is done", async ({ page }) => {
       await page.goto("/projects");
       await page.getByTestId("new-project-btn").click();
       await expect(page.getByRole("dialog")).toBeVisible();
@@ -58,17 +63,8 @@ test.describe
 
       await page.getByTestId("start-run-btn").click();
 
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("completed");
+      // Standard work-done wait: the run parks in "waiting" and all tasks are done.
+      await waitForWorkDone(page, state.projectId, state.epicId);
 
       // The run establishes the active-trial pointer (epic.active_thread_id).
       const eRes = await page.request.get(`/api/projects/${state.projectId}/epics/${state.epicId}`);
@@ -77,7 +73,9 @@ test.describe
       expect(state.managerThreadId).toBeTruthy();
     });
 
-    test("Ask Reviewer → creates a reviewer thread and navigates to it", async ({ page }) => {
+    test("Ask Reviewer (while the manager run is parked) → creates a reviewer thread and navigates to it", async ({
+      page,
+    }) => {
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
       );
@@ -107,21 +105,24 @@ test.describe
       ).toBeVisible({ timeout: 20_000 });
     });
 
-    test("Reviewer runs read-only: parks at ask_user, epic untouched", async ({ page }) => {
+    test("Reviewer runs read-only: reports in body text, parks in waiting, epic untouched", async ({
+      page,
+    }) => {
       expect(state.reviewerId).toBeTruthy();
 
-      // The reviewer inspects the diff then reports via ask_user → awaiting_input.
+      // The reviewer inspects the diff then reports in plain body text and
+      // ends its turn → the run parks in "waiting" (your turn). Gate on the
+      // reviewer thread driving the run so the wait cannot match the shelved
+      // manager run's earlier "waiting".
       await expect
         .poll(
           async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
+            const s = await getRunState(page, state.projectId, state.epicId);
+            return `${s.status}:${s.manager_thread ?? ""}`;
           },
           { timeout: 60_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("awaiting_input");
+        .toBe(`waiting:${state.reviewerId}`);
 
       // The reviewer must NOT drive the epic lifecycle: status stays open and
       // the active trial stays the manager thread (not the reviewer).
@@ -133,7 +134,8 @@ test.describe
       );
 
       // The reviewer's read-only conversation was persisted (read_branch_diff +
-      // ask_user report), and its run state carries the reviewer thread + question.
+      // fs_read + the report). The report is an ordinary assistant message —
+      // there is no pending_question carrier any more.
       const mRes = await page.request.get(
         `/api/projects/${state.projectId}/epics/${state.epicId}/threads/${state.reviewerId}`,
       );
@@ -146,19 +148,19 @@ test.describe
         JSON.stringify(messages),
         "Reviewer's fs_read returned hello.py content from the manager trial worktree",
       ).toContain("greet");
-
-      const sRes = await page.request.get(
-        `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-      );
-      const runState: { manager_thread?: string | null; pending_question?: string | null } =
-        await sRes.json();
-      expect(runState.manager_thread, "The active run drives the reviewer thread").toBe(
-        state.reviewerId,
-      );
       expect(
-        runState.pending_question ?? "",
-        "The reviewer's report is parked as the question",
+        JSON.stringify(messages),
+        "The reviewer's verdict is persisted as a plain assistant message",
       ).toContain("Reviewed the branch");
+
+      // The report body is visible in the conversation UI.
+      await page.goto(
+        `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.reviewerId}`,
+      );
+      await expect(
+        page.getByTestId("agent-message").filter({ hasText: "Reviewed the branch" }).first(),
+        "The reviewer's report text renders as an agent bubble",
+      ).toBeVisible({ timeout: 20_000 });
 
       await page.screenshot({ path: `${SHOTS}/reviewer-awaiting.png`, fullPage: true });
     });
@@ -210,6 +212,44 @@ test.describe
       ]);
       expect(postResponse.status(), "Reply to the reviewer is accepted (201)").toBe(201);
     });
+
+    test("A reviewer parked in waiting does not block manager operations (shelving)", async ({
+      page,
+    }) => {
+      expect(state.reviewerId).toBeTruthy();
+
+      // The reply above woke the reviewer run — wait until its turn ends and
+      // the run parks in "waiting" again (the reviewer thread drives the run).
+      await expect
+        .poll(
+          async () => {
+            const s = await getRunState(page, state.projectId, state.epicId);
+            return `${s.status}:${s.manager_thread ?? ""}`;
+          },
+          { timeout: 60_000, intervals: [500, 1000, 1000] },
+        )
+        .toBe(`waiting:${state.reviewerId}`);
+
+      // P3 shelving semantics: a live run parked in "waiting" does not hold
+      // the epic's run slot. A manager operation that used to 409 on
+      // "run active" — creating a new trial — must now succeed (the parked
+      // reviewer run is shelved).
+      const createRes = await page.request.post(
+        `/api/projects/${state.projectId}/epics/${state.epicId}/threads`,
+        {
+          data: {
+            role: "manager",
+            title: "Follow-up trial",
+            archive_active: true,
+            same_branch: false,
+          },
+        },
+      );
+      expect(
+        createRes.status(),
+        "New-trial creation succeeds while the reviewer run is parked in waiting",
+      ).toBe(201);
+    });
   });
 
 /**
@@ -228,7 +268,7 @@ test.describe
       managerThreadId: "",
     };
 
-    test("setup: run to completion, then complete → completed", async ({ page }) => {
+    test("setup: run until work done, then complete → completed", async ({ page }) => {
       await page.goto("/projects");
       await page.getByTestId("new-project-btn").click();
       await expect(page.getByRole("dialog")).toBeVisible();
@@ -256,17 +296,7 @@ test.describe
       expect(state.epicId).toBeTruthy();
 
       await page.getByTestId("start-run-btn").click();
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("completed");
+      await waitForWorkDone(page, state.projectId, state.epicId);
 
       const eRes = await page.request.get(`/api/projects/${state.projectId}/epics/${state.epicId}`);
       const epic: { active_thread_id?: string | null } = await eRes.json();
@@ -274,7 +304,8 @@ test.describe
       expect(state.managerThreadId).toBeTruthy();
 
       // Complete from the UI (open → completed, the user's single "finish"
-      // action) — the run has already finished, so the guard allows it.
+      // action) — no turn is executing (the run is parked in waiting, which
+      // is shelved), so the guard allows it.
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
       );

@@ -254,8 +254,6 @@ export interface YukarThreadAdapterOptions {
   isRunning: boolean;
   /** Send a message (HITL) */
   onSendMessage: (content: string) => Promise<void>;
-  /** Awaiting-input state. A synthetic bubble is appended to the end of the conversation when question is non-empty. */
-  awaitingInput?: { threadId: string; question: string } | null;
 }
 
 /**
@@ -271,27 +269,18 @@ export interface YukarThreadAdapterOptions {
 export function buildYukarAdapter(
   opts: YukarThreadAdapterOptions,
 ): ExternalStoreAdapter<ThreadMessageLike> {
-  const { messages, streamState, isRunning, onSendMessage, awaitingInput } = opts;
+  const { messages, streamState, isRunning, onSendMessage } = opts;
 
   // Do not concatenate stream bubbles after turn completion (done=true).
   // Explicitly guarding done=true here ensures structural prevention of double rendering.
+  // P3: no synthetic "__awaiting__" bubble any more — the agent's question is
+  // its final (persisted) assistant message and renders like any other.
   let allMessages: readonly ThreadMessageLike[];
   if (streamState.done) {
     allMessages = messages;
   } else {
     const segs = streamStateToThreadMessageLikes(streamState);
     allMessages = segs.length > 0 ? [...messages, ...segs] : messages;
-  }
-
-  // Awaiting-input synthetic message: append to the end only when question is present
-  if (awaitingInput?.question) {
-    const awaitingMsg: ThreadMessageLike = {
-      id: "__awaiting__",
-      role: "assistant",
-      content: [{ type: "text", text: awaitingInput.question }],
-      status: { type: "complete", reason: "stop" },
-    };
-    allMessages = [...allMessages, awaitingMsg];
   }
 
   return {

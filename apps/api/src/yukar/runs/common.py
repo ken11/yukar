@@ -42,9 +42,7 @@ from yukar.agents.tools.git_tools import make_git_tools
 from yukar.models.run import RunState
 from yukar.storage import session_store, state_repo
 
-_RunStatus = Literal[
-    "idle", "running", "paused", "awaiting_input", "error", "completed", "interrupted"
-]
+_RunStatus = Literal["running", "paused", "waiting", "error", "completed"]
 
 
 async def save_and_publish_state(

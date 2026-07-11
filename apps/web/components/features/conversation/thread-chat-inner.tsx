@@ -27,7 +27,6 @@ export function ThreadChatInner({
   isRunning,
   runFailed,
   runError,
-  awaitingInput,
   isAwaitingInput,
   onSendMessage,
   isSending,
@@ -43,8 +42,7 @@ export function ThreadChatInner({
   isRunning: boolean;
   runFailed: boolean;
   runError: string | null;
-  awaitingInput: { threadId: string; question: string } | null;
-  /** True when runStatus === "awaiting_input". Used to show the banner even when awaitingInput is null (waiting for SSE replay). */
+  /** True when the run parked in "waiting" on this thread — your turn (shows the banner). */
   isAwaitingInput?: boolean;
   onSendMessage: (content: string) => void;
   isSending: boolean;
@@ -102,9 +100,8 @@ export function ThreadChatInner({
         streamState,
         isRunning,
         onSendMessage: handleAdapterSend,
-        awaitingInput,
       }),
-    [messages, streamState, isRunning, handleAdapterSend, awaitingInput],
+    [messages, streamState, isRunning, handleAdapterSend],
   );
 
   const runtime = useExternalStoreRuntime(adapter);
@@ -120,13 +117,12 @@ export function ThreadChatInner({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, streamTextLen]);
 
-  // Focus the composer when entering awaiting state.
-  // Also handles isAwaitingInput (runStatus-based) to cover the period while awaitingInput is null.
+  // Focus the composer when it becomes the user's turn.
   useEffect(() => {
-    if (awaitingInput || isAwaitingInput) {
+    if (isAwaitingInput) {
       composerRef.current?.focus();
     }
-  }, [awaitingInput, isAwaitingInput]);
+  }, [isAwaitingInput]);
 
   // Auto-grow the composer with its content (capped by max-h; CSS min-height wins on desktop).
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-measures on every input; `value` is the trigger, not a read dependency
@@ -230,9 +226,8 @@ export function ThreadChatInner({
           </div>
         )}
 
-        {/* Awaiting approval banner — neutral annotation */}
-        {/* Also shown when isAwaitingInput (runStatus-based) is set: covers the SSE-waiting period when awaitingInput is null */}
-        {!runFailed && (awaitingInput || isAwaitingInput) && (
+        {/* Your-turn banner — neutral annotation (the run parked; reply to continue) */}
+        {!runFailed && isAwaitingInput && (
           <div
             className="shrink-0 flex items-center gap-2 px-6 py-2"
             role="status"
@@ -271,11 +266,7 @@ export function ThreadChatInner({
               // Mobile groups consecutive same-role messages under one attribution
               // header (desktop keeps a header per bubble — see MessageRow).
               const prev = i > 0 ? allMessages[i - 1] : undefined;
-              const grouped =
-                !!prev &&
-                prev.role === msg.role &&
-                msg.id !== "__awaiting__" &&
-                prev.id !== "__awaiting__";
+              const grouped = !!prev && prev.role === msg.role;
               return (
                 <MessageRow
                   key={msg.id ?? i}

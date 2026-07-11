@@ -69,7 +69,7 @@ def _inject_fake_active_run(root: str, project_id: str, epic_id: str) -> Any:
     fake_task: asyncio.Task[None] = asyncio.create_task(_never())
     sv._runs[(project_id, epic_id)] = _RunHandle(
         run_id="run-fake",
-        runner=MagicMock(),
+        runner=MagicMock(is_parked=False),  # executing (not parked)
         task=fake_task,
         root=root,
         project_id=project_id,
@@ -321,7 +321,7 @@ class TestCompleteViaPatch:
                 json={"status": "completed"},
             )
             assert resp.status_code == 409
-            assert "run is active" in resp.json()["detail"].lower()
+            assert "run is executing" in resp.json()["detail"].lower()
         finally:
             await _cleanup_fake_run(fake_task, pid, eid)
 

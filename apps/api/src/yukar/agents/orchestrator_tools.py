@@ -28,13 +28,6 @@ from yukar.storage import tasks_repo
 _TaskStatus = Literal["todo", "in_progress", "done", "blocked"]
 
 
-class _ManagerTurnLimitError(Exception):
-    """Raised by _run_loop when _MAX_MANAGER_TURNS is exhausted without complete_epic.
-
-    Signals start() to set run state to ``error`` per spec §6.2.
-    """
-
-
 def _make_task_update_tool(
     root: str,
     project_id: str,
@@ -50,10 +43,9 @@ def _make_task_update_tool(
     ``_tasks_holder`` is a one-element list so the closure can mutate it.
 
     ``on_change`` (optional) is invoked after every successful task mutation so
-    the orchestrator can react to a plan change (e.g. mark the turn as having
-    used an effector tool).  Approval itself needs no invalidation hook: the
-    dispatch gate compares the CURRENT plan hash against the recorded approval
-    on every call, so a changed plan simply stops matching.
+    a caller can react to a plan change.  Approval needs no invalidation hook:
+    the dispatch gate compares the CURRENT plan hash against the recorded
+    approval on every call, so a changed plan simply stops matching.
     """
     from strands import tool
 

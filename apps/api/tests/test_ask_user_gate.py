@@ -1,12 +1,19 @@
-"""Tests for the Manager planning + approval gate (ask_user HITL).
+"""Tests for the Manager planning + approval gate (waiting / park HITL).
+
+Lifecycle redesign P3: there is no ask_user tool.  The Manager presents its
+plan (or question) in the message body and ends its turn — the run parks in
+``waiting`` (the user's turn).  Approval is an explicit user operation
+recorded in plan_approval.yaml; a chat reply never opens the dispatch gate.
 
 Covers:
-- ask_user tool causes orchestrator to enter awaiting_input status.
-- inject_message unblocks the wait and restores running status.
-- dispatch is NOT called before user approves (Workers not started).
-- stop() during awaiting_input terminates cleanly.
+- Ending a turn parks the run in ``waiting`` and publishes
+  UserInputRequestedEvent (question always empty — pure "your turn" signal).
+- inject_message wakes the waiting run and restores running status.
+- dispatch is host-rejected until the recorded approval matches the plan.
+- stop() while waiting settles the state as ``waiting`` (restartable).
 - UserInputRequestedEvent is published to the event bus and SSE-serialized.
-- awaiting_input is reconciled to error on recovery.
+- A waiting run is preserved as-is by startup recovery (legacy
+  awaiting_input state files are read back as waiting).
 - RunEvent discriminated union includes UserInputRequestedEvent.
 """
 
@@ -95,11 +102,11 @@ class TestUserInputRequestedEventRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# Unit: ask_user tool and awaiting_user state
+# Unit: waiting (park) gate — _wait_for_user_input mechanics
 # ---------------------------------------------------------------------------
 
 
-class TestAskUserTool:
+class TestWaitingGate:
     def _make_orchestrator(self) -> Any:
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
@@ -110,37 +117,7 @@ class TestAskUserTool:
             git_author_email="test@example.com",
         )
 
-    async def test_ask_user_tool_sets_awaiting_user(self) -> None:
-        """Calling ask_user sets _awaiting_user=True and publishes UserInputRequestedEvent."""
-        from yukar.models.events import UserInputRequestedEvent
-
-        orch = self._make_orchestrator()
-        orch._project_id = "proj"
-        orch._epic_id = "ep"
-        orch._run_id = "run-1"
-
-        emitted: list[Any] = []
-        orch._pub = emitted.append
-
-        # Build the ask_user tool and call it directly.
-        tool_fn = orch._make_ask_user_tool()
-        # The Strands @tool decorator wraps the async function; call the underlying
-        # coroutine directly by accessing __wrapped__ or calling tool_fn directly.
-        # Since Strands' @tool decorator preserves the async function as the callable,
-        # we can call it directly.
-        result = await tool_fn(question="Is the plan OK?")
-
-        assert orch._awaiting_user is True
-        assert orch._pending_question == "Is the plan OK?"
-        assert "waiting" in result.lower() or "sent" in result.lower()
-
-        # UserInputRequestedEvent should be emitted.
-        uir_events = [e for e in emitted if isinstance(e, UserInputRequestedEvent)]
-        assert len(uir_events) == 1
-        assert uir_events[0].question == "Is the plan OK?"
-        assert uir_events[0].thread_id == "manager"
-
-    async def test_stop_during_awaiting_input_unblocks(self) -> None:
+    async def test_stop_during_waiting_unblocks(self) -> None:
         """stop() during _wait_for_user_input returns immediately."""
         from yukar.models.run import RunState
         from yukar.storage import state_repo
@@ -175,10 +152,10 @@ class TestAskUserTool:
             # Give the task a moment to enter the await.
             await asyncio.sleep(0.05)
 
-            # Verify state is now awaiting_input.
+            # Verify state is now waiting (the user's turn).
             persisted = await state_repo.get_state(root, "proj", "ep")
             assert persisted is not None
-            assert persisted.status == "awaiting_input"
+            assert persisted.status == "waiting"
 
             # Call stop() — it should inject sentinel.
             await orch.stop()
@@ -220,10 +197,10 @@ class TestAskUserTool:
             )
             await asyncio.sleep(0.05)
 
-            # Verify status is awaiting_input.
+            # Verify status is waiting.
             persisted = await state_repo.get_state(root, "proj", "ep")
             assert persisted is not None
-            assert persisted.status == "awaiting_input"
+            assert persisted.status == "waiting"
 
             # Inject user reply.
             orch.inject_message("manager", "Looks good, proceed!")
@@ -461,29 +438,31 @@ class TestPauseDuringAwaitingInput:
 
 
 # ---------------------------------------------------------------------------
-# E2E: ask_user gate with FakeModel
+# E2E: plan-approval gate with FakeModel (text turns park; approval opens gate)
 # ---------------------------------------------------------------------------
 
 
-class TestAskUserGateE2E:
+class TestPlanGateE2E:
     """E2E tests for the planning + approval gate using FakeModel."""
 
     @pytest.fixture
     def git_repo(self, tmp_path: Path) -> Path:
         return make_git_repo(tmp_path, "myrepo")
 
-    async def test_ask_user_blocks_dispatch_until_approved(
+    async def test_reply_alone_does_not_open_dispatch_gate(
         self, git_repo: Path, tmp_path: Path
     ) -> None:
         """A chat reply does NOT approve the plan; the recorded approval does.
 
         Verifies:
-        1. Run enters awaiting_input status and UserInputRequestedEvent is published.
+        1. The plan-presenting turn ends → the run parks in ``waiting`` and a
+           UserInputRequestedEvent (empty question) is published.
         2. A user reply WITHOUT the Approve-plan operation leaves dispatch
            host-rejected (no workers start).
         3. After the approval is recorded in plan_approval.yaml (the explicit
            user operation), the live run's next dispatch goes through — the
            gate reads the approval from disk without any restart.
+        4. After the work the run parks again (a conversation never completes).
         """
         from datetime import UTC, datetime
         from unittest.mock import patch
@@ -503,10 +482,11 @@ class TestAskUserGateE2E:
 
         await _bootstrap(root, project_id, epic_id, git_repo)
 
-        # Manager: Turn 0 — plan tasks, call ask_user, stop.
-        # Turn 1 (user replied but did NOT approve) — dispatch is gate-rejected,
-        # so the Manager re-asks for the approval operation.
-        # Turn 2 (approval recorded + reply) — dispatch runs, complete_epic.
+        # Manager: Turn 0 — plan tasks, present the plan in the body, end the
+        # turn (park).  Turn 1 (user replied but did NOT approve) — dispatch is
+        # gate-rejected, so the Manager asks for the approval operation and
+        # parks again.  Turn 2 (approval recorded + reply) — dispatch runs,
+        # then the Manager reports in the body and parks once more.
         manager_script = [
             # Turn 0: plan
             ToolUseTurn(
@@ -518,28 +498,19 @@ class TestAskUserGateE2E:
                     "repo": git_repo.name,
                 },
             ),
-            ToolUseTurn(
-                tool_name="ask_user",
-                tool_input={"question": "Plan: T1=Write hello.py. Any questions before I proceed?"},
-            ),
-            TextTurn("Waiting for user approval."),
+            TextTurn("Plan: T1=Write hello.py. Approve the plan in the UI to proceed."),
             # Turn 1: the reply alone must not open the gate.
             ToolUseTurn(
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(
-                tool_name="ask_user",
-                tool_input={"question": "Dispatch was rejected — please approve the plan."},
-            ),
-            TextTurn("Waiting for the approval operation."),
+            TextTurn("Dispatch was rejected — please approve the plan."),
             # Turn 2: after the recorded approval
             ToolUseTurn(
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("Done!"),
+            TextTurn("Done! T1 was implemented and accepted."),
         ]
 
         worker_script = [
@@ -565,18 +536,17 @@ class TestAskUserGateE2E:
 
         events_received: list[Any] = []
         worker_started_before_approval: list[Any] = []
-        first_question = asyncio.Event()
-        second_question = asyncio.Event()
+        park_events: list[asyncio.Event] = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
         approval_recorded = asyncio.Event()
 
         async def _collect() -> None:
+            park_count = 0
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
                 if isinstance(ev, UserInputRequestedEvent):
-                    if not first_question.is_set():
-                        first_question.set()
-                    else:
-                        second_question.set()
+                    if park_count < len(park_events):
+                        park_events[park_count].set()
+                    park_count += 1
                 # Track workers started before the approval was recorded.
                 if isinstance(ev, WorkerStartedEvent) and not approval_recorded.is_set():
                     worker_started_before_approval.append(ev)
@@ -594,22 +564,22 @@ class TestAskUserGateE2E:
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
             run_task = asyncio.create_task(orch.start(root, project_id, epic_id, run_id))
 
-            # Wait for the plan question.
-            await asyncio.wait_for(first_question.wait(), timeout=10.0)
+            # Wait for the plan-presenting turn to park.
+            await asyncio.wait_for(park_events[0].wait(), timeout=10.0)
 
-            # Verify status is awaiting_input before the reply.
+            # Verify status is waiting before the reply.
             state = await state_repo.get_state(root, project_id, epic_id)
             assert state is not None, "state.yaml should exist"
-            assert state.status == "awaiting_input", (
-                f"Expected awaiting_input before approval, got {state.status!r}"
+            assert state.status == "waiting", (
+                f"Expected waiting before approval, got {state.status!r}"
             )
 
             # Reply WITHOUT performing the approval operation.  The Manager's
             # dispatch this turn must be host-rejected (no workers).
             orch.inject_message("manager", "Looks good, proceed!")
 
-            # The Manager hits the gate and asks again.
-            await asyncio.wait_for(second_question.wait(), timeout=10.0)
+            # The Manager hits the gate, reports the rejection, parks again.
+            await asyncio.wait_for(park_events[1].wait(), timeout=10.0)
             assert worker_started_before_approval == [], (
                 "A chat reply alone must not open the dispatch gate"
             )
@@ -630,38 +600,54 @@ class TestAskUserGateE2E:
             approval_recorded.set()
             orch.inject_message("manager", "I approved the plan in the UI — go ahead.")
 
-            # Wait for the run to complete.
-            await asyncio.wait_for(run_task, timeout=30.0)
+            # The work turn runs (dispatch → worker → evaluator), then the run
+            # parks AGAIN: a conversation run never completes.
+            await asyncio.wait_for(park_events[2].wait(), timeout=30.0)
+
+            state = await state_repo.get_state(root, project_id, epic_id)
+            assert state is not None
+            assert state.status == "waiting", (
+                f"After the work turn the run must park in waiting, got {state.status!r}"
+            )
+
+            # Release the run task (user stop): state stays waiting.
+            await orch.stop()
+            await asyncio.wait_for(run_task, timeout=10.0)
 
         await asyncio.wait_for(collector, timeout=5.0)
 
         event_types = [getattr(ev, "type", None) for ev in events_received]
 
-        # Both questions should be on the bus.
+        # Every park is a pure "your turn" signal with an empty question.
         uir_events = [e for e in events_received if isinstance(e, UserInputRequestedEvent)]
-        assert len(uir_events) >= 2, "Expected two UserInputRequestedEvents on the bus"
-        assert uir_events[0].question == "Plan: T1=Write hello.py. Any questions before I proceed?"
+        assert len(uir_events) >= 3, "Expected three parks (one per ended turn) on the bus"
+        assert all(e.question == "" for e in uir_events), (
+            "P3: the park signal must not carry a question payload"
+        )
 
         # No workers should have started before the approval was recorded.
         assert worker_started_before_approval == [], (
             f"Workers started before the recorded approval: {worker_started_before_approval}"
         )
 
-        # Run should complete successfully.
-        assert "run_completed" in event_types, f"Expected run_completed, got: {event_types}"
+        # A conversation run never emits run_completed.
+        assert "run_completed" not in event_types, (
+            "Conversation runs must not emit run_completed (P3 principle 2)"
+        )
 
         # Workers should have run after approval.
         assert "worker_started" in event_types
         assert "worker_completed" in event_types
         assert "eval_result" in event_types
 
-    async def test_stop_during_awaiting_input_sets_idle(
+    async def test_stop_while_waiting_keeps_waiting(
         self, git_repo: Path, tmp_path: Path
     ) -> None:
-        """Stopping the run while in awaiting_input sets state to idle (not error).
+        """Stopping the run while parked in waiting settles as waiting (not error).
 
-        This verifies that stop() during awaiting_input terminates cleanly
-        via CancelledError, consistent with the existing stop-path.
+        This verifies that stop() while waiting terminates cleanly via
+        CancelledError and the state stays ``waiting`` — the conversation is
+        intact and resumes as a continuation on the next message.
         """
         from unittest.mock import patch
 
@@ -689,11 +675,7 @@ class TestAskUserGateE2E:
                     "repo": git_repo.name,
                 },
             ),
-            ToolUseTurn(
-                tool_name="ask_user",
-                tool_input={"question": "Ready to proceed?"},
-            ),
-            TextTurn("Waiting."),
+            TextTurn("Ready to proceed? Reply to continue."),
         ]
 
         def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
@@ -721,7 +703,7 @@ class TestAskUserGateE2E:
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
             run_task = asyncio.create_task(orch.start(root, project_id, epic_id, run_id))
 
-            # Wait for the run to reach awaiting_input.
+            # Wait for the run to park in waiting.
             await asyncio.wait_for(approval_requested.wait(), timeout=10.0)
 
             # Stop the run. Real supervisor.stop() sets _stopped=True before the
@@ -733,22 +715,23 @@ class TestAskUserGateE2E:
 
         await asyncio.wait_for(collector, timeout=5.0)
 
-        # State should be idle (not error) after user-initiated stop.
+        # State stays waiting (not error) after a user-initiated stop.
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "idle", (
-            f"Expected idle after stop during awaiting_input, got {state.status!r}"
+        assert state.status == "waiting", (
+            f"Expected waiting after stop while parked, got {state.status!r}"
         )
 
         # RunStoppedEvent should be published.
         stopped_events = [e for e in events_received if getattr(e, "type", None) == "run_stopped"]
-        assert stopped_events, "Expected RunStoppedEvent after stop during awaiting_input"
+        assert stopped_events, "Expected RunStoppedEvent after stop while waiting"
 
-    async def test_dispatch_not_called_before_ask_user(
+    async def test_dispatch_not_called_before_park(
         self, git_repo: Path, tmp_path: Path
     ) -> None:
-        """Simpler check: if Manager calls ask_user on Turn 0 and does NOT dispatch,
-        no WorkerStartedEvent appears before UserInputRequestedEvent.
+        """Simpler check: if the Manager plans on Turn 0 and ends its turn
+        without dispatching, no WorkerStartedEvent appears before the park
+        (UserInputRequestedEvent).
         """
         from unittest.mock import patch
 
@@ -765,7 +748,8 @@ class TestAskUserGateE2E:
 
         await _bootstrap(root, project_id, epic_id, git_repo)
 
-        # Manager only plans and asks — never dispatches (stop comes from task cancel).
+        # Manager only plans and asks in the body — never dispatches
+        # (stop comes from task cancel).
         manager_script = [
             ToolUseTurn(
                 tool_name="task_update",
@@ -776,13 +760,8 @@ class TestAskUserGateE2E:
                     "repo": git_repo.name,
                 },
             ),
-            ToolUseTurn(
-                tool_name="ask_user",
-                tool_input={"question": "Before I start: is this the right approach?"},
-            ),
-            TextTurn("Awaiting approval."),
-            # If loop continues (it shouldn't without user input):
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
+            TextTurn("Before I start: is this the right approach?"),
+            # If the loop somehow continued without user input:
             TextTurn("Done."),
         ]
 
@@ -842,19 +821,18 @@ class TestAskUserGateE2E:
 
 
 # ---------------------------------------------------------------------------
-# Recovery: awaiting_input reconciled to error on restart
+# Recovery: waiting runs are preserved on restart (legacy files read as waiting)
 # ---------------------------------------------------------------------------
 
 
-class TestAwaitingInputRecovery:
-    async def test_awaiting_input_preserved_on_recovery(self, tmp_path: Path) -> None:
-        """A run in awaiting_input at process death must be preserved (not interrupted).
+class TestWaitingRecovery:
+    async def test_waiting_preserved_on_recovery(self, tmp_path: Path) -> None:
+        """A run parked in waiting at process death must be preserved as-is.
 
-        The Manager is parked waiting for a human reply — it has no in-flight async
-        work.  After restart, the user's reply triggers start_or_inject →
-        start_continuation, which resumes cleanly from the preserved Strands session
-        and state.yaml (including pending_question).  Forcing awaiting_input →
-        interrupted would break that resumption path and lose the question bubble.
+        The agent ended its turn — there is no in-flight async work.  After
+        restart, the user's message triggers start_or_inject →
+        start_continuation, which resumes cleanly from the preserved Strands
+        session and state.yaml.
         """
         from yukar.models.epic import Epic
         from yukar.models.project import Project
@@ -871,23 +849,68 @@ class TestAwaitingInputRecovery:
         await save_project(root, Project(id=project_id, name=project_id))
         await save_epic(root, project_id, Epic(id=epic_id, slug="ep-ai", title="Ep AI"))
 
-        state = RunState(
-            run_id="run-stuck",
-            status="awaiting_input",
-            pending_question="Shall I proceed?",
-        )
+        state = RunState(run_id="run-stuck", status="waiting")
         await state_repo.save_state(root, project_id, epic_id, state)
 
-        # awaiting_input is not counted (it is not modified).
+        # waiting is not counted (it is not modified).
         count = await recover_interrupted_runs(root)
         assert count == 0
 
         reconciled = await state_repo.get_state(root, project_id, epic_id)
         assert reconciled is not None
-        # Must remain awaiting_input — NOT interrupted.
-        assert reconciled.status == "awaiting_input"
-        # pending_question must survive so the UI can restore the question bubble.
-        assert reconciled.pending_question == "Shall I proceed?"
+        # Must remain waiting.
+        assert reconciled.status == "waiting"
+
+    async def test_legacy_awaiting_input_file_reads_as_waiting(self, tmp_path: Path) -> None:
+        """Old state.yaml files (awaiting_input + pending_question) load as waiting.
+
+        The BeforeValidator coerces legacy statuses and pydantic ignores the
+        removed pending_question key, so pre-P3 workspaces stay loadable.
+        """
+        from yukar.config import paths
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project
+        from yukar.runs.recovery import recover_interrupted_runs
+        from yukar.storage import state_repo
+        from yukar.storage.epic_repo import save_epic
+        from yukar.storage.project_repo import save_project
+
+        root = str(tmp_path / "ws")
+        project_id = "proj"
+        epic_id = "EP-legacy"
+
+        await save_project(root, Project(id=project_id, name=project_id))
+        await save_epic(root, project_id, Epic(id=epic_id, slug="ep-l", title="Ep L"))
+
+        # Write a pre-P3 state.yaml verbatim (no model round-trip).
+        yaml_path = paths.state_yaml(root, project_id, epic_id)
+        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        yaml_path.write_text(
+            "run_id: run-legacy\n"
+            "status: awaiting_input\n"
+            "pending_question: 'Shall I proceed?'\n",
+            encoding="utf-8",
+        )
+
+        loaded = await state_repo.get_state(root, project_id, epic_id)
+        assert loaded is not None
+        assert loaded.status == "waiting"
+        assert not hasattr(loaded, "pending_question")
+
+        # Recovery treats it like any waiting run: preserved, not counted.
+        count = await recover_interrupted_runs(root)
+        assert count == 0
+
+    async def test_legacy_idle_and_interrupted_read_as_waiting(self) -> None:
+        """idle / interrupted (legacy) coerce to waiting; new values pass through."""
+        from yukar.models.run import RunState
+
+        for legacy in ("idle", "awaiting_input", "interrupted"):
+            st = RunState.model_validate({"run_id": "r", "status": legacy})
+            assert st.status == "waiting", f"{legacy} must read back as waiting"
+        for current in ("running", "paused", "waiting", "error", "completed"):
+            st = RunState.model_validate({"run_id": "r", "status": current})
+            assert st.status == current
 
 
 # ---------------------------------------------------------------------------
@@ -1175,14 +1198,15 @@ class TestSingleWriterUserMessages:
         """Continuation turn-0 with a seed: FSM records the seed as the sole user
         message without any planning boilerplate.
 
-        Verifies via real _run_loop (fake provider, complete_epic on turn 0) rather
-        than re-implementing the branch logic — so a regression in _run_loop is caught.
+        Verifies via real _run_loop (fake provider; the text turn parks the run
+        in waiting, then stop() releases it) rather than re-implementing the
+        branch logic — so a regression in _run_loop is caught.
         """
         from unittest.mock import patch
 
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
+        from yukar.llm.fake import FakeModel, TextTurn
         from yukar.storage import session_store
 
         root = str(tmp_path / "ws")
@@ -1195,11 +1219,8 @@ class TestSingleWriterUserMessages:
 
         seed = "can you add a /metrics endpoint?"
 
-        # complete_epic on turn-0: a tool-less text reply to the human seed
-        # would park the run in awaiting_input under turn-end semantics.
         manager_script = [
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("Done."),
+            TextTurn("Understood — I'll plan the /metrics endpoint."),
         ]
 
         def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
@@ -1214,10 +1235,17 @@ class TestSingleWriterUserMessages:
         )
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            await asyncio.wait_for(
-                orch.start(root, project_id, epic_id, run_id),
-                timeout=15.0,
-            )
+            run_task = asyncio.create_task(orch.start(root, project_id, epic_id, run_id))
+            # The turn ends → the run parks in waiting; release it with stop().
+            for _ in range(200):
+                if orch.is_parked:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                run_task.cancel()
+                pytest.fail("continuation run never parked in waiting")
+            await orch.stop()
+            await asyncio.wait_for(run_task, timeout=15.0)
 
         messages = session_store.list_messages(root, project_id, epic_id, "manager")
         user_msgs = [m for m in messages if m.message.role == "user"]

@@ -183,9 +183,10 @@ export function EpicShell({
           </div>
         )}
 
-        {/* awaiting approval: cyan dot + concise text (datum language) */}
-        {/* determined by runStatus: show banner even while awaitingInput is null (waiting for SSE replay) */}
-        {!runFailed && activityState.runStatus === "awaiting_input" && (
+        {/* your turn: cyan dot + concise text (datum language). Shown only when a
+            run actually parked (awaitingInput marker) — a never-run epic is
+            "waiting" too but carries no marker, so no banner. */}
+        {!runFailed && activityState.awaitingInput != null && (
           <div
             className="shrink-0 flex items-center gap-2 px-6 py-2"
             style={{

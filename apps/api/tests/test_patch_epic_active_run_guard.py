@@ -1,9 +1,11 @@
-"""PATCH /epics/{epic_id} active-run guard for the user's "completed" toggle.
+"""PATCH /epics/{epic_id} run-slot guard for the user's "completed" toggle.
 
 Completing an epic (the single user-owned finish action) must not race an
-in-flight run: PATCH {status: "completed"} returns 409 while a run is active
-and leaves epic.yaml untouched.  Reopening ({status: "open"}) and non-status
-edits (title etc.) need no guard.
+EXECUTING turn: PATCH {status: "completed"} returns 409 while a turn is
+executing (``is_executing``) and leaves epic.yaml untouched.  A live run
+merely parked in ``waiting`` does NOT hold the slot: it is shelved (task
+cancelled, state.yaml stays waiting) and the PATCH proceeds.  Reopening
+({status: "open"}) and non-status edits (title etc.) need no guard.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ def _inject_fake_active_run(
     fake_task: asyncio.Task[None] = asyncio.create_task(_never())
     sv._runs[(project_id, epic_id)] = _RunHandle(
         run_id="run-fake",
-        runner=MagicMock(),
+        runner=MagicMock(is_parked=False),  # executing (not parked)
         task=fake_task,
         root=root,
         project_id=project_id,
@@ -104,7 +106,7 @@ class TestPatchCompletedRejectedWhileRunActive:
                 json={"status": "completed"},
             )
             assert resp.status_code == 409
-            assert "run is active" in resp.json()["detail"].lower()
+            assert "run is executing" in resp.json()["detail"].lower()
         finally:
             await _cleanup_fake_run(fake_task, pid, eid)
 
@@ -129,6 +131,65 @@ class TestPatchCompletedRejectedWhileRunActive:
             assert loaded.status == "open"
         finally:
             await _cleanup_fake_run(fake_task, pid, eid)
+
+
+# ---------------------------------------------------------------------------
+# Shelve: a live run parked in waiting yields the slot to the PATCH
+# ---------------------------------------------------------------------------
+
+
+class TestPatchCompletedShelvesParkedRun:
+    async def test_patch_completed_shelves_parked_run_and_succeeds(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        """A live run parked in ``waiting`` does not block the completed
+        toggle: it is shelved (task cancelled WITHOUT the stop flag, persisted
+        state untouched) and the PATCH is applied."""
+        from unittest.mock import MagicMock
+
+        from yukar.models.run import RunState
+        from yukar.runs.supervisor import _RunHandle, get_supervisor
+        from yukar.storage import state_repo
+
+        root = str(tmp_workspace)
+        pid, eid = "proj", "EP-parked"
+        await _write_project_epic(root, pid, eid)
+        await state_repo.save_state(root, pid, eid, RunState(run_id="run-parked", status="waiting"))
+
+        sv = get_supervisor()
+
+        async def _never() -> None:
+            await asyncio.sleep(9999)
+
+        task: asyncio.Task[None] = asyncio.create_task(_never())
+        runner = MagicMock(is_parked=True)  # parked in waiting
+        sv._runs[(pid, eid)] = _RunHandle(
+            run_id="run-parked", runner=runner, task=task, root=root, project_id=pid, epic_id=eid
+        )
+        try:
+            resp = await app_client.patch(
+                f"/api/projects/{pid}/epics/{eid}",
+                json={"status": "completed"},
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["status"] == "completed"
+
+            # The parked run was shelved: task cancelled, slot free.
+            assert task.cancelled() or task.done()
+            assert not sv.is_running(pid, eid)
+            # Shelving is not a stop: the runner's stop flag path is not used.
+            runner.stop.assert_not_called()
+
+            # The conversation state is preserved (waiting) for a later reopen.
+            state = await state_repo.get_state(root, pid, eid)
+            assert state is not None
+            assert state.status == "waiting"
+        finally:
+            sv._runs.pop((pid, eid), None)
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await task
 
 
 # ---------------------------------------------------------------------------

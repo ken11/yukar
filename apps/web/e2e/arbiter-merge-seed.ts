@@ -2,16 +2,17 @@
  * Seed constants and Fake script dedicated to the Arbiter merge (bulk Epic merge) scenario.
  *
  * Scenario:
- *   - Create 2 Epics in 1 project and run each to completion with a Fake run.
+ *   - Create 2 Epics in 1 project and run each until its work is done with a
+ *     Fake run (the run parks in "waiting" with all tasks done — P3).
  *   - Each Epic's Worker writes to a separate file (epic1.py / epic2.py) to
  *     ensure no merge conflict can occur.
  *     (Same file would also be conflict-free because worktrees are separate,
  *      but separate files are chosen to make the test intent explicit.)
- *   - After runs complete, select both from the Epics board → Merge Selected → MergeProgressPanel
- *     shows SSE progress and both become "merged".
+ *   - After the work is done, select both from the Epics board → Merge Selected →
+ *     MergeProgressPanel shows SSE progress and both carry the merge fact.
  *
  * Fake script (both Epics use the same YUKAR_FAKE_SCRIPT):
- *   Manager: task_update(T1) → dispatch(T1) → complete_epic → text
+ *   Manager: task_update(T1) → dispatch(T1) → report text (turn ends → waiting)
  *   Worker (per_call):
  *     per_call[0] = 1st Epic run → writes epic1.py
  *     per_call[1] = 2nd Epic run → writes epic2.py
@@ -57,13 +58,8 @@ export const ARBITER_MERGE_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    // (2) complete_epic — T1=done so ok:true
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
-    },
-    { type: "text", text: "Epic complete." },
+    // (2) T1=done → report and end the turn (the run parks in "waiting")
+    { type: "text", text: "Epic work is done." },
   ],
   // per_call format: 1st run writes epic1.py, 2nd run writes epic2.py
   // This ensures the 2 Epics each commit a different file

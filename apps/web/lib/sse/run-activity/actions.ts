@@ -24,10 +24,11 @@ export type RunActivityAction =
   // Run lifecycle
   | { type: "RUN_PREPARING" }
   | { type: "RUN_STARTED" }
+  // RUN_COMPLETED is emitted by JOB runs only (resolve / arbiter) — a
+  // conversation run never completes (it parks via USER_INPUT_REQUESTED).
   | { type: "RUN_COMPLETED" }
   | { type: "RUN_FAILED"; error?: string }
   | { type: "RUN_STOPPED" }
-  | { type: "RUN_INTERRUPTED" }
   | { type: "RUN_PAUSED" }
   | { type: "RUN_RESUMED" }
   | { type: "PAUSE_EFFECTIVE" }
@@ -47,8 +48,10 @@ export type RunActivityAction =
   | { type: "TOOL_RESULT"; threadId: string; event: ToolResultEvent }
   // Worker failure
   | { type: "WORKER_FAILED"; event: WorkerFailedEvent }
-  // Approval gate
-  | { type: "USER_INPUT_REQUESTED"; threadId: string; question: string }
+  // Your-turn signals (P3): REQUESTED = the run parked in "waiting",
+  // RESOLVED = the user's reply woke it. No question payload — the question is
+  // the agent's final message in the thread.
+  | { type: "USER_INPUT_REQUESTED"; threadId: string }
   | { type: "USER_INPUT_RESOLVED"; threadId: string }
   // Clears the live buffer for the specified thread when REST authoritative data arrives, preventing double rendering (Bug4)
   | { type: "CLEAR_LIVE_BUFFER"; threadId: string }

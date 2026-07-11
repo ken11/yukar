@@ -2,14 +2,15 @@
  * P1 E2E: Diff conflict → Resolve with Agent → Fake resolves → merge succeeds
  *
  * Scenario:
- *   1. Create project → Create Epic → run → completed
+ *   1. Create project → Create Epic → run → work done (waiting + tasks done)
  *      (Worker per_call[0]: writes conflict.txt with "EPIC" version; Evaluator accepts; host commits)
  *   2. Inside the spec, commit a "MAIN" version of conflict.txt to main
  *      (epic branch and main diverge at line2 → merge conflict)
  *   3. diff page (epic ⇔ default mode) → Merge to default → 409 conflict
  *   4. Resolve with Agent button → POST /git/resolve → resolve run starts
  *      (Worker per_call[1]: writes conflict.txt with "RESOLVED" version, git_add → git_commit)
- *   5. Poll the API until the resolve run reaches completed
+ *   5. Poll the API until the resolve run reaches completed (a resolve run is
+ *      a JOB run — "completed" remains its terminal state under P3)
  *   6. Merge to default again → 200 + merge SHA (no conflict because already resolved)
  *   7. Verify via git that default(main) contains the resolved content (RESOLVED, no markers)
  *
@@ -27,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { CONFLICT_RESOLVE_SEED } from "./conflict-resolve-seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 test.describe
   .serial("conflict resolve — Fake resolves and merge succeeds", () => {
@@ -35,25 +37,6 @@ test.describe
       epicId: "",
       epicBranch: "",
     };
-
-    // ---- Helper: wait for run/state status via API polling ----
-    async function waitForRunStatus(
-      page: import("@playwright/test").Page,
-      expectedStatus: string,
-      timeoutMs = 120_000,
-    ): Promise<void> {
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: timeoutMs, intervals: [500, 1000, 2000] },
-        )
-        .toBe(expectedStatus);
-    }
 
     // ---- Helper: wait for the merge fact (epic.merged_at) via API polling ----
     async function waitForMergedFact(
@@ -93,7 +76,7 @@ test.describe
     });
 
     // -----------------------------------------------------------------------
-    test("2. create Epic, run it and wait until completed", async ({ page }) => {
+    test("2. create Epic, run it and wait until the work is done", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
 
       await page.goto(`/projects/${state.projectId}`);
@@ -118,9 +101,9 @@ test.describe
       await startBtn.click();
       await expect(page).toHaveURL(/\/threads\//, { timeout: 15_000 });
 
-      // Wait until completed (per_call[0]: writes conflict.txt with EPIC version)
-      await waitForRunStatus(page, "completed");
-      console.log("[conflict-resolve] Epic run completed");
+      // Standard work-done wait (per_call[0]: writes conflict.txt with EPIC version)
+      await waitForWorkDone(page, state.projectId, state.epicId, { timeout: 120_000 });
+      console.log("[conflict-resolve] Epic work done");
 
       // Retrieve epic branch name (used to verify the resolve run)
       const epicRes = await page.request.get(

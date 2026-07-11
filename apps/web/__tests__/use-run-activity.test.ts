@@ -96,7 +96,7 @@ function makeThreadEntry(
 
 function applyActions(actions: RunActivityAction[]): RunActivityState {
   const initialState: RunActivityState = {
-    runStatus: "idle",
+    runStatus: "waiting",
     pausePending: false,
     runError: null,
     awaitingInput: null,
@@ -608,7 +608,7 @@ describe("RESET", () => {
 
     state = runActivityReducer(state, { type: "RESET" });
     expect(state.treeState.manager).toBeNull();
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
     expect(state.pausePending).toBe(false);
     expect(state.liveBuffers).toEqual({});
   });
@@ -1241,8 +1241,8 @@ describe("runActivityReducer — INIT tree construction", () => {
 // 18. RUN_STOPPED reducer (regression test)
 // ============================================================
 
-describe("RUN_STOPPED — reducer: returns to idle and streaming nodes are finalized", () => {
-  it("runStatus becomes idle and pausePending is cleared", () => {
+describe("RUN_STOPPED — reducer: settles into waiting and streaming nodes are finalized", () => {
+  it("runStatus becomes waiting and pausePending is cleared", () => {
     const threads = [makeThreadEntry({ id: "mgr", role: "manager" })];
     const state = applyActions([
       { type: "INIT", threads },
@@ -1250,7 +1250,7 @@ describe("RUN_STOPPED — reducer: returns to idle and streaming nodes are final
       { type: "SET_PAUSE_PENDING", value: true },
       { type: "RUN_STOPPED" },
     ]);
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
     expect(state.pausePending).toBe(false);
   });
 
@@ -1272,7 +1272,7 @@ describe("RUN_STOPPED — reducer: returns to idle and streaming nodes are final
 
     state = runActivityReducer(state, { type: "RUN_STOPPED" });
 
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
     expect(state.treeState.manager?.status).toBe("completed");
     expect(state.treeState.manager?.isStreaming).toBe(false);
   });
@@ -1297,7 +1297,7 @@ describe("RUN_STOPPED — reducer: returns to idle and streaming nodes are final
     state = runActivityReducer(state, { type: "TOKEN", threadId: "w1", delta: "partial output" });
     state = runActivityReducer(state, { type: "RUN_STOPPED" });
 
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
     expect(state.treeState.workers.w1.status).toBe("completed");
     expect(state.treeState.workers.w1.isStreaming).toBe(false);
   });
@@ -1339,7 +1339,7 @@ describe("RUN_STOPPED — reducer: returns to idle and streaming nodes are final
       { type: "RUN_STARTED" },
       { type: "RUN_STOPPED" },
     ]);
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
 
     state = runActivityReducer(state, { type: "RUN_STARTED" });
     expect(state.runStatus).toBe("running");
@@ -1382,8 +1382,8 @@ describe("toRunActivityAction — run_stopped → {type:'RUN_STOPPED'}", () => {
 // 20. applyRunCachePatch — run_stopped cache patch (regression test)
 // ============================================================
 
-describe("applyRunCachePatch — run_stopped: runState becomes idle + active_workers=[]", () => {
-  it("run_stopped makes runState cache become status:idle, active_workers:[]", () => {
+describe("applyRunCachePatch — run_stopped: runState becomes waiting + active_workers=[]", () => {
+  it("run_stopped makes runState cache become status:waiting, active_workers:[]", () => {
     seedRunState(
       makeRunState({
         status: "running",
@@ -1398,7 +1398,7 @@ describe("applyRunCachePatch — run_stopped: runState becomes idle + active_wor
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
 
     const cache = getRunStateCache();
-    expect(cache?.status).toBe("idle");
+    expect(cache?.status).toBe("waiting");
     expect(cache?.active_workers).toHaveLength(0);
   });
 
@@ -1418,8 +1418,8 @@ describe("applyRunCachePatch — run_stopped: runState becomes idle + active_wor
 // 21. useRunActivity hook integration — run_stopped SSE event (regression test)
 // ============================================================
 
-describe("useRunActivity — SSE: runState cache is patched to idle by run_stopped", () => {
-  it("runState.status becomes idle on a run_stopped SSE event", () => {
+describe("useRunActivity — SSE: runState cache is patched to waiting by run_stopped", () => {
+  it("runState.status becomes waiting on a run_stopped SSE event", () => {
     seedRunState(
       makeRunState({
         status: "running",
@@ -1440,11 +1440,11 @@ describe("useRunActivity — SSE: runState cache is patched to idle by run_stopp
       }),
     );
 
-    expect(getRunStateCache()?.status).toBe("idle");
+    expect(getRunStateCache()?.status).toBe("waiting");
     expect(getRunStateCache()?.active_workers).toHaveLength(0);
   });
 
-  it("after a run_stopped SSE event, reducer state's runStatus becomes idle", () => {
+  it("after a run_stopped SSE event, reducer state's runStatus becomes waiting", () => {
     seedRunState(makeRunState({ status: "running" }));
 
     const { result } = renderHook(
@@ -1465,7 +1465,7 @@ describe("useRunActivity — SSE: runState cache is patched to idle by run_stopp
       );
     });
 
-    expect(result.current.state.runStatus).toBe("idle");
+    expect(result.current.state.runStatus).toBe("waiting");
     expect(result.current.state.pausePending).toBe(false);
   });
 });
@@ -1474,66 +1474,27 @@ describe("useRunActivity — SSE: runState cache is patched to idle by run_stopp
 // 22. user_input_requested — approval gate
 // ============================================================
 
-describe("USER_INPUT_REQUESTED — awaiting-approval state transition", () => {
-  it("USER_INPUT_REQUESTED sets runStatus=awaiting_input and awaitingInput", () => {
+describe("USER_INPUT_REQUESTED — the run parks in waiting (your turn)", () => {
+  it("USER_INPUT_REQUESTED sets runStatus=waiting and the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Please review the plan" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
     ]);
-    expect(state.runStatus).toBe("awaiting_input");
-    expect(state.awaitingInput).toEqual({
-      threadId: "manager",
-      question: "Please review the plan",
-    });
+    expect(state.runStatus).toBe("waiting");
+    expect(state.awaitingInput).toEqual({ threadId: "manager" });
   });
 
-  it("an empty question (getRunState/restore) does not overwrite a real question already replayed via SSE", () => {
-    // order: SSE replay (real question) → getRunState (empty)
+  it("RUN_RESUMED clears the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Please approve the plan" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "" },
-    ]);
-    expect(state.runStatus).toBe("awaiting_input");
-    expect(state.awaitingInput).toEqual({
-      threadId: "manager",
-      question: "Please approve the plan",
-    });
-  });
-
-  it("even if an empty question arrives first, a real question arriving later overwrites it", () => {
-    // order: getRunState (empty) → SSE replay (real question)
-    const state = applyActions([
-      { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "The real question" },
-    ]);
-    expect(state.awaitingInput).toEqual({ threadId: "manager", question: "The real question" });
-  });
-
-  it("an empty question does not set awaitingInput — only sets runStatus to awaiting_input", () => {
-    // Fix: a dispatch with question="" does not set awaitingInput (remains null).
-    // The banner is controlled by runStatus; the bubble is shown only after the real question arrives via SSE replay.
-    // This prevents the bubble from rendering in the intermediate state where question="".
-    const state = applyActions([
-      { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "" },
-    ]);
-    expect(state.runStatus).toBe("awaiting_input");
-    expect(state.awaitingInput).toBeNull();
-  });
-
-  it("RUN_RESUMED clears awaitingInput", () => {
-    const state = applyActions([
-      { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Please confirm" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "RUN_RESUMED" },
     ]);
     expect(state.runStatus).toBe("running");
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("MANAGER_TURN_STARTED clears awaitingInput and returns runStatus to running", () => {
+  it("MANAGER_TURN_STARTED clears the parked marker and returns runStatus to running", () => {
     const threads = [makeThreadEntry({ id: "manager", role: "manager" })];
     const turnEv: ManagerTurnStartedEvent = {
       ...BASE_EVENT,
@@ -1543,97 +1504,82 @@ describe("USER_INPUT_REQUESTED — awaiting-approval state transition", () => {
     const state = applyActions([
       { type: "INIT", threads },
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Awaiting answer" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "MANAGER_TURN_STARTED", event: turnEv },
     ]);
     expect(state.runStatus).toBe("running");
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("RUN_COMPLETED clears awaitingInput", () => {
+  it("RUN_COMPLETED (job run) clears the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "q" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "RUN_COMPLETED" },
     ]);
     expect(state.runStatus).toBe("completed");
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("RUN_FAILED clears awaitingInput", () => {
+  it("RUN_FAILED clears the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "q" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "RUN_FAILED", error: "boom" },
     ]);
     expect(state.runStatus).toBe("error");
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("a delayed USER_INPUT_REQUESTED after terminal(completed) does not roll back to awaiting", () => {
+  it("a delayed USER_INPUT_REQUESTED after terminal(completed) does not roll back to waiting", () => {
     // Race between REST (getRunState) and SSE: do not revive terminal state when
-    // a delayed awaiting snapshot (with question) arrives after run_completed.
+    // a delayed parked snapshot arrives after run_completed (job run).
     const state = applyActions([
       { type: "RUN_STARTED" },
       { type: "RUN_COMPLETED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Old question" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
     ]);
     expect(state.runStatus).toBe("completed");
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("a delayed USER_INPUT_REQUESTED after terminal(error) does not roll back to awaiting", () => {
+  it("a delayed USER_INPUT_REQUESTED after terminal(error) does not roll back to waiting", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
       { type: "RUN_FAILED", error: "boom" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Old question" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
     ]);
     expect(state.runStatus).toBe("error");
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("a delayed USER_INPUT_REQUESTED after terminal(interrupted) does not roll back to awaiting", () => {
-    const state = applyActions([
-      { type: "RUN_STARTED" },
-      { type: "RUN_INTERRUPTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Old question" },
-    ]);
-    expect(state.runStatus).toBe("interrupted");
-    expect(state.awaitingInput).toBeNull();
+  it("from the initial waiting default (reload restore), USER_INPUT_REQUESTED sets the parked marker", () => {
+    // initialState.runStatus is "waiting" (never-run default). The terminal guard
+    // must not include waiting, or REST restore of a parked run would break.
+    const state = applyActions([{ type: "USER_INPUT_REQUESTED", threadId: "manager" }]);
+    expect(state.runStatus).toBe("waiting");
+    expect(state.awaitingInput).toEqual({ threadId: "manager" });
   });
 
-  it("from idle (the starting point for initial/reload restore), USER_INPUT_REQUESTED can enter awaiting", () => {
-    // initialState.runStatus is "idle". If the terminal guard included idle, it would break
-    // REST (pending_question) restore, so idle must be excluded.
-    const state = applyActions([
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Reload-restore question" },
-    ]);
-    expect(state.runStatus).toBe("awaiting_input");
-    expect(state.awaitingInput).toEqual({
-      threadId: "manager",
-      question: "Reload-restore question",
-    });
-  });
-
-  it("RUN_STOPPED clears awaitingInput", () => {
+  it("RUN_STOPPED clears the parked marker and stays waiting", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "q" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "RUN_STOPPED" },
     ]);
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("RESET returns awaitingInput to null", () => {
+  it("RESET returns the parked marker to null", () => {
     let state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "q" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
     ]);
     expect(state.awaitingInput).not.toBeNull();
     state = runActivityReducer(state, { type: "RESET" });
     expect(state.awaitingInput).toBeNull();
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
   });
 });
 
@@ -1642,7 +1588,21 @@ describe("USER_INPUT_REQUESTED — awaiting-approval state transition", () => {
 // ============================================================
 
 describe("toRunActivityAction — user_input_requested → USER_INPUT_REQUESTED", () => {
-  it("user_input_requested event is converted to a USER_INPUT_REQUESTED action", () => {
+  it("user_input_requested event is converted to a USER_INPUT_REQUESTED action (question dropped)", () => {
+    const event: UserInputRequestedEvent = {
+      ...BASE_EVENT,
+      type: "user_input_requested",
+      thread_id: "manager",
+      question: "",
+    };
+    const action = toRunActivityAction(event);
+    expect(action).toEqual({
+      type: "USER_INPUT_REQUESTED",
+      threadId: "manager",
+    });
+  });
+
+  it("a legacy replayed event with a non-empty question still maps to the plain your-turn action", () => {
     const event: UserInputRequestedEvent = {
       ...BASE_EVENT,
       type: "user_input_requested",
@@ -1653,7 +1613,6 @@ describe("toRunActivityAction — user_input_requested → USER_INPUT_REQUESTED"
     expect(action).toEqual({
       type: "USER_INPUT_REQUESTED",
       threadId: "manager",
-      question: "Do you approve the plan?",
     });
   });
 });
@@ -1662,51 +1621,9 @@ describe("toRunActivityAction — user_input_requested → USER_INPUT_REQUESTED"
 // 24. applyRunCachePatch — user_input_requested cache patch
 // ============================================================
 
-describe("applyRunCachePatch — user_input_requested: runState becomes awaiting_input", () => {
-  it("runState cache becomes awaiting_input on user_input_requested", () => {
+describe("applyRunCachePatch — user_input_requested: runState becomes waiting", () => {
+  it("runState cache becomes waiting on user_input_requested", () => {
     seedRunState(makeRunState({ status: "running" }));
-
-    const event: UserInputRequestedEvent = {
-      ...BASE_EVENT,
-      type: "user_input_requested",
-      thread_id: "manager",
-      question: "Please approve",
-    };
-    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
-
-    expect(getRunStateCache()?.status).toBe("awaiting_input");
-  });
-
-  it("user_input_requested is a no-op when runState cache is empty", () => {
-    const event: UserInputRequestedEvent = {
-      ...BASE_EVENT,
-      type: "user_input_requested",
-      thread_id: "manager",
-      question: "q",
-    };
-    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
-    expect(getRunStateCache()).toBeUndefined();
-  });
-
-  it("syncs pending_question with the event question", () => {
-    seedRunState(makeRunState({ status: "running" }));
-
-    const event: UserInputRequestedEvent = {
-      ...BASE_EVENT,
-      type: "user_input_requested",
-      thread_id: "manager",
-      question: "Please approve",
-    };
-    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
-
-    expect(getRunStateCache()?.pending_question).toBe("Please approve");
-  });
-
-  it("question-less park (question='') clears a stale cached pending_question", () => {
-    // Scenario: ask_user("Q") answered, then a conversational park re-enters
-    // awaiting_input with no question. The cache must not resurrect "Q" as the
-    // current question bubble on remount.
-    seedRunState(makeRunState({ status: "running", pending_question: "Q" }));
 
     const event: UserInputRequestedEvent = {
       ...BASE_EVENT,
@@ -1716,12 +1633,22 @@ describe("applyRunCachePatch — user_input_requested: runState becomes awaiting
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
 
-    expect(getRunStateCache()?.status).toBe("awaiting_input");
-    expect(getRunStateCache()?.pending_question).toBeNull();
+    expect(getRunStateCache()?.status).toBe("waiting");
   });
 
-  it("user_input_resolved clears pending_question along with awaiting status", () => {
-    seedRunState(makeRunState({ status: "awaiting_input", pending_question: "Q" }));
+  it("user_input_requested is a no-op when runState cache is empty", () => {
+    const event: UserInputRequestedEvent = {
+      ...BASE_EVENT,
+      type: "user_input_requested",
+      thread_id: "manager",
+      question: "",
+    };
+    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
+    expect(getRunStateCache()).toBeUndefined();
+  });
+
+  it("user_input_resolved returns a waiting cache to running", () => {
+    seedRunState(makeRunState({ status: "waiting" }));
 
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, {
       ...BASE_EVENT,
@@ -1730,7 +1657,6 @@ describe("applyRunCachePatch — user_input_requested: runState becomes awaiting
     });
 
     expect(getRunStateCache()?.status).toBe("running");
-    expect(getRunStateCache()?.pending_question).toBeNull();
   });
 });
 
@@ -1738,8 +1664,8 @@ describe("applyRunCachePatch — user_input_requested: runState becomes awaiting
 // 25. useRunActivity hook — user_input_requested SSE event
 // ============================================================
 
-describe("useRunActivity — SSE: transitions to awaiting_input on user_input_requested", () => {
-  it("runStatus becomes awaiting_input on a user_input_requested SSE event", () => {
+describe("useRunActivity — SSE: transitions to waiting on user_input_requested", () => {
+  it("runStatus becomes waiting (with the parked marker) on a user_input_requested SSE event", () => {
     seedRunState(makeRunState({ status: "running" }));
 
     const { result } = renderHook(
@@ -1757,16 +1683,13 @@ describe("useRunActivity — SSE: transitions to awaiting_input on user_input_re
           epic_id: EPIC_ID,
           run_id: "run-1",
           thread_id: "manager",
-          question: "Please approve the plan",
+          question: "",
         }),
       );
     });
 
-    expect(result.current.state.runStatus).toBe("awaiting_input");
-    expect(result.current.state.awaitingInput).toEqual({
-      threadId: "manager",
-      question: "Please approve the plan",
-    });
+    expect(result.current.state.runStatus).toBe("waiting");
+    expect(result.current.state.awaitingInput).toEqual({ threadId: "manager" });
   });
 });
 
@@ -1895,18 +1818,18 @@ describe("CLEAR_LIVE_BUFFER — Bug4: clear the live buffer when the REST canoni
 // 27. USER_INPUT_RESOLVED — Bug3 fix for status lingering after approval
 // ============================================================
 
-describe("USER_INPUT_RESOLVED — Bug3: awaiting_input does not linger on replay", () => {
+describe("USER_INPUT_RESOLVED — Bug3: waiting does not linger on replay", () => {
   it("USER_INPUT_REQUESTED → USER_INPUT_RESOLVED in order makes awaitingInput null", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Do you approve the plan?" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "USER_INPUT_RESOLVED", threadId: "manager" },
     ]);
     expect(state.awaitingInput).toBeNull();
     expect(state.runStatus).toBe("running");
   });
 
-  it("USER_INPUT_RESOLVED alone results in awaitingInput=null and runStatus=running", () => {
+  it("USER_INPUT_RESOLVED while running stays running (no parked marker to release)", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
       { type: "USER_INPUT_RESOLVED", threadId: "manager" },
@@ -1915,15 +1838,14 @@ describe("USER_INPUT_RESOLVED — Bug3: awaiting_input does not linger on replay
     expect(state.runStatus).toBe("running");
   });
 
-  it("replay scenario: final state is not awaiting_input when request→resolved arrive in order", () => {
+  it("replay scenario: final state is not waiting when request→resolved arrive in order", () => {
     // Simulating replay on SSE reconnect: request arrives first, then resolved
     let state = applyActions([{ type: "RUN_STARTED" }]);
     state = runActivityReducer(state, {
       type: "USER_INPUT_REQUESTED",
       threadId: "manager",
-      question: "Please approve",
     });
-    expect(state.runStatus).toBe("awaiting_input");
+    expect(state.runStatus).toBe("waiting");
     expect(state.awaitingInput).not.toBeNull();
 
     state = runActivityReducer(state, {
@@ -1949,7 +1871,7 @@ describe("toRunActivityAction — user_input_resolved → USER_INPUT_RESOLVED", 
 
 describe("applyRunCachePatch — user_input_resolved: runState returns to running", () => {
   it("runState cache becomes running on user_input_resolved", () => {
-    seedRunState(makeRunState({ status: "awaiting_input" }));
+    seedRunState(makeRunState({ status: "waiting" }));
 
     const event: UserInputResolvedEvent = {
       ...BASE_EVENT,
@@ -1972,9 +1894,9 @@ describe("applyRunCachePatch — user_input_resolved: runState returns to runnin
   });
 });
 
-describe("useRunActivity — SSE: awaiting_input is cleared by user_input_resolved", () => {
-  it("a user_input_resolved SSE event returns runStatus to running and makes awaitingInput null", () => {
-    seedRunState(makeRunState({ status: "awaiting_input" }));
+describe("useRunActivity — SSE: waiting is cleared by user_input_resolved", () => {
+  it("a user_input_resolved SSE event returns runStatus to running and clears the parked marker", () => {
+    seedRunState(makeRunState({ status: "waiting" }));
 
     const { result } = renderHook(
       () => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }),
@@ -1992,11 +1914,11 @@ describe("useRunActivity — SSE: awaiting_input is cleared by user_input_resolv
           epic_id: EPIC_ID,
           run_id: "run-1",
           thread_id: "manager",
-          question: "Please approve",
+          question: "",
         }),
       );
     });
-    expect(result.current.state.runStatus).toBe("awaiting_input");
+    expect(result.current.state.runStatus).toBe("waiting");
 
     // resolved releases it
     act(() => {
@@ -2039,11 +1961,11 @@ describe("CLEAR_LIVE_BUFFER — Bug4 guard: the done flag can be respected even 
 // 29. USER_INPUT_RESOLVED guard: does not overwrite terminal state
 // ============================================================
 
-describe("USER_INPUT_RESOLVED — does not overwrite terminal state with running", () => {
+describe("USER_INPUT_RESOLVED — does not overwrite terminal/stopped state with running", () => {
   it("USER_INPUT_RESOLVED arriving after completed leaves runStatus as completed", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Do you approve?" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "RUN_COMPLETED" }, // transition to terminal state
       { type: "USER_INPUT_RESOLVED", threadId: "manager" }, // delayed resolved
     ]);
@@ -2054,7 +1976,7 @@ describe("USER_INPUT_RESOLVED — does not overwrite terminal state with running
   it("USER_INPUT_RESOLVED arriving after failed leaves runStatus as error", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Do you approve?" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "RUN_FAILED", error: "some error" },
       { type: "USER_INPUT_RESOLVED", threadId: "manager" },
     ]);
@@ -2062,14 +1984,16 @@ describe("USER_INPUT_RESOLVED — does not overwrite terminal state with running
     expect(state.awaitingInput).toBeNull();
   });
 
-  it("USER_INPUT_RESOLVED arriving after stopped leaves runStatus as idle", () => {
+  it("USER_INPUT_RESOLVED arriving after stopped stays waiting (marker already cleared)", () => {
+    // RUN_STOPPED settles into waiting WITHOUT the parked marker; a delayed
+    // resolved replay must not fake "running" out of that resting state.
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "Do you approve?" },
+      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
       { type: "RUN_STOPPED" },
       { type: "USER_INPUT_RESOLVED", threadId: "manager" },
     ]);
-    expect(state.runStatus).toBe("idle");
+    expect(state.runStatus).toBe("waiting");
     expect(state.awaitingInput).toBeNull();
   });
 });
@@ -2086,8 +2010,8 @@ describe("applyRunCachePatch — user_input_resolved: does not overwrite termina
     expect(getRunStateCache()?.status).toBe("completed");
   });
 
-  it("in awaiting_input state, user_input_resolved returns to running (happy path)", () => {
-    seedRunState(makeRunState({ status: "awaiting_input" }));
+  it("in waiting state, user_input_resolved returns to running (happy path)", () => {
+    seedRunState(makeRunState({ status: "waiting" }));
     const event: UserInputResolvedEvent = {
       ...BASE_EVENT,
       type: "user_input_resolved",
@@ -2095,64 +2019,6 @@ describe("applyRunCachePatch — user_input_resolved: does not overwrite termina
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
     expect(getRunStateCache()?.status).toBe("running");
-  });
-});
-
-// ============================================================
-// 30. Wave3: RUN_INTERRUPTED lifecycle
-// ============================================================
-
-describe("Wave3: RUN_INTERRUPTED — interrupted status transition", () => {
-  it("RUN_INTERRUPTED makes runStatus become interrupted", () => {
-    const state = applyActions([{ type: "RUN_STARTED" }, { type: "RUN_INTERRUPTED" }]);
-    expect(state.runStatus).toBe("interrupted");
-  });
-
-  it("RUN_INTERRUPTED clears pausePending / awaitingInput", () => {
-    const state = applyActions([
-      { type: "RUN_STARTED" },
-      { type: "SET_PAUSE_PENDING", value: true },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager", question: "q" },
-      { type: "RUN_INTERRUPTED" },
-    ]);
-    expect(state.runStatus).toBe("interrupted");
-    expect(state.pausePending).toBe(false);
-    expect(state.awaitingInput).toBeNull();
-  });
-
-  it("RUN_INTERRUPTED finalizes streaming nodes", () => {
-    const threads = [makeThreadEntry({ id: "mgr", role: "manager" })];
-    const turnEv: ManagerTurnStartedEvent = {
-      ...BASE_EVENT,
-      type: "manager_turn_started",
-      turn: 0,
-    };
-    let state = applyActions([
-      { type: "INIT", threads },
-      { type: "RUN_STARTED" },
-      { type: "MANAGER_TURN_STARTED", event: turnEv },
-    ]);
-    expect(state.treeState.manager?.isStreaming).toBe(true);
-
-    state = runActivityReducer(state, { type: "RUN_INTERRUPTED" });
-
-    expect(state.runStatus).toBe("interrupted");
-    expect(state.treeState.manager?.status).toBe("completed");
-    expect(state.treeState.manager?.isStreaming).toBe(false);
-  });
-
-  it("RUN_STARTED after interrupted returns runStatus to running (resume flow)", () => {
-    let state = applyActions([{ type: "RUN_STARTED" }, { type: "RUN_INTERRUPTED" }]);
-    expect(state.runStatus).toBe("interrupted");
-
-    state = runActivityReducer(state, { type: "RUN_STARTED" });
-    expect(state.runStatus).toBe("running");
-  });
-
-  it("RESET resets interrupted state", () => {
-    let state = applyActions([{ type: "RUN_STARTED" }, { type: "RUN_INTERRUPTED" }]);
-    state = runActivityReducer(state, { type: "RESET" });
-    expect(state.runStatus).toBe("idle");
   });
 });
 
@@ -2511,27 +2377,24 @@ describe("useRunActivity — SSE: user_message_committed is immediately reflecte
 });
 
 // ============================================================
-// 33. Reload scenario integration test — awaiting_input bubble restore
+// 33. Reload scenario integration test — your-turn (waiting) restore
 // ============================================================
 //
-// Verification of fixed behavior:
-//   - When pending_question is non-empty: awaitingInput is set immediately on mount via REST alone
-//     → bubble restored instantly without depending on SSE replay (the essence of this improvement)
-//   - When pending_question is null/empty:
-//     - USER_INPUT_REQUESTED with question="" does not set awaitingInput (remains null)
-//     - only runStatus is confirmed as awaiting_input
-//     - awaitingInput is set only once SSE replay user_input_requested (with question) arrives
-//   - runtime.ts:257: bubble is rendered only when awaitingInput?.question is truthy
-//   - banner is controlled by runStatus === "awaiting_input" (shown even when awaitingInput=null)
+// P3 semantics:
+//   - A parked run persists status="waiting" with a real run_id. On reload the
+//     REST RunState alone restores the parked marker (awaitingInput) — the
+//     question needs no restore path because it is the agent's final message
+//     in the thread (fetched with the thread messages).
+//   - A never-run epic gets a synthesised RunState (run_id="") — it is also
+//     "waiting" (your turn) but carries NO parked marker, so no banner.
 //
 // ============================================================
 
-describe("Reload scenario — bubble is restored via initialRunState=awaiting_input + SSE replay", () => {
-  it("when pending_question is non-empty, bubble is restored immediately on mount without SSE (REST-independent restore)", () => {
-    // The core improvement: if RunState.pending_question is non-empty, awaitingInput can be set via REST alone.
+describe("Reload scenario — the parked marker is restored from REST waiting state", () => {
+  it("initialRunState waiting with a real run_id restores the parked marker on mount (no SSE needed)", () => {
     const initialRunState: RunState = makeRunState({
-      status: "awaiting_input",
-      pending_question: "Please approve the plan",
+      status: "waiting",
+      manager_thread: "manager",
     });
 
     const { result } = renderHook(
@@ -2544,22 +2407,31 @@ describe("Reload scenario — bubble is restored via initialRunState=awaiting_in
       { wrapper },
     );
 
-    // On mount: dispatchForRunStatus(runState) → USER_INPUT_REQUESTED { question: "Please approve the plan" }
-    // → reducer sets awaitingInput → bubble can be rendered without SSE replay
-    expect(result.current.state.runStatus).toBe("awaiting_input");
-    expect(result.current.state.awaitingInput).toEqual({
-      threadId: "manager",
-      question: "Please approve the plan",
-    });
-    // runtime.ts:257: awaitingInput?.question is truthy → bubble is rendered
-    expect(result.current.state.awaitingInput?.question).toBeTruthy();
+    expect(result.current.state.runStatus).toBe("waiting");
+    expect(result.current.state.awaitingInput).toEqual({ threadId: "manager" });
   });
 
-  it("when pending_question=null, awaitingInput=null on mount and only runStatus is confirmed (preserving legacy behavior)", () => {
-    // When pending_question is null, behavior is as before: supplemented later via SSE replay.
+  it("a synthesised never-run RunState (run_id='') stays waiting WITHOUT the parked marker", () => {
+    const initialRunState: RunState = makeRunState({ run_id: "", status: "waiting" });
+
+    const { result } = renderHook(
+      () =>
+        useRunActivity({
+          projectId: PROJECT_ID,
+          epicId: EPIC_ID,
+          initialRunState,
+        }),
+      { wrapper },
+    );
+
+    expect(result.current.state.runStatus).toBe("waiting");
+    expect(result.current.state.awaitingInput).toBeNull();
+  });
+
+  it("the parked marker is attributed to RunState.manager_thread when present", () => {
     const initialRunState: RunState = makeRunState({
-      status: "awaiting_input",
-      pending_question: null,
+      status: "waiting",
+      manager_thread: "trial-2",
     });
 
     const { result } = renderHook(
@@ -2572,194 +2444,29 @@ describe("Reload scenario — bubble is restored via initialRunState=awaiting_in
       { wrapper },
     );
 
-    // On mount: a dispatch with question="" keeps awaitingInput as null
-    expect(result.current.state.runStatus).toBe("awaiting_input");
-    expect(result.current.state.awaitingInput).toBeNull();
-
-    // SSE replay arrives: user_input_requested { question: "Please approve the plan" }
-    const es = MockEventSource.instances[0];
-    act(() => {
-      es.emit(
-        "user_input_requested",
-        JSON.stringify({
-          type: "user_input_requested",
-          project_id: PROJECT_ID,
-          epic_id: EPIC_ID,
-          run_id: "run-1",
-          thread_id: "manager",
-          question: "Please approve the plan",
-        }),
-      );
-    });
-
-    // After SSE arrives: awaitingInput.question is populated (condition for rendering the bubble)
-    expect(result.current.state.awaitingInput).toEqual({
-      threadId: "manager",
-      question: "Please approve the plan",
-    });
-    // runtime.ts:257: awaitingInput?.question is truthy → bubble is rendered
-    expect(result.current.state.awaitingInput?.question).toBeTruthy();
+    expect(result.current.state.awaitingInput).toEqual({ threadId: "trial-2" });
   });
 
-  it("when pending_question is absent (field omitted), awaitingInput=null on mount and only runStatus is confirmed", () => {
-    // When the pending_question field itself is omitted, treat it as equivalent to null.
-    const initialRunState: RunState = makeRunState({ status: "awaiting_input" });
-
-    const { result } = renderHook(
-      () =>
-        useRunActivity({
-          projectId: PROJECT_ID,
-          epicId: EPIC_ID,
-          initialRunState,
-        }),
-      { wrapper },
-    );
-
-    // On mount: a dispatch with question="" keeps awaitingInput as null
-    expect(result.current.state.runStatus).toBe("awaiting_input");
-    expect(result.current.state.awaitingInput).toBeNull();
-  });
-
-  it("bubble can also be restored without SSE when getRunState fetch returns pending_question", async () => {
-    // getRunState fetch returns with pending_question (actual behavior after reload)
+  it("the parked marker is also restored when the getRunState fetch returns waiting", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () =>
-          Promise.resolve(
-            makeRunState({ status: "awaiting_input", pending_question: "Please approve the plan" }),
-          ),
+        json: () => Promise.resolve(makeRunState({ status: "waiting", manager_thread: "manager" })),
       }),
     );
 
-    const initialRunState: RunState = makeRunState({ status: "awaiting_input" });
-
     const { result } = renderHook(
-      () =>
-        useRunActivity({
-          projectId: PROJECT_ID,
-          epicId: EPIC_ID,
-          initialRunState,
-        }),
+      () => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }),
       { wrapper },
     );
 
-    // Wait for the getRunState fetch to complete
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
-    // After fetch completes: awaitingInput is set with runState containing pending_question
-    expect(result.current.state.runStatus).toBe("awaiting_input");
-    expect(result.current.state.awaitingInput).toEqual({
-      threadId: "manager",
-      question: "Please approve the plan",
-    });
-    expect(result.current.state.awaitingInput?.question).toBeTruthy();
-  });
-
-  it("getRunState fetch (pending_question=null) arriving after an SSE replay (question set) does not overwrite the question", async () => {
-    // Make the getRunState fetch succeed (no pending_question)
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve(makeRunState({ status: "awaiting_input" })),
-      }),
-    );
-
-    const initialRunState: RunState = makeRunState({ status: "awaiting_input" });
-
-    const { result } = renderHook(
-      () =>
-        useRunActivity({
-          projectId: PROJECT_ID,
-          epicId: EPIC_ID,
-          initialRunState,
-        }),
-      { wrapper },
-    );
-
-    // SSE replay arrives first
-    const es = MockEventSource.instances[0];
-    act(() => {
-      es.emit(
-        "user_input_requested",
-        JSON.stringify({
-          type: "user_input_requested",
-          project_id: PROJECT_ID,
-          epic_id: EPIC_ID,
-          run_id: "run-1",
-          thread_id: "manager",
-          question: "Please approve the plan",
-        }),
-      );
-    });
-
-    expect(result.current.state.awaitingInput?.question).toBe("Please approve the plan");
-
-    // getRunState fetch completes later (dispatch with pending_question=null)
-    // question="" does not change awaitingInput → the real question is preserved
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-
-    // question should be preserved
-    expect(result.current.state.awaitingInput?.question).toBe("Please approve the plan");
-  });
-
-  it("getRunState fetch (pending_question=null) arriving before SSE replay still gets filled in later by the SSE", async () => {
-    // Make the getRunState fetch succeed (immediate resolve, no pending_question)
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve(makeRunState({ status: "awaiting_input" })),
-      }),
-    );
-
-    const initialRunState: RunState = makeRunState({ status: "awaiting_input" });
-
-    const { result } = renderHook(
-      () =>
-        useRunActivity({
-          projectId: PROJECT_ID,
-          epicId: EPIC_ID,
-          initialRunState,
-        }),
-      { wrapper },
-    );
-
-    // getRunState fetch completes first
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-
-    // question="" does not set awaitingInput → remains null
-    expect(result.current.state.runStatus).toBe("awaiting_input");
-    expect(result.current.state.awaitingInput).toBeNull();
-
-    // SSE replay arrives later
-    const es = MockEventSource.instances[0];
-    act(() => {
-      es.emit(
-        "user_input_requested",
-        JSON.stringify({
-          type: "user_input_requested",
-          project_id: PROJECT_ID,
-          epic_id: EPIC_ID,
-          run_id: "run-1",
-          thread_id: "manager",
-          question: "Please approve the plan",
-        }),
-      );
-    });
-
-    // After SSE arrives: question is filled in and the bubble can be rendered
-    expect(result.current.state.awaitingInput?.question).toBe("Please approve the plan");
-    // runtime.ts:257: truthy, so the bubble is rendered
-    expect(result.current.state.awaitingInput?.question).toBeTruthy();
+    expect(result.current.state.runStatus).toBe("waiting");
+    expect(result.current.state.awaitingInput).toEqual({ threadId: "manager" });
   });
 });
 
@@ -3136,7 +2843,7 @@ describe("37: active manager can be resolved from INIT (live threads) even with 
 // ============================================================
 
 describe("RUN_PREPARING — preparing phase before Manager starts", () => {
-  it("RUN_PREPARING sets runStatus to 'preparing' from idle", () => {
+  it("RUN_PREPARING sets runStatus to 'preparing' from the waiting default", () => {
     const state = applyActions([{ type: "RUN_PREPARING" }]);
     expect(state.runStatus).toBe("preparing");
   });
@@ -3152,7 +2859,7 @@ describe("RUN_PREPARING — preparing phase before Manager starts", () => {
 
   it("RUN_PREPARING clears awaitingInput", () => {
     const state = applyActions([
-      { type: "USER_INPUT_REQUESTED", threadId: "mgr", question: "Are you sure?" },
+      { type: "USER_INPUT_REQUESTED", threadId: "mgr" },
       { type: "RUN_PREPARING" },
     ]);
     expect(state.runStatus).toBe("preparing");

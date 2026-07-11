@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from yukar.api.routers import get_epic_or_404, get_project_or_404
+from yukar.api.routers import get_epic_or_404, get_project_or_404, shelve_or_409
 from yukar.deps import SupervisorDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
 from yukar.models.epic import Epic
@@ -97,21 +97,10 @@ async def get_epic(project_id: str, epic_id: str, root: WorkspaceRootDep) -> Epi
     return await get_epic_or_404(root, project_id, epic_id)
 
 
-@router.patch("/{epic_id}", response_model=Epic)
-async def patch_epic(
-    project_id: str,
-    epic_id: str,
-    body: PatchEpicRequest,
-    root: WorkspaceRootDep,
-    supervisor: SupervisorDep,
+async def _apply_epic_patch(
+    root: str, project_id: str, epic_id: str, body: PatchEpicRequest
 ) -> Epic:
-    # Guard: completing an epic (the user's single "finish" action — approving
-    # done work or abandoning unfinished work) must not race an in-flight run.
-    # The caller has to stop the run first.  Reopening ("open") needs no guard.
-    if body.status == "completed" and supervisor.is_running(project_id, epic_id):
-        raise HTTPException(
-            status_code=409, detail="A run is active — completing is not allowed"
-        )
+    """Load, mutate, persist, and announce an epic patch (shared by both paths)."""
     epic = await get_epic_or_404(root, project_id, epic_id)
     previous_status = epic.status
     if body.title is not None:
@@ -138,3 +127,30 @@ async def patch_epic(
             ),
         )
     return epic
+
+
+@router.patch("/{epic_id}", response_model=Epic)
+async def patch_epic(
+    project_id: str,
+    epic_id: str,
+    body: PatchEpicRequest,
+    root: WorkspaceRootDep,
+    supervisor: SupervisorDep,
+) -> Epic:
+    # Guard: completing an epic (the user's single "finish" action — approving
+    # done work or abandoning unfinished work) must not race an in-flight run.
+    # The whole check + write runs inside the supervisor's run-start lock so a
+    # concurrent run start cannot slip between the guard and the status write
+    # (P2-leftover TOCTOU closed): start/start_continuation re-read
+    # epic.status under the same lock.  An EXECUTING turn is a 409; a live run
+    # merely parked in ``waiting`` is shelved (state preserved) before the
+    # epic is completed.  Reopening ("open") needs no guard.
+    if body.status == "completed":
+        async with supervisor.epic_mutation_lock():
+            if supervisor.is_executing(project_id, epic_id):
+                raise HTTPException(
+                    status_code=409, detail="A run is executing — completing is not allowed"
+                )
+            await shelve_or_409(supervisor, project_id, epic_id)
+            return await _apply_epic_patch(root, project_id, epic_id, body)
+    return await _apply_epic_patch(root, project_id, epic_id, body)

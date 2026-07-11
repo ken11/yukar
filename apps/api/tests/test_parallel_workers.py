@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tests._helpers import make_git_repo
+from tests._helpers import make_git_repo, run_until_parked
 
 
 async def _bootstrap_two_repos(
@@ -187,7 +187,6 @@ class TestParallelDifferentRepos:
                     ]
                 },
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Plan: T1 and T2 in parallel."),
         ]
 
@@ -226,7 +225,7 @@ class TestParallelDifferentRepos:
                 git_author_email="yukar@localhost",
                 max_parallel_workers=4,
             )
-            await orch.start(root, project_id, epic_id, "run-par")
+            await run_until_parked(orch, root, project_id, epic_id, "run-par")
 
         await asyncio.wait_for(collector, timeout=10.0)
 
@@ -237,9 +236,11 @@ class TestParallelDifferentRepos:
         assert len(started) >= 2, "Expected at least 2 WorkerStartedEvents"
         assert len(completed) >= 2, "Expected at least 2 WorkerCompletedEvents"
 
-        # Both tasks should complete and run should succeed.
+        # Both tasks should complete and the run should park (P3: a
+        # conversation run never emits run_completed).
         event_types = [getattr(e, "type", None) for e in events_received]
-        assert "run_completed" in event_types
+        assert "user_input_requested" in event_types
+        assert "run_completed" not in event_types
 
         from yukar.storage import tasks_repo
 
@@ -300,7 +301,6 @@ class TestSerialSameRepo:
                     ]
                 },
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Plan ready."),
         ]
 
@@ -334,7 +334,7 @@ class TestSerialSameRepo:
                 git_author_email="yukar@localhost",
                 max_parallel_workers=4,
             )
-            await orch.start(root, project_id, epic_id, "run-serial")
+            await run_until_parked(orch, root, project_id, epic_id, "run-serial")
 
         await asyncio.wait_for(collector, timeout=15.0)
 
@@ -664,10 +664,10 @@ class TestStopWhilePaused:
                 await asyncio.wait_for(task, timeout=3.0)
 
         # Must not hang — if we got here the test passes.
-        # State should be idle (CancelledError path).
+        # State should be waiting (CancelledError user-stop path).
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "idle"
+        assert state.status == "waiting"
 
 
 # ---------------------------------------------------------------------------
@@ -676,10 +676,10 @@ class TestStopWhilePaused:
 
 
 class TestRunStateEndpoint:
-    async def test_get_run_state_no_state_file_returns_idle(
+    async def test_get_run_state_no_state_file_returns_waiting(
         self, app_client: Any, tmp_workspace: Path
     ) -> None:
-        """When no state.yaml exists, endpoint returns status=idle."""
+        """When no state.yaml exists, endpoint returns status=waiting."""
         from yukar.models.epic import Epic
         from yukar.models.project import Project
         from yukar.storage.epic_repo import save_epic
@@ -695,7 +695,7 @@ class TestRunStateEndpoint:
         resp = await app_client.get(f"/api/projects/{project_id}/epics/{epic_id}/run/state")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "idle"
+        assert body["status"] == "waiting"
 
     async def test_get_run_state_returns_saved_state(
         self, app_client: Any, tmp_workspace: Path

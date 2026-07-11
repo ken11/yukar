@@ -13,19 +13,17 @@
  *   script[0]: task_update(T1)     — creates the plan (hash H1, unapproved)
  *   script[1]: dispatch(T1)        — PRE-approval → host REJECTS (no Worker,
  *                                    T1 stays "todo") — the gate in action
- *   script[2]: ask_user(Q1)        — present the plan → run parks awaiting_input
- *   script[3]: text (end_turn)
+ *   script[2]: text Q1 (end_turn)  — present the plan in body text → the turn
+ *                                    ends and the run parks in "waiting"
  *   --- Turn 1 (woken by the user's FIRST approval — recorded for hash H1) ---
- *   script[4]: task_update(T1 v2)  — re-titles T1 → the plan snapshot changes
+ *   script[3]: task_update(T1 v2)  — re-titles T1 → the plan snapshot changes
  *                                    to hash H2; the recorded approval (H1) no
  *                                    longer matches
- *   script[5]: dispatch(T1)        — REJECTED again: approval is stale (H1≠H2)
- *   script[6]: ask_user(Q2)        — present the revised plan → park again
- *   script[7]: text (end_turn)
+ *   script[4]: dispatch(T1)        — REJECTED again: approval is stale (H1≠H2)
+ *   script[5]: text Q2 (end_turn)  — present the revised plan → park again
  *   --- Turn 2 (woken by the user's SECOND approval — recorded for H2) ---
- *   script[8]: dispatch(T1)        — approval matches → Worker+Evaluator run
- *   script[9]: complete_epic
- *   script[10]: text "Epic complete."
+ *   script[6]: dispatch(T1)        — approval matches → Worker+Evaluator run
+ *   script[7]: text report (end_turn) — park in "waiting" with T1 done
  *
  * The spec drives both approvals through the approve-plan-btn (which records
  * the approval AND posts the i18n "plan approved" user message that wakes the
@@ -75,14 +73,9 @@ export const PLAN_GATE_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    // Present the plan to the user and wait.
-    {
-      type: "tool_use",
-      tool_name: "ask_user",
-      tool_input: { question: PLAN_GATE_QUESTION },
-    },
-    // end_turn — stops the Strands loop; orchestrator blocks on awaiting_input.
-    { type: "text", text: "ユーザーの承認をお待ちしています。" },
+    // Present the plan to the user in body text — end_turn stops the Strands
+    // loop and the orchestrator parks the run in "waiting".
+    { type: "text", text: PLAN_GATE_QUESTION },
     // ---- Turn 1 (after the user's FIRST approval, recorded for hash H1) ----
     // Change the plan: the snapshot hash becomes H2, so the H1 approval is
     // stale and the next dispatch must be rejected again.
@@ -102,24 +95,15 @@ export const PLAN_GATE_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    {
-      type: "tool_use",
-      tool_name: "ask_user",
-      tool_input: { question: PLAN_GATE_REVISED_QUESTION },
-    },
-    { type: "text", text: "更新した計画への再承認をお待ちしています。" },
+    // Present the revised plan in body text → park again.
+    { type: "text", text: PLAN_GATE_REVISED_QUESTION },
     // ---- Turn 2 (after the user's SECOND approval, recorded for H2) ----
     {
       type: "tool_use",
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
-    },
-    { type: "text", text: "Epic complete." },
+    { type: "text", text: "T1 is done and accepted." },
   ],
   worker: [
     {

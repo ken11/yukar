@@ -1,23 +1,23 @@
 /**
  * Seed constants and fake script dedicated to the hitl-reply scenario.
  *
- * The Manager calls ask_user first, and the run enters awaiting_input.
- * When the user sends a reply from the composer, the run resumes and proceeds through
- * task_update → dispatch → complete_epic → worker → evaluator(accepted) until it
- * reaches completed.
+ * The Manager asks a question in BODY TEXT on turn 0 — the text turn ends the
+ * turn, so the run parks in "waiting" (your turn).  When the user sends a
+ * reply from the composer, the parked run wakes and proceeds through
+ * task_update → dispatch → worker → evaluator(accepted) → report text, then
+ * parks in "waiting" again with every task done.
  *
  * Verification points:
- *   - Before reply: question bubble is shown and run/state.status === "awaiting_input"
- *   - After reply:  subsequent agent bubbles appear and run reaches completed
+ *   - Before reply: question bubble is shown and run/state.status === "waiting"
+ *   - After reply:  subsequent agent bubbles appear and the run parks in
+ *     "waiting" with all tasks done (a conversation run never "completes")
  *
  * FakeModel Strands event_loop behaviour:
- *   - After a tool_use turn executes, Strands calls recurse_event_loop to request the next turn
- *   - Therefore, inserting a tool call immediately after ask_user causes all turns to execute
- *     before the run can enter awaiting_input
- *   - Solution: insert a text turn (end_turn) after ask_user to stop the Strands loop and
- *     return to the orchestrator's for-loop. The orchestrator detects _awaiting_user and
- *     blocks. On the next orchestrator turn (turn=1) after the user reply, FakeModel executes
- *     script[2] onward (task_update → dispatch → ...).
+ *   - After a tool_use turn executes, Strands calls recurse_event_loop to
+ *     request the next turn; a text turn (end_turn) stops the Strands loop and
+ *     returns control to the orchestrator, which parks the run in "waiting"
+ *   - On the next model call (after the user reply wakes the parked run) the
+ *     FakeModel continues the script from where it left off
  */
 import os from "node:os";
 import path from "node:path";
@@ -39,39 +39,21 @@ export const HITL_REPLY_SEED = {
  * Fake LLM script for hitl-reply scenario.
  *
  * Manager script layout:
- *   script[0]: ask_user tool — run enters awaiting_input
- *   script[1]: text ("回答をお待ちしています。") — end_turn stops Strands loop,
- *              orchestrator detects _awaiting_user and blocks until reply
- *   script[2]: task_update(T1) — executed after user reply (turn=1)
- *   script[3]: dispatch(T1)
- *   script[4]: complete_epic
- *   script[5]: text "Epic complete."
- *
- * Strands event_loop mechanics:
- *   - ask_user executes → Strands recurse_event_loop → FakeModel emits script[1]=text →
- *     stop_reason=end_turn → EventLoopStopEvent → orchestrator for-loop iterates →
- *     _awaiting_user=True → _wait_for_user_input blocks
- *   - user reply arrives → turn=1 → stream_async(user_answer) → FakeModel emits
- *     script[2]=task_update → script[3]=dispatch → script[4]=complete_epic → ...
+ *   script[0]: text question — end_turn stops the Strands loop, the
+ *              orchestrator parks the run in "waiting" until the reply
+ *   script[1]: task_update(T1) — executed after the user reply (turn 1)
+ *   script[2]: dispatch(T1)
+ *   script[3]: text report — turn 1 ends, run parks in "waiting" again
  *
  * Worker:    fs_write(hello.py) → repo_grep("hello") → fs_write(util.py) → text
  * Evaluator: read_diff → submit_verdict(accepted:true) → text
  */
 export const HITL_REPLY_FAKE_SCRIPT = JSON.stringify({
   manager: [
-    {
-      type: "tool_use",
-      tool_name: "ask_user",
-      tool_input: {
-        question: "この実装計画で進めてよいですか？",
-      },
-    },
-    // Text turn (end_turn) stops the Strands loop and returns control to the
-    // orchestrator's for-loop.
-    // The orchestrator detects _awaiting_user=True and waits for the next turn.
+    // Turn 0: the question is plain body text → park in "waiting".
     {
       type: "text",
-      text: "ユーザーの回答をお待ちしています。",
+      text: "この実装計画で進めてよいですか？",
     },
     // ---- Turns executed after the user reply ----
     {
@@ -90,12 +72,7 @@ export const HITL_REPLY_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
-    },
-    { type: "text", text: "Epic complete." },
+    { type: "text", text: "T1 is done and accepted. Please review the branch." },
   ],
   worker: [
     {

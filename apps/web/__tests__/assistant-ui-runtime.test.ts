@@ -472,7 +472,7 @@ describe("buildYukarAdapter", () => {
     expect(sent).toBe("hello agent");
   });
 
-  it("appends a synthetic bubble with id='__awaiting__' at the end when awaitingInput.question is present", () => {
+  it("P3: never appends a synthetic '__awaiting__' bubble — the question is the last persisted message", () => {
     const [msg1] = strandsMessagesToThreadMessageLikes([
       {
         message_id: 1,
@@ -484,54 +484,21 @@ describe("buildYukarAdapter", () => {
       streamState: emptyStreamState(),
       isRunning: false,
       onSendMessage: async () => {},
-      awaitingInput: { threadId: "manager", question: "Do you want to delete this file?" },
     });
-    expect(adapter.messages).toHaveLength(2);
-    const awaiting = adapter.messages?.[1];
-    expect(awaiting?.id).toBe("__awaiting__");
-    expect(awaiting?.role).toBe("assistant");
-    expect(awaiting?.status).toEqual({ type: "complete", reason: "stop" });
-    expect(awaiting?.content).toContainEqual({
-      type: "text",
-      text: "Do you want to delete this file?",
-    });
+    expect(adapter.messages).toHaveLength(1);
+    expect(adapter.messages?.some((m) => m.id === "__awaiting__")).toBe(false);
   });
 
-  it("does not append a synthetic bubble when awaitingInput.question is an empty string", () => {
-    const adapter = buildYukarAdapter({
-      messages: [],
-      streamState: emptyStreamState(),
-      isRunning: false,
-      onSendMessage: async () => {},
-      awaitingInput: { threadId: "manager", question: "" },
-    });
-    expect(adapter.messages).toHaveLength(0);
-  });
-
-  it("does not append a synthetic bubble when awaitingInput is null", () => {
-    const adapter = buildYukarAdapter({
-      messages: [],
-      streamState: emptyStreamState(),
-      isRunning: false,
-      onSendMessage: async () => {},
-      awaitingInput: null,
-    });
-    expect(adapter.messages).toHaveLength(0);
-  });
-
-  it("awaitingInput bubble is appended after the streaming bubble from streamState", () => {
+  it("P3: only the streaming bubble is concatenated while streaming — no synthetic tail", () => {
     const streamState = applyTokenEvent(emptyStreamState(), "generating...");
     const adapter = buildYukarAdapter({
       messages: [],
       streamState,
       isRunning: true,
       onSendMessage: async () => {},
-      awaitingInput: { threadId: "manager", question: "Please confirm" },
     });
-    // streaming bubble (__streaming_0__) followed by awaiting bubble (__awaiting__)
-    expect(adapter.messages).toHaveLength(2);
+    expect(adapter.messages).toHaveLength(1);
     expect(adapter.messages?.[0].id).toBe("__streaming_0__");
-    expect(adapter.messages?.[1].id).toBe("__awaiting__");
   });
 });
 

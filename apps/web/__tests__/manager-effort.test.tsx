@@ -64,7 +64,7 @@ function effortWrapper(queryClient: QueryClient, contextEpic: Epic | null = base
     project: null,
     epic: contextEpic,
     activityState: {
-      runStatus: "idle" as const,
+      runStatus: "waiting" as const,
       pausePending: false,
       runError: null,
       awaitingInput: null,

@@ -1,31 +1,32 @@
 /**
- * ask_user / awaiting_input reload E2E test.
+ * Question / reload E2E test (historically the ask_user scenario).
  *
  * Purpose:
- *   Verify in a real browser that the question bubble is restored after a page reload
- *   when the manager has called ask_user and the run is in awaiting_input.
- *
- * What is being validated:
- *   Demonstrates that the USER_INPUT_REQUESTED handler in lifecycle.ts
- *   no longer mutates awaitingInput when question="" (fix already applied).
+ *   Under P3 a question is plain assistant BODY TEXT: the manager writes it
+ *   and ends its turn, which parks the run in "waiting" (your turn).  Verify
+ *   in a real browser that the question bubble appears, that it survives a
+ *   page reload (it is an ordinary conversation message — no pending_question
+ *   carrier), and that a conversational reply parks the run again without any
+ *   host-injected dispatch.
  *
  * Verification flow:
  *   1. Create project → create epic → start run
  *   2. Navigate to the manager thread
- *   3. Assert that the run enters awaiting_input and the question bubble appears
- *   4. page.reload()
- *   5. Assert that the same question bubble is still present after reload
- *      (restored primarily from GET /run/state pending_question (REST); SSE backfill is secondary)
+ *   3. Assert the run parks in "waiting" and the question bubble appears
+ *   4. page.reload() → the same question bubble is still present (thread history)
+ *   5. Reply with a question → manager answers in text → run parks in "waiting"
+ *      again and the "your turn" banner shows
  */
 
 import { expect, test } from "@playwright/test";
 import { ASK_USER_ANSWER_TEXT, ASK_USER_SEED } from "./ask-user-seed";
+import { waitForRunWaiting } from "./wait-helpers";
 
 const QUESTION_TEXT = "この計画で進めてよいですか？";
-const AWAITING_BANNER_TEXT = "下の入力欄から回答すると実行が再開します";
+const YOUR_TURN_BANNER_TEXT = "あなたの番です — 返信するとエージェントが続けます";
 
 test.describe
-  .serial("ask_user awaiting_input reload", () => {
+  .serial("question text turn + reload restore", () => {
     const state = {
       projectId: "",
       epicId: "",
@@ -65,14 +66,13 @@ test.describe
       await expect(page.getByRole("dialog")).toBeVisible();
 
       await page.getByTestId("epic-title-input").fill("ask-user epic");
-      await page.getByTestId("epic-description-input").fill("Test ask_user HITL.");
+      await page.getByTestId("epic-description-input").fill("Test the question-in-body-text flow.");
       await page.getByTestId("epic-ac-input").fill("User approves the plan.");
 
       await page.getByTestId("form-dialog-submit").click();
 
       // After epic creation the app redirects to the epic page.
       // Extract the epic ID from the URL (/projects/{p}/epics/{epicId}/...).
-      // If no epic-card is present, fall back to reading the ID from the redirected URL.
       await page.waitForURL(/\/epics\//, { timeout: 15_000 });
       const url = page.url();
       const epicMatch = url.match(/\/epics\/([^/]+)/);
@@ -88,9 +88,11 @@ test.describe
       expect(state.epicId).toBeTruthy();
     });
 
-    // ---- 3. Start run → awaiting_input → verify question bubble ----
+    // ---- 3. Start run → turn ends → question bubble + waiting ----
 
-    test("3. start run and verify question bubble appears", async ({ page }) => {
+    test("3. start run: the question renders as a normal bubble and the run parks in waiting", async ({
+      page,
+    }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
 
@@ -105,18 +107,18 @@ test.describe
       // Expect redirect to the manager thread page
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // Wait for ask_user to be called and the question bubble to appear in the conversation.
-      // runtime.ts: when awaitingInput.question is non-empty, a synthetic message with id="__awaiting__" is appended.
-      // message-row.tsx: its text content is rendered by MessageContent.
+      // The question is an ordinary assistant message (no synthetic
+      // __awaiting__ bubble any more).
       const questionBubble = page.getByText(QUESTION_TEXT);
       await expect(questionBubble).toBeVisible({ timeout: 30_000 });
+
+      // Standard turn-end wait: the run parks in "waiting".
+      await waitForRunWaiting(page, state.projectId, state.epicId, { timeout: 30_000 });
     });
 
     // ---- 4. Assert question bubble persists after reload ----
 
-    test("4. reload - question bubble persists via REST pending_question (SSE backfill secondary)", async ({
-      page,
-    }) => {
+    test("4. reload — the question bubble persists via the thread history", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
 
@@ -129,14 +131,18 @@ test.describe
       // Reload the page
       await page.reload();
 
-      // Confirm the question text is restored after reload.
-      // Primary source of restoration is GET /run/state pending_question (REST); SSE backfill is secondary.
+      // The question is a persisted conversation message, so it is restored
+      // from the thread history (successor of the pending_question REST
+      // restore guarantee — the question must never be lost on reload).
       await expect(questionBubble).toBeVisible({ timeout: 15_000 });
+
+      // The "your turn" banner is restored from GET /run/state ("waiting").
+      await expect(page.getByText(YOUR_TURN_BANNER_TEXT).first()).toBeVisible({ timeout: 15_000 });
     });
 
     // ---- 5. Conversational reply → tool-less answer parks the run ----
 
-    test("5. question reply — manager answers in text and the run parks (no auto-dispatch)", async ({
+    test("5. question reply — manager answers in text and the run parks again (no auto-dispatch)", async ({
       page,
     }) => {
       expect(state.projectId, "projectId").toBeTruthy();
@@ -156,31 +162,20 @@ test.describe
         .click();
 
       // The manager answers in plain text (no tools) — visible as a new bubble.
+      // This text is the deterministic marker that the woken turn has ended
+      // (plain "waiting" polling could match the pre-reply park).
       await expect(page.getByText(ASK_USER_ANSWER_TEXT)).toBeVisible({ timeout: 30_000 });
 
-      // The run must park in question-less awaiting_input: status returns to
-      // awaiting_input but pending_question stays empty (no fabricated bubble).
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            const body = await res.json();
-            return `${body.status}:${body.pending_question ?? ""}`;
-          },
-          { timeout: 30_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("awaiting_input:");
+      // The run parks in "waiting" — no dispatch was injected by the host.
+      await waitForRunWaiting(page, state.projectId, state.epicId, { timeout: 30_000 });
 
-      // The awaiting banner invites the next reply; the OLD question bubble is
-      // resolved and must not linger as the "current" question.
-      await expect(page.getByText(AWAITING_BANNER_TEXT)).toBeVisible({ timeout: 15_000 });
+      // The banner invites the next reply.
+      await expect(page.getByText(YOUR_TURN_BANNER_TEXT).first()).toBeVisible({ timeout: 15_000 });
 
-      // Reload: the question-less awaiting state must survive via REST restore
-      // (runStatus only — no question bubble reappears).
+      // Reload: the waiting state and the full conversation must survive via
+      // REST restore (run/state + thread history).
       await page.reload();
-      await expect(page.getByText(AWAITING_BANNER_TEXT)).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText(YOUR_TURN_BANNER_TEXT).first()).toBeVisible({ timeout: 15_000 });
       await expect(page.getByText(ASK_USER_ANSWER_TEXT)).toBeVisible({ timeout: 15_000 });
     });
   });

@@ -6,7 +6,7 @@
  * current trial's branch + worktree and starts a fresh Manager conversation.
  *
  * Verification items:
- *   1. setup: create project + epic → run fake to completion (run/state)
+ *   1. setup: create project + epic → fake run until work done (run parks in waiting)
  *   2. Click "Continue on Branch" → navigate to the new thread id
  *   3. New session is writable (composer visible, no readonly banner) and empty
  *   4. API: previous conversation archived / new session active / SAME branch /
@@ -15,6 +15,7 @@
 
 import { expect, test } from "@playwright/test";
 import { SEED } from "./seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 const SHOTS = "playwright-report";
 
@@ -29,7 +30,7 @@ test.describe
       contId: "",
     };
 
-    test("setup: create project + epic, run to completion", async ({ page }) => {
+    test("setup: create project + epic, run until work is done", async ({ page }) => {
       await page.goto("/projects");
       await page.getByTestId("new-project-btn").click();
       await expect(page.getByRole("dialog")).toBeVisible();
@@ -59,17 +60,8 @@ test.describe
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("completed");
+      // Standard work-done wait: the run parks in "waiting" and all tasks are done.
+      await waitForWorkDone(page, state.projectId, state.epicId);
 
       const tRes = await page.request.get(
         `/api/projects/${state.projectId}/epics/${state.epicId}/threads`,

@@ -93,7 +93,9 @@ export interface paths {
          *     - If no run is currently active: start a new run.  For epics that have an
          *       existing Strands session (previously run), the Manager will see its prior
          *       conversation history via FileSessionManager (continuation semantics).
-         *     - If a run is currently active (is_running=True): return 409 Conflict.
+         *     - If a run is currently EXECUTING a turn: return 409 Conflict.  A live
+         *       run parked in ``waiting`` is shelved first (state preserved) — Start on
+         *       a parked conversation behaves like a restart, not a 409 dead-end.
          *     - Budget exhausted: return 409 Conflict.
          *
          *     Open epics may be (re-)started freely — the existing session history allows
@@ -143,8 +145,9 @@ export interface paths {
          * Get Run State
          * @description Return the current RunState for an epic.
          *
-         *     Returns a default idle RunState when no state.yaml exists yet (epic has
-         *     never been run).  Returns 404 only when the epic itself does not exist.
+         *     Returns a default ``waiting`` RunState when no state.yaml exists yet (an
+         *     epic that has never run is simply "your turn").  Returns 404 only when
+         *     the epic itself does not exist.
          */
         get: operations["get_run_state_api_projects__project_id__epics__epic_id__run_state_get"];
         put?: never;
@@ -259,18 +262,19 @@ export interface paths {
          *     Creates a fresh ``reviewer`` conversation, seeds it with the active Manager↔
          *     user conversation, and starts a reviewer run bound to that thread.  The
          *     reviewer independently checks the active trial's branch against the epic's
-         *     intent and reports to the USER via ``ask_user``.
+         *     intent and reports to the USER in its message body.
          *
-         *     The reviewer runs while the Manager is idle (it is mutually exclusive with a
-         *     manager run — only one run per epic).  It does NOT change ``epic.status`` or
-         *     ``epic.active_thread_id``: the manager trial remains the active trial, and the
-         *     reviewer's ``read_branch_diff`` reads that trial's branch via ``epic.branch``.
+         *     The reviewer is mutually exclusive with an EXECUTING manager turn (only one
+         *     run per epic); a manager run merely waiting for a reply is shelved first.
+         *     It does NOT change ``epic.status`` or ``epic.active_thread_id``: the manager
+         *     trial remains the active trial, and the reviewer's ``read_branch_diff``
+         *     reads that trial's branch via ``epic.branch``.
          *
          *     A completed epic still allows a review: the reviewer is read-only, so
          *     inspecting finished work never requires reopening the epic.
          *
          *     Raises:
-         *         409: If a run is already active for this epic, an arbiter merge is in
+         *         409: If a turn is executing for this epic, an arbiter merge is in
          *             progress, or the budget is exhausted.
          */
         post: operations["start_review_api_projects__project_id__epics__epic_id__review_post"];
@@ -1799,8 +1803,8 @@ export interface components {
          *
          *     The only writer is ``PATCH /epics/{id}`` — the epic status is user-owned
          *     and never transitions automatically.  Pass ``run_id=""`` (there is no
-         *     active run when the status is changed; a completed-switch is rejected
-         *     while a run is active).
+         *     executing run when the status is changed; a completed-switch is rejected
+         *     while a turn is executing, and a merely-waiting live run is shelved first).
          */
         EpicStatusChangedEvent: {
             /** Project Id */
@@ -2562,7 +2566,13 @@ export interface components {
              */
             status: string;
         };
-        /** RunCompletedEvent */
+        /**
+         * RunCompletedEvent
+         * @description Terminal event for JOB runs only (resolve / arbiter / dummy).
+         *
+         *     Conversation runs (Manager / Reviewer) never emit this: a conversation has
+         *     no end — its turns park in ``waiting`` instead (``UserInputRequestedEvent``).
+         */
         RunCompletedEvent: {
             /** Project Id */
             project_id: string;
@@ -2742,10 +2752,10 @@ export interface components {
             run_id: string;
             /**
              * Status
-             * @default idle
+             * @default waiting
              * @enum {string}
              */
-            status: "idle" | "running" | "paused" | "awaiting_input" | "error" | "completed" | "interrupted";
+            status: "running" | "paused" | "waiting" | "error" | "completed";
             /** Manager Thread */
             manager_thread?: string | null;
             /** Active Workers */
@@ -2754,14 +2764,12 @@ export interface components {
             started_at?: string | null;
             /** Last Event At */
             last_event_at?: string | null;
-            /** Pending Question */
-            pending_question?: string | null;
         };
         /**
          * RunStoppedEvent
-         * @description User-initiated stop (CancelledError).  The run halts and the epic becomes
-         *     re-runnable (state.yaml → ``idle``); not a failure.  Distinct from
-         *     ``run_completed`` so the UI can show "stopped" rather than "completed".
+         * @description User-initiated stop.  The run halts and the epic becomes re-runnable
+         *     (state.yaml → ``waiting``); not a failure.  Distinct from ``run_completed``
+         *     so the UI can show "stopped" rather than "completed".
          */
         RunStoppedEvent: {
             /** Project Id */
@@ -2860,15 +2868,15 @@ export interface components {
          * @description Emitted when the Manager writes a sensitive prompt-injection surface.
          *
          *     Covers: ``write_agent_config``, ``write_skill``, ``write_agent_profile``,
-         *     ``remember``, and ``complete_epic`` learnings.  These files are appended
-         *     verbatim to agent system prompts or future Manager turns, so unexpected
-         *     writes by a prompt-injected Manager are surfaced here for operator visibility.
+         *     and ``remember``.  These files are appended verbatim to agent system
+         *     prompts or future Manager turns, so unexpected writes by a prompt-injected
+         *     Manager are surfaced here for operator visibility.
          *
          *     ``kind`` identifies the type of write:
          *     - ``"agent_config"``   → per-role custom instructions (.yukar/agents/{role}.md)
          *     - ``"skill"``          → project skill (skills/{name}/SKILL.md)
          *     - ``"agent_profile"``  → named agent profile (.yukar/agent_profiles/{name}.yaml)
-         *     - ``"memory"``         → project memory entry (remember() or complete_epic learning)
+         *     - ``"memory"``         → project memory entry (remember())
          *
          *     ``name`` is the role/skill name/profile name/memory-category for context.
          */
@@ -3440,11 +3448,12 @@ export interface components {
         };
         /**
          * UserInputRequestedEvent
-         * @description Emitted when the Manager calls ``ask_user()`` and the run enters awaiting_input.
+         * @description Emitted when a conversation run parks in ``waiting`` — it is the user's turn.
          *
-         *     The run blocks until the user sends a reply via POST /threads/{thread_id}/messages.
-         *     ``question`` is the natural-language question/plan summary the Manager wants to
-         *     present to the user.  ``thread_id`` is the Manager trial's thread_id.
+         *     Every ended agent turn publishes this (the agent's question or report is
+         *     its final message in the thread, so ``question`` is always empty for new
+         *     events; the field survives for legacy replay compatibility until the P5
+         *     event rename).  ``thread_id`` is the conversation the run is bound to.
          */
         UserInputRequestedEvent: {
             /** Project Id */
@@ -3471,14 +3480,14 @@ export interface components {
         };
         /**
          * UserInputResolvedEvent
-         * @description Emitted when the Manager receives the user's reply and resumes from awaiting_input.
+         * @description Emitted when a waiting run receives the user's reply and leaves ``waiting``.
          *
          *     Paired with ``UserInputRequestedEvent`` — publish this immediately after the run
          *     transitions back to ``running``.  Because both events land in the replay buffer,
          *     a subscriber that reconnects mid-run will receive request→resolved in order,
-         *     so the final replayed state is ``running`` rather than ``awaiting_input``.
+         *     so the final replayed state is ``running`` rather than the stale ``waiting``.
          *
-         *     ``thread_id`` is the Manager trial's thread_id.
+         *     ``thread_id`` is the conversation the run is bound to.
          */
         UserInputResolvedEvent: {
             /** Project Id */
@@ -3519,10 +3528,10 @@ export interface components {
          *     - Messages whose content contains a ``toolResult`` block are excluded
          *       (those are tool-use reply frames, not human-authored text).
          *     - Assistant messages are NOT published.
-         *     - Orchestrator-generated planning prompts (Epic initialisation boilerplate,
-         *       task-state summaries, resume instructions) are NOT published — only
-         *       genuine human-authored text (HITL inject, ask_user reply, seed_prompt
-         *       from user) triggers this event.
+         *     - Orchestrator-generated prompts (Epic initialisation boilerplate, resume
+         *       instructions) are NOT published — only genuine human-authored text
+         *       (HITL inject, a reply that woke a waiting run, seed_prompt from user)
+         *       triggers this event.
          */
         UserMessageCommittedEvent: {
             /** Project Id */

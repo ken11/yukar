@@ -4,11 +4,11 @@
  * Purpose:
  *   Using the FakeModel per_call evaluator, verify in a real browser that:
  *   the 1st Evaluator rejects → Manager re-dispatches with feedback →
- *   the 2nd Evaluator accepts → run reaches completed.
+ *   the 2nd Evaluator accepts → the run parks in "waiting" with T1 done.
  *
  * Verification flow:
  *   1. Create project → create epic → start run
- *   2. Confirm via API polling that the run advances to completed
+ *   2. Confirm via API polling that the work is done (waiting + all tasks done)
  *   3. Assert the reject cycle is observable:
  *      - The thread list contains exactly 1 thread with role="evaluator" and status="failed"
  *        (the 1st reject evaluator is recorded as failed)
@@ -20,11 +20,13 @@
  *   - dispatch.py: accepted=false → task.status="todo", evaluator thread="failed"
  *   - Manager FakeScript: retries with feedback on the next dispatch turn
  *   - accepted=true → task.status="done", evaluator thread="resolved"
- *   - complete_epic: no runnable tasks → ok:true → epic completed
+ *   (Worker/Evaluator resolved/failed are records of the trial verdict — they
+ *   are kept under P3; only Manager/Reviewer conversations lost end-states.)
  */
 
 import { expect, test } from "@playwright/test";
 import { EVALUATOR_REJECT_SEED } from "./evaluator-reject-seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 test.describe
   .serial("Evaluator reject → retry → accept", () => {
@@ -82,23 +84,13 @@ test.describe
       await expect(page).toHaveURL(/\/threads\//, { timeout: 15_000 });
     });
 
-    test("3. run completes after reject → retry cycle", async ({ page }) => {
+    test("3. work is done after reject → retry cycle", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
-      // Poll run/state until the run completes after the
-      // Evaluator reject → re-dispatch → accept → complete_epic cycle (max 120 s)
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 120_000, intervals: [500, 1000, 2000] },
-        )
-        .toBe("completed");
+      // Standard work-done wait: the Evaluator reject → re-dispatch → accept
+      // cycle ends with the run parked in "waiting" and T1 done (max 120 s)
+      await waitForWorkDone(page, state.projectId, state.epicId, { timeout: 120_000 });
 
       // The epic itself stays open — finishing a run never transitions the
       // 1-bit user-owned epic status.

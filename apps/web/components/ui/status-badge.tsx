@@ -11,7 +11,6 @@ export type StatusValue =
   | "active"
   | "paused"
   | "awaiting"
-  | "interrupted"
   | "open"
   | "completed"
   | "merged"
@@ -64,15 +63,11 @@ const BADGE_MAP: Record<StatusValue, BadgeConfig> = {
     colorClass: "text-on-surface-variant",
     labelKey: "epic.status.paused",
   },
+  // "awaiting" = your turn: the conversation run parked and waits for a reply.
   awaiting: {
     icon: "pending_actions",
     colorClass: "text-on-surface-variant",
     labelKey: "epic.status.awaiting",
-  },
-  interrupted: {
-    icon: "warning",
-    colorClass: "text-on-surface-variant",
-    labelKey: "epic.status.interrupted",
   },
   open: {
     icon: "circle",

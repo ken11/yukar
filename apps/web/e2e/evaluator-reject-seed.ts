@@ -5,14 +5,13 @@
  *   1st dispatch: Evaluator calls submit_verdict(accepted:false, feedback:"Quality issues found.")
  *   → T1 reverts to todo → Manager issues a 2nd dispatch
  *   2nd dispatch: Evaluator calls submit_verdict(accepted:true)
- *   → T1 becomes done → complete_epic → run is completed
+ *   → T1 becomes done → the report text ends the turn → run parks in "waiting"
  *
  * Manager script (per tool-call):
  *   (0) task_update(T1)           — register task
  *   (1) dispatch([{T1}])          — 1st delegation → Evaluator rejects → T1 reverts to todo
  *   (2) dispatch([{T1,feedback}]) — 2nd delegation (with feedback) → Evaluator accepts
- *   (3) complete_epic({})         — T1=done so ok:true
- *   (4) text "Retry accepted."
+ *   (3) text "Retry accepted."    — end_turn → the run parks in "waiting" with T1 done
  *
  * Evaluator script (per_call format):
  *   per_call[0]: read_diff → submit_verdict(accepted:false, feedback:"Quality issues found.")
@@ -72,12 +71,7 @@ export const EVALUATOR_REJECT_FAKE_SCRIPT = JSON.stringify({
         ],
       },
     },
-    // (3) T1=done so complete_epic returns ok:true
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
-    },
+    // (3) T1=done → report and end the turn (the run parks in "waiting")
     { type: "text", text: "Retry accepted." },
   ],
   // Worker script is replayed from the top on each dispatch

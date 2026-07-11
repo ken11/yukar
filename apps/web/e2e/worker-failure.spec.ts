@@ -9,24 +9,24 @@
  * Verification flow:
  *   1. Create project → create epic → start run
  *   2. Navigate to the manager thread page
- *   3. Confirm via API polling that the run parks at awaiting_input (the
- *      Manager's complete_epic is rejected because T1 reverted to todo, and its
- *      final text turn yields to the user) while the epic stays open (a run
- *      failure never transitions the 1-bit epic status)
+ *   3. Confirm via API polling that the run parks in "waiting" (the Manager's
+ *      final report text ends its turn — the user's turn to decide) while the
+ *      epic stays open (a run failure never transitions the 1-bit epic status)
  *   4. Verify that the "失敗" label appears on the Worker node in the thread tree panel
  *   5. Verify that WorkerFailedEvent was delivered via SSE
  *
  * Worker failure mechanism:
  *   - Worker RaiseTurn(MaxTokensReachedException) → WorkerFailedEvent emitted
  *   - ThreadTreePanel WorkerNode: status="failed" → "失敗" label + warning icon
- *   - run_state.status: awaiting_input (turn-end semantics — the Manager ends
- *     its turn without a tool call after the rejected complete_epic)
+ *   - run_state.status: "waiting" (P3 turn-end semantics — every ended turn
+ *     parks the run; the Manager reported the failure in body text)
  *
  * The context_overflow variant (ContextWindowOverflowException) is also verified in a
  * separate test within the same describe block.
  */
 
 import { expect, test } from "@playwright/test";
+import { waitForRunWaiting } from "./wait-helpers";
 import { WORKER_FAILURE_SEED } from "./worker-failure-seed";
 
 // ---- Shared test helpers ----
@@ -112,22 +112,11 @@ test.describe
 
       // When the Worker fails with MaxTokensReachedException, the following happens:
       //   1. WorkerFailedEvent is emitted and task T1 reverts to "todo"
-      //   2. The Manager's complete_epic is rejected (T1 is runnable again) and
-      //      its final text turn ends without a tool call → turn-end semantics
-      //      park the run at awaiting_input (the user's turn to decide)
+      //   2. The Manager continues, reports the failure in body text, and its
+      //      turn end parks the run in "waiting" (the user's turn to decide)
       //   3. The epic itself stays open (a run-level failure never transitions
       //      the 1-bit epic status)
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("awaiting_input");
+      await waitForRunWaiting(page, state.projectId, state.epicId);
 
       // The epic status is untouched by the failed run.
       const epicRes = await page.request.get(
@@ -182,7 +171,7 @@ test.describe
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
-      // A parked (awaiting_input) run is still live, so POST /run returns 409;
+      // A run parked in "waiting" is still live, so POST /run returns 409;
       // if the run has fully terminated instead, a new run starts (202).
       const res = await page.request.post(
         `/api/projects/${state.projectId}/epics/${state.epicId}/run`,

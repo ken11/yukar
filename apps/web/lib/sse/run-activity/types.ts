@@ -73,15 +73,22 @@ export interface ThreadTreeState {
 
 // ---- Store state types ----
 
+/**
+ * Frontend run status (lifecycle redesign P3).
+ *
+ * - "waiting" is the single resting state = "your turn". A conversation run
+ *   parks here after every turn; an epic that has never run is also waiting.
+ * - "completed" is JOB runs only (resolve / arbiter) — conversation runs never
+ *   end (principle 2), so run_completed is never emitted for them.
+ * - "preparing" is a frontend-synthesised phase (index refresh before start).
+ */
 export type RunActivityStatus =
-  | "idle"
   | "preparing"
   | "running"
   | "paused"
-  | "awaiting_input"
+  | "waiting"
   | "completed"
-  | "error"
-  | "interrupted";
+  | "error";
 
 /** Live buffer state per thread */
 export interface ThreadLiveState {
@@ -97,8 +104,13 @@ export interface RunActivityState {
   pausePending: boolean;
   /** Error message from run_failed. Set only on failure. */
   runError: string | null;
-  /** Awaiting-input info from Manager's ask_user(). null = not awaiting. */
-  awaitingInput: { threadId: string; question: string } | null;
+  /**
+   * Parked-conversation marker: the run has actually parked in "waiting"
+   * (your turn) on this thread. null = no parked conversation (never ran, or
+   * a turn is executing). The question itself is NOT carried here — it is the
+   * agent's final message in the thread (ask_user was removed in P3).
+   */
+  awaitingInput: { threadId: string } | null;
   /** Agent tree */
   treeState: ThreadTreeState;
   /** Live buffers per thread. key=threadId */

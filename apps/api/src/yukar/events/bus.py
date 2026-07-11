@@ -29,10 +29,13 @@ exceptions never emit ``WorkerCompletedEvent``, so their buffer entries would
 otherwise leak indefinitely.  The manager key is constant across runs, so stale
 tokens from a previous run would bleed into the next run's backfill.
 
-To prevent this, ``RunStartedEvent``, ``RunCompletedEvent``, and
-``RunFailedEvent`` all drop every ``_thread_token_buffer`` key whose prefix
-matches ``(project_id, epic_id)``.  These events are emitted from the
-orchestrator's try/except/finally so they fire on every run outcome.
+To prevent this, ``RunStartedEvent``, ``RunCompletedEvent``, ``RunFailedEvent``
+and ``RunStoppedEvent`` all drop every ``_thread_token_buffer`` key whose
+prefix matches ``(project_id, epic_id)``.  Conversation runs (Manager /
+Reviewer) no longer emit ``RunCompletedEvent`` — they park in ``waiting``
+instead — so for them the effective sweep points are the NEXT run's
+``RunStartedEvent`` plus ``RunFailedEvent`` / ``RunStoppedEvent``.  Job runs
+(resolve / arbiter / dummy) still emit ``RunCompletedEvent``.
 
 Global usage stream
 -------------------
@@ -125,8 +128,10 @@ _LIFECYCLE_TYPES = (
 # ``workers=1`` — no lock needed.
 #
 # Worker buffers are cleared on WorkerCompletedEvent.  Evaluator, manager, and
-# exception-terminated worker buffers are cleared on RunStartedEvent /
-# RunCompletedEvent / RunFailedEvent (see module docstring for rationale).
+# exception-terminated worker buffers are cleared on the run-boundary events
+# (RunStarted / RunCompleted / RunFailed / RunStopped — see the module
+# docstring; conversation runs rely on the NEXT run's RunStartedEvent since
+# they never emit RunCompletedEvent).
 _TOKEN_BUFFER_MAXLEN = 200
 _TOKEN_BUFFER_TYPES = (TokenEvent, ToolCallEvent, ToolResultEvent)
 _thread_token_buffer: dict[tuple[str, str, str], deque[Any]] = defaultdict(

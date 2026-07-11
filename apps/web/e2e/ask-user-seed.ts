@@ -1,9 +1,13 @@
 /**
- * Seed constants and fake script dedicated to the ask_user scenario.
+ * Seed constants and fake script dedicated to the question/reload scenario
+ * (historically the "ask_user" scenario; under P3 the ask_user tool is gone —
+ * a question is plain assistant body text and the turn end parks the run).
  *
- * The manager's first turn calls ask_user, which puts the run into awaiting_input.
- * The E2E test verifies that the question bubble is restored after a page reload
- * (restored from RunState.pending_question via GET /run/state — no SSE replay dependency).
+ * The manager's first turn plans a task and asks a question in BODY TEXT,
+ * which ends the turn and parks the run in "waiting" (your turn).  The E2E
+ * test verifies that the question bubble survives a page reload: it is an
+ * ordinary conversation message restored from the thread history (no
+ * pending_question carrier, no SSE replay dependency).
  */
 import os from "node:os";
 import path from "node:path";
@@ -22,15 +26,16 @@ export const ASK_USER_SEED = {
 } as const;
 
 /**
- * Fake LLM script for ask_user scenario.
+ * Fake LLM script for the question/reload scenario.
  *
- * Turn 0: the manager calls ask_user — the run enters awaiting_input and the
- * question bubble is shown.
+ * Turn 0: the manager registers T1 then asks the question in body text — the
+ * text turn ends the turn, so the run parks in "waiting" and the question
+ * renders as a normal assistant bubble.
  *
  * Turn 1 (after the user replies with a QUESTION, not an approval): the
- * manager answers in plain text without calling any tool.  Under turn-end
- * semantics this parks the run in question-less awaiting_input — the host
- * must NOT inject a dispatch command.  ask-user.spec test 5 verifies this.
+ * manager answers in plain text without calling any tool.  Every ended turn
+ * parks the run in "waiting" — the host must NOT inject a dispatch command.
+ * ask-user.spec test 5 verifies this.
  *
  * Worker / Evaluator are empty (no dispatch happens in this scenario).
  */
@@ -38,9 +43,6 @@ export const ASK_USER_ANSWER_TEXT = "T1 は挨拶ファイルを1つ追加する
 
 export const ASK_USER_FAKE_SCRIPT = JSON.stringify({
   manager: [
-    // Plan first: T1 must EXIST (todo) for the conversational park to be
-    // reachable — with zero tasks the deadlock guard ends the run after the
-    // tool-less reply instead of parking it.
     {
       type: "tool_use",
       tool_name: "task_update",
@@ -52,16 +54,9 @@ export const ASK_USER_FAKE_SCRIPT = JSON.stringify({
         contract: "Add a greeting file. Verify: file exists.",
       },
     },
-    {
-      type: "tool_use",
-      tool_name: "ask_user",
-      tool_input: {
-        question: "この計画で進めてよいですか？",
-      },
-    },
-    { type: "text", text: "Awaiting your approval." },
-    // Turn 1: tool-less conversational answer → the run parks (awaiting_input
-    // with no pending question).
+    // Turn 0 ends with the question in body text → park in "waiting".
+    { type: "text", text: "この計画で進めてよいですか？" },
+    // Turn 1: tool-less conversational answer → the run parks in "waiting" again.
     { type: "text", text: ASK_USER_ANSWER_TEXT },
   ],
   worker: [],

@@ -10,7 +10,7 @@ Coverage:
 - native wiring: MemoryManager attached to Manager with injection trigger=userTurn ·
   search_memory tool exists · not attached to Worker/Evaluator
 - injection is ephemeral (seam: not persisted to durable session)
-- remember tool / complete_epic learnings write to store
+- remember tool writes to store (the only memory-write path)
 - usage: path where embed receives loop injection and usage delta is recorded
 - JSONL adversarial input: ## mem-NNNN / code fences / fake meta lines / JSON symbols
   in body do not collide with boundaries → 1 record, content fully preserved (regression)
@@ -303,7 +303,7 @@ class TestProjectMemoryStoreRoundtrip:
                 "category": "lesson",
                 "repo": "backend-repo",
                 "epic_id": "ep-42",
-                "source": "complete_epic",
+                "source": "remember",
             },
         )
         entries = await mem_store.search("Repo-specific lesson")
@@ -313,7 +313,7 @@ class TestProjectMemoryStoreRoundtrip:
         assert meta.get("category") == "lesson"
         assert meta.get("repo") == "backend-repo"
         assert meta.get("epic_id") == "ep-42"
-        assert meta.get("source") == "complete_epic"
+        assert meta.get("source") == "remember"
 
     async def test_duplicate_add_skipped(self, mem_store: ProjectMemoryStore) -> None:
         r1 = await mem_store.add("text for duplicate check")
@@ -919,15 +919,15 @@ class TestRememberTool:
 
 
 # ---------------------------------------------------------------------------
-# complete_epic learnings
+# lesson learnings (remember is the only write path since P3)
 # ---------------------------------------------------------------------------
 
 
-class TestCompleteEpicLearnings:
-    async def test_complete_epic_persists_learnings(
+class TestLessonLearnings:
+    async def test_lessons_persist_and_are_searchable(
         self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        """complete_epic learnings must be written to the store as lessons."""
+        """Lesson entries must be written to the store and be searchable."""
         store = ProjectMemoryStore(
             jsonl_path=tmp_path / "project.jsonl",
             index_dir=tmp_path / "idx",
@@ -946,7 +946,7 @@ class TestCompleteEpicLearnings:
                 metadata={
                     "category": "lesson",
                     "epic_id": "ep-final",
-                    "source": "complete_epic",
+                    "source": "remember",
                 },
             )
 
@@ -958,7 +958,7 @@ class TestCompleteEpicLearnings:
                 f"'{learning}' not in search results"
             )
 
-        # must be stored with category=lesson / source=complete_epic
+        # must be stored with category=lesson
         records = parse_records((tmp_path / "project.jsonl").read_text())
         lesson_records = [r for r in records if r.category == "lesson"]
         assert len(lesson_records) == 2

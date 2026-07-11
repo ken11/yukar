@@ -31,8 +31,9 @@ export const STREAMING_SEED = {
  *   ]
  * → Grouped into 1 bubble at the same msg_index, with text and ToolCallRow coexisting.
  *
- * Afterwards, dispatch → complete_epic advances the run to completed.
- * Worker / Evaluator follow the FAKE_SCRIPT in seed.ts.
+ * Afterwards, dispatch runs the Worker/Evaluator and the final report text
+ * parks the run in "waiting" with T1 done (P3: a conversation run never
+ * "completes").  Worker / Evaluator follow the FAKE_SCRIPT in seed.ts.
  */
 export const STREAMING_FAKE_SCRIPT = JSON.stringify({
   manager: [
@@ -59,12 +60,7 @@ export const STREAMING_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
-    },
-    { type: "text", text: "Epic complete." },
+    { type: "text", text: "Epic work is done." },
   ],
   worker: [
     {

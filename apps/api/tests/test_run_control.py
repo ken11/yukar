@@ -5,12 +5,12 @@ Covers:
    for worker/evaluator threads; manager thread still accepts.
 2. Continuation run: start_or_inject starts a new run when no run is active;
    inject_hitl_message is called when a run is already active.
-3. Reconcile on startup: state.yaml with running/paused status is marked
-   'interrupted' by recover_interrupted_runs; awaiting_input is preserved.
-4. completed/interrupted → start_run (POST /run) is allowed (no 409).
+3. Reconcile on startup: state.yaml with running/paused status is settled
+   into 'waiting' by recover_interrupted_runs; waiting is preserved.
+4. waiting/error → start_run (POST /run) is allowed (no 409).
 5. Index race guard: _ensure_repos_indexed triggers reindex for unindexed repos.
 6. EpicOrchestrator accepts seed_prompt / is_continuation kwargs.
-7. RunState.status includes 'interrupted'.
+7. Legacy RunState statuses (idle/awaiting_input/interrupted) coerce to 'waiting'.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests._helpers import run_until_parked
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -384,7 +386,7 @@ class TestStartOrInject:
 
 
 class TestRecoverInterrupted:
-    async def test_running_state_becomes_interrupted(self, tmp_path: Path) -> None:
+    async def test_running_state_becomes_waiting(self, tmp_path: Path) -> None:
         from datetime import UTC, datetime
 
         from yukar.models.run import RunState
@@ -405,9 +407,9 @@ class TestRecoverInterrupted:
 
         saved = await state_repo.get_state(root, pid, eid)
         assert saved is not None
-        assert saved.status == "interrupted"
+        assert saved.status == "waiting"
 
-    async def test_paused_state_becomes_interrupted(self, tmp_path: Path) -> None:
+    async def test_paused_state_becomes_waiting(self, tmp_path: Path) -> None:
         from datetime import UTC, datetime
 
         from yukar.models.run import RunState
@@ -427,14 +429,16 @@ class TestRecoverInterrupted:
         assert count == 1
         saved = await state_repo.get_state(root, pid, eid)
         assert saved is not None
-        assert saved.status == "interrupted"
+        assert saved.status == "waiting"
 
-    async def test_awaiting_input_state_is_preserved(self, tmp_path: Path) -> None:
-        """awaiting_input runs must NOT be transitioned to interrupted on restart.
+    async def test_waiting_state_is_preserved(self, tmp_path: Path) -> None:
+        """waiting runs must NOT be reconciled (not counted) on restart.
 
-        The Manager is parked waiting for a human reply — no in-flight work.
-        After restart the user's reply triggers start_or_inject → start_continuation
-        which resumes cleanly from the preserved session and state.
+        The run is parked — no in-flight work.  After restart the user's
+        reply triggers start_or_inject → start_continuation which resumes
+        cleanly from the preserved session and state.  Legacy state files
+        (awaiting_input) are read back as waiting by the model validator and
+        preserved the same way.
         """
         from datetime import UTC, datetime
 
@@ -446,26 +450,22 @@ class TestRecoverInterrupted:
         pid, eid = "proj", "EP-3"
         state = RunState(
             run_id="run-ghi",
-            status="awaiting_input",
-            pending_question="Should I proceed?",
+            status="waiting",
             started_at=datetime.now(UTC),
         )
         await state_repo.save_state(root, pid, eid, state)
 
-        # awaiting_input is not counted in the reconciled total (it is not modified).
+        # waiting is not counted in the reconciled total (it is not modified).
         count = await recover_interrupted_runs(root)
         assert count == 0
 
         saved = await state_repo.get_state(root, pid, eid)
         assert saved is not None
-        # Status must remain awaiting_input — NOT interrupted.
-        assert saved.status == "awaiting_input"
-        # pending_question must survive intact so the UI can restore the bubble.
-        assert saved.pending_question == "Should I proceed?"
+        assert saved.status == "waiting"
 
-    async def test_awaiting_input_and_running_coexist(self, tmp_path: Path) -> None:
-        """When both awaiting_input and running runs exist in different epics,
-        only the running run is reconciled; the awaiting_input run is untouched."""
+    async def test_waiting_and_running_coexist(self, tmp_path: Path) -> None:
+        """When both waiting and running runs exist in different epics,
+        only the running run is reconciled; the waiting run is untouched."""
         from datetime import UTC, datetime
 
         from yukar.models.run import RunState
@@ -475,11 +475,10 @@ class TestRecoverInterrupted:
         root = str(tmp_path / "ws")
         pid = "proj"
 
-        # awaiting_input epic — must be preserved.
+        # waiting epic — must be preserved.
         state_ai = RunState(
             run_id="run-ai",
-            status="awaiting_input",
-            pending_question="Ready to proceed?",
+            status="waiting",
             started_at=datetime.now(UTC),
         )
         await state_repo.save_state(root, pid, "EP-AI", state_ai)
@@ -497,12 +496,11 @@ class TestRecoverInterrupted:
 
         saved_ai = await state_repo.get_state(root, pid, "EP-AI")
         assert saved_ai is not None
-        assert saved_ai.status == "awaiting_input"
-        assert saved_ai.pending_question == "Ready to proceed?"
+        assert saved_ai.status == "waiting"
 
         saved_run = await state_repo.get_state(root, pid, "EP-RUN")
         assert saved_run is not None
-        assert saved_run.status == "interrupted"
+        assert saved_run.status == "waiting"
 
     async def test_completed_state_is_not_touched(self, tmp_path: Path) -> None:
         from yukar.models.run import RunState
@@ -781,7 +779,7 @@ class TestContinuationFsmSoleWriter:
 
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
+        from yukar.llm.fake import FakeModel, TextTurn
         from yukar.models.epic import Epic
         from yukar.models.project import Project, Repo, RepoCommands
         from yukar.storage import session_store
@@ -841,12 +839,9 @@ class TestContinuationFsmSoleWriter:
 
         seed = "please add a /health endpoint"
 
-        # Fake manager: complete_epic on turn-0 so _run_loop exits.  (A
-        # tool-less text reply to the human seed would now park the run in
-        # awaiting_input under turn-end semantics — a silent turn end is the
-        # agent yielding to the user.)
+        # Fake manager: a tool-less text reply — turn-0 ends and the run
+        # parks in waiting (P3 turn-end semantics).
         manager_script = [
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
 
@@ -863,10 +858,7 @@ class TestContinuationFsmSoleWriter:
         )
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            await asyncio.wait_for(
-                orch.start(root, project_id, epic_id, "run-cont-seed"),
-                timeout=15.0,
-            )
+            await run_until_parked(orch, root, project_id, epic_id, "run-cont-seed")
 
         # The first FSM user message must be the seed text.
         # (Later turns add planning boilerplate — we only care about turn-0 prompt.)
@@ -892,7 +884,7 @@ class TestContinuationFsmSoleWriter:
 
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
+        from yukar.llm.fake import FakeModel, TextTurn
         from yukar.models.epic import Epic
         from yukar.models.project import Project, Repo, RepoCommands
         from yukar.storage import session_store
@@ -951,7 +943,6 @@ class TestContinuationFsmSoleWriter:
 
         manager_script = [
             TextTurn("OK"),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
 
@@ -968,10 +959,7 @@ class TestContinuationFsmSoleWriter:
         )
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            await asyncio.wait_for(
-                orch.start(root, project_id, epic_id, "run-cont-noseed"),
-                timeout=15.0,
-            )
+            await run_until_parked(orch, root, project_id, epic_id, "run-cont-noseed")
 
         messages = session_store.list_messages(root, project_id, epic_id, "manager")
         user_msgs = [m for m in messages if m.message.role == "user"]
@@ -996,7 +984,7 @@ class TestContinuationFsmSoleWriter:
 
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
+        from yukar.llm.fake import FakeModel, TextTurn
         from yukar.models.epic import Epic
         from yukar.models.project import Project, Repo, RepoCommands
         from yukar.storage import session_store
@@ -1056,7 +1044,6 @@ class TestContinuationFsmSoleWriter:
 
         manager_script = [
             TextTurn("OK"),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
 
@@ -1076,10 +1063,7 @@ class TestContinuationFsmSoleWriter:
         orch.inject_message("manager", "also please add a /health endpoint")
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            await asyncio.wait_for(
-                orch.start(root, project_id, epic_id, "run-fresh-hitl"),
-                timeout=15.0,
-            )
+            await run_until_parked(orch, root, project_id, epic_id, "run-fresh-hitl")
 
         messages = session_store.list_messages(root, project_id, epic_id, "manager")
         user_msgs = [m for m in messages if m.message.role == "user"]
@@ -1098,24 +1082,52 @@ class TestContinuationFsmSoleWriter:
 
 
 # ---------------------------------------------------------------------------
-# 7. RunState.status includes 'interrupted'
+# 7. Legacy RunState statuses are read back as 'waiting'
 # ---------------------------------------------------------------------------
 
 
-class TestRunStateInterrupted:
-    def test_interrupted_status_is_valid(self) -> None:
+class TestRunStateLegacyCoercion:
+    def test_legacy_statuses_coerce_to_waiting(self) -> None:
+        """idle / awaiting_input / interrupted all meant "not running, your
+        turn" and are read back as ``waiting`` by the model validator."""
         from yukar.models.run import RunState
 
-        state = RunState(run_id="r1", status="interrupted")
-        assert state.status == "interrupted"
+        for legacy in ("idle", "awaiting_input", "interrupted"):
+            state = RunState.model_validate({"run_id": "r1", "status": legacy})
+            assert state.status == "waiting", f"{legacy} must coerce to waiting"
 
-    async def test_round_trip_yaml(self, tmp_path: Path) -> None:
+    def test_current_statuses_pass_through(self) -> None:
+        from yukar.models.run import RunState
+
+        for status in ("running", "paused", "waiting", "error", "completed"):
+            state = RunState.model_validate({"run_id": "r1", "status": status})
+            assert state.status == status
+
+    def test_legacy_pending_question_key_is_ignored(self) -> None:
+        """Old state.yaml files carry a pending_question key; pydantic's
+        default extra handling must ignore it without error."""
+        from yukar.models.run import RunState
+
+        state = RunState.model_validate(
+            {"run_id": "r1", "status": "awaiting_input", "pending_question": "Proceed?"}
+        )
+        assert state.status == "waiting"
+        assert not hasattr(state, "pending_question")
+
+    async def test_legacy_round_trip_yaml(self, tmp_path: Path) -> None:
+        """A legacy 'interrupted' state file loads as waiting via the repo."""
+        from yukar.config import paths
         from yukar.models.run import RunState
         from yukar.storage import state_repo
 
         root = str(tmp_path / "ws")
-        state = RunState(run_id="r1", status="interrupted")
-        await state_repo.save_state(root, "proj", "EP-1", state)
+        # Write a modern file first to create the directory structure, then
+        # overwrite it with legacy YAML content.
+        await state_repo.save_state(root, "proj", "EP-1", RunState(run_id="r1"))
+        state_path = paths.state_yaml(root, "proj", "EP-1")
+        state_path.write_text(
+            "run_id: r1\nstatus: interrupted\npending_question: 'Proceed?'\n"
+        )
         loaded = await state_repo.get_state(root, "proj", "EP-1")
         assert loaded is not None
-        assert loaded.status == "interrupted"
+        assert loaded.status == "waiting"

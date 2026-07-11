@@ -8,17 +8,18 @@
  *
  * Basic scenario (what the Manager script encodes):
  *   1. User requests an Epic → run starts.
- *   2. Manager plans (task_update) and asks the user to confirm (ask_user) →
- *      run parks at awaiting_input.  [Manager script turns 0]
+ *   2. Manager plans (task_update) and asks the user to confirm in BODY TEXT →
+ *      the turn ends and the run parks in "waiting".  [Manager script turn 0]
  *   3. User asks for a revision (a plain chat reply — it does NOT approve) →
  *      Manager re-plans and re-asks.  [turn 1]
  *   4. User approves via the EXPLICIT approve-plan operation (approve-plan-btn
  *      → POST /plan/approval, snapshot-hash bound, P2) which also auto-posts
  *      the "plan approved" message that wakes the agent → Manager dispatches
  *      the Worker (the approval gate lets it through only now), the Evaluator
- *      accepts, the Manager self-checks the branch diff, then completes →
- *      run/state becomes completed (the epic stays open — only the user flips
- *      its status).  [turn 2]
+ *      accepts, the Manager self-checks the branch diff, then reports in body
+ *      text → the run parks in "waiting" with every task done (P3: a
+ *      conversation run never "completes"; the epic stays open — only the
+ *      user flips its status).  [turn 2]
  *
  * Continuation nuance: the continuation session replays this script from the
  * top, and its turn-1 re-plan reproduces a plan snapshot IDENTICAL to the one
@@ -27,8 +28,8 @@
  * dispatch (the spec asserts this snapshot-identity property explicitly).
  *
  * The Manager script is a FLAT list; the FakeModel cursor advances across turns.
- * A `text` turn ends the Strands loop, so the orchestrator's turn-loop observes
- * awaiting_input (after each ask_user) and blocks for the user's reply.
+ * A `text` turn ends the Strands loop, so the orchestrator parks the run in
+ * "waiting" (your turn) and waits for the user's reply.
  */
 import os from "node:os";
 import path from "node:path";
@@ -48,8 +49,8 @@ export const FULL_SCENARIO_SEED = {
   },
 } as const;
 
-// ask_user questions — the spec waits for these exact strings to know which
-// awaiting_input state the run is parked at.
+// Body-text questions — the spec waits for these exact strings to know which
+// park (waiting) the run is at.
 export const Q_PLAN = "初期計画です。この内容で進めてよろしいですか？";
 export const Q_REVISED = "ご指摘を反映しました。この計画で進めてよろしいですか？";
 export const Q_REVIEW =
@@ -72,8 +73,7 @@ export const FULL_SCENARIO_FAKE_SCRIPT = JSON.stringify({
         contract: _MANAGER_CONTRACT,
       },
     },
-    { type: "tool_use", tool_name: "ask_user", tool_input: { question: Q_PLAN } },
-    { type: "text", text: "初期計画を提示しました。ご確認ください。" },
+    { type: "text", text: Q_PLAN },
     // --- Turn 1 (after the user's revision request): re-plan → re-ask ---
     {
       type: "tool_use",
@@ -86,16 +86,14 @@ export const FULL_SCENARIO_FAKE_SCRIPT = JSON.stringify({
         contract: _MANAGER_CONTRACT,
       },
     },
-    { type: "tool_use", tool_name: "ask_user", tool_input: { question: Q_REVISED } },
-    { type: "text", text: "ご指摘を反映した計画を提示しました。" },
-    // --- Turn 2 (after the user's approval): dispatch → self-check → complete ---
+    { type: "text", text: Q_REVISED },
+    // --- Turn 2 (after the user's approval): dispatch → self-check → report ---
     {
       type: "tool_use",
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
     { type: "tool_use", tool_name: "read_branch_diff", tool_input: {} },
-    { type: "tool_use", tool_name: "complete_epic", tool_input: {} },
     { type: "text", text: "実装が完了しました。レビューをお願いします。" },
   ],
   worker: [
@@ -117,7 +115,7 @@ export const FULL_SCENARIO_FAKE_SCRIPT = JSON.stringify({
   ],
   // Reviewer (read-only): reads the branch diff (git) AND a file from the active
   // manager trial's worktree (fs_read — proves the worktree tools), then reports
-  // to the user via ask_user (parks at awaiting_input).
+  // to the user in body text (the turn end parks the run in "waiting").
   reviewer: [
     { type: "tool_use", tool_name: "read_branch_diff", tool_input: {} },
     {
@@ -125,10 +123,9 @@ export const FULL_SCENARIO_FAKE_SCRIPT = JSON.stringify({
       tool_name: "fs_read",
       tool_input: { path: "hello.py", repo: "myrepo" },
     },
-    { type: "tool_use", tool_name: "ask_user", tool_input: { question: Q_REVIEW } },
-    { type: "text", text: "レビュー結果を報告しました。" },
-    // After the user's acknowledgement the reviewer wraps up (turn ends with no
-    // ask_user → the run completes; the epic's status is untouched either way).
+    { type: "text", text: Q_REVIEW },
+    // After the user's acknowledgement the reviewer wraps up in body text —
+    // the run parks in "waiting" again (the epic's status is untouched).
     { type: "text", text: "承知しました。ご確認ありがとうございました。" },
   ],
 });

@@ -55,19 +55,14 @@ export function ThreadPageClient({
   const runFailed = activityState.runStatus === "error";
   const runError = activityState.runError;
 
-  // Awaiting input:
-  // Show the banner even when awaitingInput is null if runStatus === "awaiting_input",
-  // checking thread association while also accounting for the state before SSE replay arrives.
-  const awaitingInput =
-    activityState.awaitingInput &&
-    (threadId === activityState.awaitingInput.threadId || threadId === managerThreadId)
-      ? activityState.awaitingInput
-      : null;
-
-  // Banner is controlled by runStatus (also shown during the SSE/REST waiting period when awaitingInput is null).
-  // ask_user is manager-thread-only, so it is not shown on worker threads.
+  // Your turn (P3): the run actually parked in "waiting" (awaitingInput is the
+  // parked marker — a never-run epic is waiting too but has no marker).
+  // Thread attribution: the marker's threadId (SSE event.thread_id is exact) or
+  // the manager trial fallback (precise role attribution is P4). Worker /
+  // evaluator threads never match, so no banner there.
+  const parked = activityState.awaitingInput;
   const isAwaitingInput =
-    activityState.runStatus === "awaiting_input" && threadId === managerThreadId;
+    parked != null && (threadId === parked.threadId || threadId === managerThreadId);
 
   // Bug4: Clear the live buffer when the authoritative REST data arrives
   const prevMsgCountRef = useRef(messages.length);
@@ -161,7 +156,6 @@ export function ThreadPageClient({
           isRunning={isRunning}
           runFailed={runFailed}
           runError={runError}
-          awaitingInput={awaitingInput}
           isAwaitingInput={isAwaitingInput}
           onSendMessage={sendMessage}
           isSending={isSending}

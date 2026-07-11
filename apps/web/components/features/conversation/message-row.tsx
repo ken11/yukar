@@ -130,45 +130,6 @@ export function AgentMessage({
   );
 }
 
-/**
- * AwaitingMessage — synthetic message shown when the Manager is waiting for your approval or answer.
- * Neutral annotation (not warm) + pending_actions glyph instead of a lock.
- */
-export function AwaitingMessage({
-  msg,
-  t,
-}: {
-  msg: import("@assistant-ui/react").ThreadMessageLike;
-  t: (k: string) => string;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="mb-2 flex items-center gap-2">
-        <span
-          className="h-1.5 w-1.5 shrink-0 rounded-full"
-          style={{ backgroundColor: "var(--color-light)" }}
-          aria-hidden="true"
-        />
-        <span
-          className="label text-[11px] font-medium uppercase tracking-[0.05em]"
-          style={{ color: "var(--color-light)" }}
-        >
-          {t("conversation.awaitingInput")}
-        </span>
-      </div>
-      <div
-        className="rounded px-4 py-3"
-        style={{
-          border: "1px solid color-mix(in oklab, var(--color-light) 20%, transparent)",
-          backgroundColor: "var(--color-surface-container)",
-        }}
-      >
-        <MessageContent content={msg.content} />
-      </div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Unified message dispatcher
 // ---------------------------------------------------------------------------
@@ -185,15 +146,10 @@ export function MessageRow({
   /** Same role as the previous message — mobile hides the attribution header (desktop keeps it) */
   grouped?: boolean;
 }) {
-  const t = useT();
   const isUser = msg.role === "user";
   const isStreaming = msg.status?.type === "running";
-  const isAwaiting = msg.id === "__awaiting__";
   const time = msg.createdAt ? msg.createdAt.toLocaleTimeString() : "";
 
-  if (isAwaiting) {
-    return <AwaitingMessage msg={msg} t={t} />;
-  }
   if (isUser) {
     return <UserMessage msg={msg} time={time} grouped={grouped} />;
   }

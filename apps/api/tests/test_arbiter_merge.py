@@ -508,7 +508,7 @@ class TestSupervisorArbiter:
         try:
             sv._runs[(pid, eid)] = _RunHandle(
                 run_id="run-fake",
-                runner=MagicMock(),
+                runner=MagicMock(is_parked=False),  # executing (not parked)
                 task=fake_task,
                 root=root,
                 project_id=pid,
@@ -853,7 +853,7 @@ class TestGitMergeEndpointHardening:
         try:
             sv._runs[(pid, eid)] = _RunHandle(
                 run_id="run-fake",
-                runner=MagicMock(),
+                runner=MagicMock(is_parked=False),  # executing (not parked)
                 task=fake_task,
                 root=root,
                 project_id=pid,

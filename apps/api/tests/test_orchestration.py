@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from tests._helpers import make_git_repo
+from tests._helpers import make_git_repo, run_until_parked, wait_for_run_status
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -649,12 +649,13 @@ class TestEpicOrchestrator:
     Architecture note
     -----------------
     In the Agent-as-a-Tool design the Manager Agent itself calls ``dispatch``
-    and ``complete_epic`` as tool calls.  Worker/Evaluator scripts are consumed
-    *inside* the dispatch host implementation.  Therefore:
+    as a tool call.  Worker/Evaluator scripts are consumed *inside* the
+    dispatch host implementation.  Therefore:
 
     - ``script_manager`` must include ``ToolUseTurn(tool_name="dispatch", ...)``
-      and ``ToolUseTurn(tool_name="complete_epic", ...)`` in addition to
-      ``task_update`` calls.
+      in addition to ``task_update`` calls; its final TextTurn ends the turn
+      and the run parks in ``waiting`` (P3: no completion tool — a
+      conversation has no end).
     - ``script_worker`` / ``script_evaluator`` are injected via ``fake_create_model``
       and consumed when the host runs ``_run_one_attempt`` during dispatch.
     """
@@ -677,8 +678,9 @@ class TestEpicOrchestrator:
         """Run the orchestrator with FakeModel scripts and collect bus events.
 
         Args:
-            script_manager: Script for the Manager Agent (must include dispatch /
-                complete_epic tool calls to drive the orchestration).
+            script_manager: Script for the Manager Agent (must include dispatch
+                tool calls to drive the orchestration; the final TextTurn parks
+                the run).
             script_worker: Script given to each Worker Agent (consumed inside dispatch).
             script_evaluator: Script given to each Evaluator Agent (consumed inside dispatch).
             repo_name: Repo name used by default worker script.
@@ -737,7 +739,9 @@ class TestEpicOrchestrator:
                 require_plan_approval=False,
             )
             run_id = "test-run"
-            await orch.start(root, project_id, epic_id, run_id)
+            # P3: the run parks in ``waiting`` when the scripted turn ends —
+            # it never completes on its own.  Wait for the park, then stop.
+            await run_until_parked(orch, root, project_id, epic_id, run_id)
 
         # sentinel already published by orchestrator, wait for collector
         await asyncio.wait_for(collector, timeout=5.0)
@@ -750,8 +754,8 @@ class TestEpicOrchestrator:
         root, project_id, epic_id = _make_workspace(tmp_path)
         await _bootstrap(root, project_id, epic_id, git_repo)
 
-        # Manager: plan T1, dispatch it, then complete.
-        # In Agent-as-a-Tool, the Manager calls task_update → dispatch → complete_epic.
+        # Manager: plan T1, dispatch it, then report in the message body and
+        # end the turn (the run parks in waiting — there is no completion tool).
         # The FakeModel replays these as scripted tool calls.
         manager_script = [
             ToolUseTurn(
@@ -768,10 +772,6 @@ class TestEpicOrchestrator:
                 tool_input={
                     "items": [{"task_id": "T1", "repo": git_repo.name}],
                 },
-            ),
-            ToolUseTurn(
-                tool_name="complete_epic",
-                tool_input={},
             ),
             TextTurn("Epic complete."),
         ]
@@ -813,7 +813,10 @@ class TestEpicOrchestrator:
         assert "worker_started" in event_types
         assert "worker_completed" in event_types
         assert "eval_result" in event_types
-        assert "run_completed" in event_types
+        # P3: the ended turn parks the run (your-turn signal); a conversation
+        # run never emits run_completed.
+        assert "user_input_requested" in event_types
+        assert "run_completed" not in event_types
 
         # Verify eval result accepted
         eval_ev = next(e for e in events if getattr(e, "type", None) == "eval_result")
@@ -881,7 +884,6 @@ class TestEpicOrchestrator:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Epic complete."),
         ]
         worker_script = [
@@ -947,7 +949,6 @@ class TestEpicOrchestrator:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
         worker_script = [
@@ -1014,7 +1015,6 @@ class TestEpicOrchestrator:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
         worker_script = [
@@ -1049,7 +1049,7 @@ class TestEpicOrchestrator:
     async def test_tasks_yaml_and_state_yaml_consistent(
         self, git_repo: Path, tmp_path: Path
     ) -> None:
-        """After successful run, tasks.yaml has done task and state is completed."""
+        """After the scripted turn, tasks.yaml has a done task and state is waiting."""
         from yukar.llm.fake import TextTurn, ToolUseTurn
         from yukar.storage import state_repo, tasks_repo
 
@@ -1070,7 +1070,6 @@ class TestEpicOrchestrator:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
         worker_script = [
@@ -1105,7 +1104,7 @@ class TestEpicOrchestrator:
 
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "completed"
+        assert state.status == "waiting"
 
     async def test_retry_on_needs_fix(self, git_repo: Path, tmp_path: Path) -> None:
         """Manager dispatches T1, evaluator rejects, Manager retries with feedback, accepted.
@@ -1125,7 +1124,7 @@ class TestEpicOrchestrator:
         await _bootstrap(root, project_id, epic_id, git_repo)
 
         # Manager calls task_update → dispatch(T1) [gets rejected] →
-        # dispatch(T1 with feedback) [accepted] → complete_epic.
+        # dispatch(T1 with feedback) [accepted] → reports and ends the turn.
         # FakeModel replays these as scripted tool calls in order.
         manager_script = [
             ToolUseTurn(
@@ -1155,7 +1154,6 @@ class TestEpicOrchestrator:
                     ]
                 },
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
 
@@ -1216,7 +1214,7 @@ class TestEpicOrchestrator:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-retry-test")
+            await run_until_parked(orch, root, project_id, epic_id, "run-retry-test")
 
         await asyncio.wait_for(collector, timeout=5.0)
 
@@ -1230,8 +1228,8 @@ class TestEpicOrchestrator:
         """After _MAX_ATTEMPTS_PER_TASK failed attempts, host auto-blocks the task.
 
         Manager keeps dispatching T1 (evaluator always rejects).  After the host
-        enforces the attempt limit the task is blocked; Manager calls complete_epic
-        and the run finishes normally.
+        enforces the attempt limit the task is blocked; the Manager reports in
+        its message body and the run parks in waiting (no failure).
         """
         from unittest.mock import patch
 
@@ -1245,8 +1243,8 @@ class TestEpicOrchestrator:
         await _bootstrap(root, project_id, epic_id, git_repo)
 
         # Manager dispatches T1 _MAX_ATTEMPTS_PER_TASK times (all rejected), then
-        # one final dispatch returns blocked (host limit), then complete_epic.
-        # Build manager script dynamically: task_update + N dispatch calls + complete_epic.
+        # one final dispatch returns blocked (host limit), then ends its turn.
+        # Build manager script dynamically: task_update + N dispatch calls + text.
         dispatch_item = {"task_id": "T1", "repo": git_repo.name}
         manager_turns: list[Any] = [
             ToolUseTurn(
@@ -1267,7 +1265,6 @@ class TestEpicOrchestrator:
                     tool_input={"items": [dispatch_item]},
                 )
             )
-        manager_turns.append(ToolUseTurn(tool_name="complete_epic", tool_input={}))
         manager_turns.append(TextTurn("Done."))
 
         # Evaluator always rejects.
@@ -1311,7 +1308,7 @@ class TestEpicOrchestrator:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-blocked")
+            await run_until_parked(orch, root, project_id, epic_id, "run-blocked")
 
         await asyncio.wait_for(collector, timeout=10.0)
 
@@ -1324,11 +1321,12 @@ class TestEpicOrchestrator:
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         assert tf.tasks[0].status == "blocked"
 
-        # Run should still complete (not fail) since we handle it gracefully.
-        assert any(getattr(e, "type", None) == "run_completed" for e in events_received)
+        # The run parks normally (attempt exhaustion is not a run failure).
+        assert not any(getattr(e, "type", None) == "run_failed" for e in events_received)
+        assert any(getattr(e, "type", None) == "user_input_requested" for e in events_received)
 
     async def test_stop_updates_state(self, git_repo: Path, tmp_path: Path) -> None:
-        """Stopping an orchestrator mid-run sets state.yaml to idle (not error).
+        """Stopping an orchestrator mid-run sets state.yaml to waiting (not error).
 
         CancelledError is always caused by an explicit supervisor.stop() call
         (user-initiated interrupt) — the run can be resumed by starting a new
@@ -1360,7 +1358,6 @@ class TestEpicOrchestrator:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Plan done."),
         ]
         # Worker just returns text without committing.
@@ -1401,12 +1398,12 @@ class TestEpicOrchestrator:
             with pytest.raises((asyncio.CancelledError, Exception)):
                 await task
 
-        # CancelledError (stop) → state.status must be idle, NOT error.
-        # epic.yaml stays in_progress (supervisor leaves it for human review).
+        # CancelledError (stop) → state.status must be waiting, NOT error.
+        # epic.yaml is user-owned and untouched by the stop.
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "idle", (
-            f"Expected idle after stop, got {state.status!r}. "
+        assert state.status == "waiting", (
+            f"Expected waiting after stop, got {state.status!r}. "
             "stop is a user-initiated interrupt, not an error."
         )
         assert state.active_workers == []
@@ -1447,7 +1444,6 @@ class TestEpicOrchestrator:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Plan done."),
         ]
         worker_script = [TextTurn("Working…")]
@@ -1552,7 +1548,7 @@ class TestEpicOrchestrator:
 
 
 class TestRecovery:
-    async def test_running_state_reconciled_to_error(self, tmp_path: Path) -> None:
+    async def test_running_state_reconciled_to_waiting(self, tmp_path: Path) -> None:
         from yukar.models.epic import Epic
         from yukar.models.project import Project
         from yukar.models.run import RunState
@@ -1582,10 +1578,10 @@ class TestRecovery:
 
         reconciled = await state_repo.get_state(root, project_id, epic_id)
         assert reconciled is not None
-        assert reconciled.status == "interrupted"
+        assert reconciled.status == "waiting"
         assert reconciled.active_workers == []
 
-    async def test_paused_state_reconciled_to_interrupted(self, tmp_path: Path) -> None:
+    async def test_paused_state_reconciled_to_waiting(self, tmp_path: Path) -> None:
         from yukar.models.epic import Epic
         from yukar.models.project import Project
         from yukar.models.run import RunState
@@ -1609,7 +1605,7 @@ class TestRecovery:
 
         reconciled = await state_repo.get_state(root, project_id, epic_id)
         assert reconciled is not None
-        assert reconciled.status == "interrupted"
+        assert reconciled.status == "waiting"
 
     async def test_completed_state_not_reconciled(self, tmp_path: Path) -> None:
         from yukar.models.epic import Epic
@@ -1945,7 +1941,6 @@ class TestThreadStatusLifecycle:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
         worker_script = [
@@ -1978,10 +1973,13 @@ class TestThreadStatusLifecycle:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-thread-test")
+            await run_until_parked(orch, root, project_id, epic_id, "run-thread-test")
 
-    async def test_manager_thread_resolved_after_run(self, git_repo: Path, tmp_path: Path) -> None:
-        """Manager thread status is resolved after a successful run."""
+    async def test_manager_thread_stays_active_after_run(
+        self, git_repo: Path, tmp_path: Path
+    ) -> None:
+        """The Manager conversation never resolves — it stays active after the
+        turn parks (P3: a conversation has no end; only archived is terminal)."""
         from yukar.storage.threads_repo import get_threads
 
         root, project_id, epic_id = _make_workspace(tmp_path)
@@ -1992,7 +1990,7 @@ class TestThreadStatusLifecycle:
         tf = await get_threads(root, project_id, epic_id)
         manager = next((t for t in tf.threads if t.id == "manager"), None)
         assert manager is not None, "manager thread not found in threads.yaml"
-        assert manager.status == "resolved", f"expected resolved, got {manager.status}"
+        assert manager.status == "active", f"expected active, got {manager.status}"
 
     async def test_worker_and_eval_threads_resolved_on_accept(
         self, git_repo: Path, tmp_path: Path
@@ -2034,7 +2032,7 @@ class TestThreadStatusLifecycle:
 
         from yukar.agents.orchestrator import _MAX_ATTEMPTS_PER_TASK
 
-        # Build manager script: task_update + N dispatch calls + complete_epic.
+        # Build manager script: task_update + N dispatch calls + text.
         dispatch_item = {"task_id": "T1", "repo": git_repo.name}
         manager_turns_blocked: list[Any] = [
             ToolUseTurn(
@@ -2051,7 +2049,6 @@ class TestThreadStatusLifecycle:
             manager_turns_blocked.append(
                 ToolUseTurn(tool_name="dispatch", tool_input={"items": [dispatch_item]})
             )
-        manager_turns_blocked.append(ToolUseTurn(tool_name="complete_epic", tool_input={}))
         manager_turns_blocked.append(TextTurn("Done."))
 
         def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
@@ -2086,7 +2083,7 @@ class TestThreadStatusLifecycle:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-blocked-threads")
+            await run_until_parked(orch, root, project_id, epic_id, "run-blocked-threads")
 
         tf = await get_threads(root, project_id, epic_id)
 
@@ -2106,21 +2103,19 @@ class TestThreadStatusLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# Review fix #2 — stop sets state=idle, NOT error
+# Review fix #2 — stop sets state=waiting, NOT error
 # ---------------------------------------------------------------------------
 
 
-class TestStopSetsIdleState:
-    """CancelledError (stop) produces state.status=idle, internal errors produce error."""
+class TestStopSetsWaitingState:
+    """CancelledError (stop) produces state.status=waiting, internal errors produce error."""
 
     @pytest.fixture
     def git_repo(self, tmp_path: Path) -> Path:
         return make_git_repo(tmp_path, "myrepo")
 
-    async def test_stop_sets_state_idle_epic_in_progress(
-        self, git_repo: Path, tmp_path: Path
-    ) -> None:
-        """After supervisor.stop(), state.yaml=idle and epic.yaml=in_progress."""
+    async def test_stop_sets_state_waiting(self, git_repo: Path, tmp_path: Path) -> None:
+        """After supervisor.stop(), state.yaml=waiting (epic.yaml untouched)."""
         from unittest.mock import patch
 
         from yukar.agents.orchestrator import EpicOrchestrator
@@ -2145,7 +2140,6 @@ class TestStopSetsIdleState:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Plan done."),
         ]
         worker_script = [TextTurn("Working…")]
@@ -2185,8 +2179,8 @@ class TestStopSetsIdleState:
 
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "idle", (
-            f"Expected idle after stop, got {state.status!r}. "
+        assert state.status == "waiting", (
+            f"Expected waiting after stop, got {state.status!r}. "
             "stop is a user-initiated interrupt, not an internal error."
         )
         assert state.active_workers == []
@@ -2264,7 +2258,6 @@ class TestTaskRollbackOnStop:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
         # Worker takes some time so we can cancel mid-run.
@@ -2340,10 +2333,11 @@ class TestTaskRollbackOnStop:
         count = await recover_interrupted_runs(root)
         assert count == 1
 
-        # State must be interrupted (crash recovery).
+        # State must have settled into waiting (crash recovery — the turn died
+        # with the process; the conversation is intact and it is the user's turn).
         s = await state_repo.get_state(root, project_id, epic_id)
         assert s is not None
-        assert s.status == "interrupted"
+        assert s.status == "waiting"
 
         # The in_progress task must have been rolled back to todo.
         tf2 = await tasks_repo.get_tasks(root, project_id, epic_id)
@@ -2413,7 +2407,6 @@ class TestDependencyResolutionLoop:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T2", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done planning."),
         ]
 
@@ -2454,7 +2447,7 @@ class TestDependencyResolutionLoop:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-dep-order")
+            await run_until_parked(orch, root, project_id, epic_id, "run-dep-order")
 
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         task_by_id = {t.id: t for t in tf.tasks}
@@ -2468,11 +2461,15 @@ class TestDependencyResolutionLoop:
         # Both workers ran (T1 then T2).
         assert call_counts["worker"] == 2, f"Expected 2 worker calls, got {call_counts['worker']}"
 
-    async def test_unsatisfiable_deps_marked_blocked(self, git_repo: Path, tmp_path: Path) -> None:
-        """A task whose dependency never completes is eventually marked blocked.
+    async def test_unsatisfiable_deps_stay_todo_after_park(
+        self, git_repo: Path, tmp_path: Path
+    ) -> None:
+        """A task whose dependency never completes stays ``todo`` when the run parks.
 
-        The host's post-loop cleanup marks any remaining non-done/blocked tasks
-        as blocked after the manager loop exits.
+        P3 removed the post-loop cleanup that fabricated ``blocked`` tasks: the
+        run no longer "ends", so there is nothing to reconcile.  The host still
+        rejects the dispatch of a dep-unsatisfied task; the plan simply stays
+        as the Manager left it, and it is the user's turn.
         """
         from unittest.mock import patch
 
@@ -2485,9 +2482,8 @@ class TestDependencyResolutionLoop:
         await _bootstrap(root, project_id, epic_id, git_repo)
 
         # T2 depends on T99 (nonexistent) — can never run.
-        # Manager creates the task, tries to dispatch (host rejects — unsatisfied dep),
-        # then calls complete_epic (host rejects — T2 is still runnable).
-        # After _MAX_MANAGER_TURNS or when Manager exhausts script, host blocks remaining tasks.
+        # Manager creates the task, tries to dispatch (host rejects — unsatisfied
+        # dep), then reports and ends its turn — the run parks in waiting.
         manager_script = [
             ToolUseTurn(
                 tool_name="task_update",
@@ -2499,11 +2495,11 @@ class TestDependencyResolutionLoop:
                     "depends_on": ["T99"],
                 },
             ),
-            # T2 can never be dispatched (T99 not in completed_ids) → host rejects.
-            # Manager gives up and calls complete_epic.
-            # Host: no runnable tasks (T2 has unsatisfied dep) → ok=True.
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("Done."),
+            ToolUseTurn(
+                tool_name="dispatch",
+                tool_input={"items": [{"task_id": "T2", "repo": git_repo.name}]},
+            ),
+            TextTurn("T2 is blocked on T99 which does not exist — please advise."),
         ]
 
         def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
@@ -2520,12 +2516,13 @@ class TestDependencyResolutionLoop:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-unresolvable")
+            await run_until_parked(orch, root, project_id, epic_id, "run-unresolvable")
 
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         task_by_id = {t.id: t for t in tf.tasks}
-        assert task_by_id["T2"].status == "blocked", (
-            f"T2 with unresolvable dep should be blocked, got {task_by_id['T2'].status!r}"
+        assert task_by_id["T2"].status == "todo", (
+            "P3: no post-loop cleanup may fabricate a blocked status; "
+            f"T2 must stay todo, got {task_by_id['T2'].status!r}"
         )
 
 
@@ -2537,9 +2534,8 @@ class TestDependencyResolutionLoop:
 class TestManagerAutonomy:
     """Tests proving Manager autonomy in the Agent-as-a-Tool design.
 
-    These tests verify that:
-    - Manager can dispatch multiple independent tasks in one call (parallel).
-    - complete_epic returns ok=False when runnable tasks remain.
+    These tests verify that the Manager can dispatch multiple independent
+    tasks in one call (parallel intent).
     """
 
     @pytest.fixture
@@ -2595,7 +2591,6 @@ class TestManagerAutonomy:
                     ]
                 },
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Both done."),
         ]
 
@@ -2634,7 +2629,7 @@ class TestManagerAutonomy:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-parallel")
+            await run_until_parked(orch, root, project_id, epic_id, "run-parallel")
 
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         task_by_id = {t.id: t for t in tf.tasks}
@@ -2647,102 +2642,6 @@ class TestManagerAutonomy:
         # Two workers ran.
         assert call_counts["worker"] == 2, f"Expected 2 worker calls, got {call_counts['worker']}"
 
-    async def test_complete_epic_rejected_when_runnable_tasks_remain(
-        self, git_repo: Path, tmp_path: Path
-    ) -> None:
-        """complete_epic returns ok=False when tasks are still runnable.
-
-        Verifies that the host validation inside complete_epic prevents premature
-        completion.  Manager calls complete_epic before dispatching T1; the host
-        should reject it.  Manager then dispatches and completes normally.
-        """
-        from unittest.mock import patch
-
-        from yukar.agents.orchestrator import EpicOrchestrator
-        from yukar.config.settings import LLMSettings
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.storage import tasks_repo
-
-        root, project_id, epic_id = _make_workspace(tmp_path)
-        await _bootstrap(root, project_id, epic_id, git_repo)
-
-        # Manager creates T1, calls complete_epic too early (will be rejected by host),
-        # then dispatches T1 and calls complete_epic again (accepted).
-        manager_script = [
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T1",
-                    "title": "Pending task",
-                    "status": "todo",
-                    "repo": git_repo.name,
-                },
-            ),
-            # Premature complete_epic — host should return ok=False.
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            # Manager tries again after seeing the rejection.
-            ToolUseTurn(
-                tool_name="dispatch",
-                tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
-            ),
-            # Now T1 is done — complete_epic should succeed.
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("Done."),
-        ]
-
-        def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
-            r = role or "worker"
-            if r == "manager":
-                return FakeModel(script=list(manager_script))
-            if r == "worker":
-                return FakeModel(
-                    script=[
-                        ToolUseTurn(
-                            tool_name="fs_write",
-                            tool_input={"path": "out.py", "content": "x = 1\n"},
-                        ),
-                        TextTurn("Done."),
-                    ]
-                )
-            return FakeModel(
-                script=[
-                    ToolUseTurn(
-                        tool_name="submit_verdict",
-                        tool_input={"accepted": True, "feedback": ""},
-                    ),
-                    TextTurn("Accepted."),
-                ]
-            )
-
-        from yukar.events import bus as event_bus
-
-        events_received: list[Any] = []
-
-        async def _collect() -> None:
-            async for ev in event_bus.event_stream(project_id, epic_id):
-                events_received.append(ev)
-
-        collector = asyncio.create_task(_collect())
-        await asyncio.sleep(0)
-
-        with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            orch = EpicOrchestrator(
-                llm_settings=LLMSettings(provider="fake"),
-                git_author_name="yukar",
-                git_author_email="yukar@localhost",
-                require_plan_approval=False,
-            )
-            await orch.start(root, project_id, epic_id, "run-early-complete")
-
-        await asyncio.wait_for(collector, timeout=5.0)
-
-        # T1 must be done and the run must have completed normally.
-        tf = await tasks_repo.get_tasks(root, project_id, epic_id)
-        assert tf.tasks[0].status == "done", f"T1 should be done, got {tf.tasks[0].status!r}"
-        assert any(getattr(ev, "type", None) == "run_completed" for ev in events_received), (
-            "Expected run_completed event"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Tests: Manager turn>0 loop (finding 6)
@@ -2750,12 +2649,11 @@ class TestManagerAutonomy:
 
 
 class TestManagerMultiTurn:
-    """Verify that the Manager loop actually executes turn>0.
+    """Verify the P3 turn loop: one user input drives exactly one turn.
 
-    The FakeModel for the Manager returns a *different* script on turn 1 than
-    on turn 0.  Turn 0 only calls task_update+dispatch; turn 1 calls
-    complete_epic.  The host must issue a second stream_async() call so the
-    Manager sees the dispatch result and acts on it.
+    Turn 0 ends with a TextTurn → the run parks in ``waiting``.  The user's
+    reply (inject_message) wakes the run; the Strands agent's next
+    ``stream_async()`` call consumes the rest of the script (turn 1).
     """
 
     @pytest.fixture
@@ -2763,22 +2661,20 @@ class TestManagerMultiTurn:
         return make_git_repo(tmp_path, "myrepo")
 
     async def test_manager_second_turn_called(self, git_repo: Path, tmp_path: Path) -> None:
-        """Manager loop reaches turn>0: planning in turn 0, dispatch+complete in turn 1.
+        """Manager loop reaches turn>0 via a user reply: plan in turn 0, park,
+        user replies, dispatch in turn 1, park again.
 
-        The FakeModel for the Manager contains a 2-turn sequence in a single
-        script.  The Strands agent calls ``stream_async()`` once per loop
-        iteration; each call consumes script items until a TextTurn (which sets
-        stopReason=end_turn).
+        Turn 0: task_update + TextTurn → the run parks in ``waiting``.
+        User reply: wakes the run (the only way a next turn ever starts).
+        Turn 1: dispatch + TextTurn → T1 done, run parks again.
 
-        Turn 0: task_update + TextTurn.  T1 is planned but not dispatched, so
-        it remains runnable.  The deadlock guard does NOT fire.
-        Turn 1: dispatch + complete_epic + TextTurn.  T1 is dispatched and done.
-
-        If the loop only ran turn 0, T1 would remain 'todo' because dispatch
-        was never called.  Asserting T1=='done' proves turn>0 was executed.
+        If the reply did not drive a second turn, T1 would remain 'todo'
+        because dispatch was never called.  Asserting T1=='done' proves the
+        wake→turn wiring.
         """
         from unittest.mock import patch
 
+        from tests._helpers import wait_until
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
@@ -2804,7 +2700,6 @@ class TestManagerMultiTurn:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("All done."),
         ]
 
@@ -2840,14 +2735,30 @@ class TestManagerMultiTurn:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-multi-turn")
+            run_task = asyncio.create_task(orch.start(root, project_id, epic_id, "run-multi-turn"))
+            # Turn 0 ends → park.
+            await wait_for_run_status(root, project_id, epic_id, "waiting", timeout=30.0)
+
+            # The user replies — this is the ONLY way a next turn starts.
+            orch.inject_message("manager", "Looks good — dispatch T1.")
+
+            # Turn 1 dispatches T1; wait for the observable side effect, then
+            # for the second park (state cycles waiting→running→waiting).
+            async def _t1_done() -> bool:
+                tf_now = await tasks_repo.get_tasks(root, project_id, epic_id)
+                return bool(tf_now.tasks) and tf_now.tasks[0].status == "done"
+
+            await wait_until(_t1_done, timeout=30.0, message="T1 to be done after the reply")
+            await wait_for_run_status(root, project_id, epic_id, "waiting", timeout=30.0)
+            await orch.stop()
+            await asyncio.wait_for(run_task, timeout=10.0)
 
         # T1 done proves turn 1 ran (dispatch is only in turn 1's script).
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         assert tf.tasks[0].status == "done", f"T1 should be done, got {tf.tasks[0].status!r}"
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "completed", f"Run should be completed, got {state.status!r}"
+        assert state.status == "waiting", f"Run should be waiting, got {state.status!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -2871,8 +2782,8 @@ class TestDispatchRejections:
         """dispatch of a nonexistent task_id is rejected but run still completes.
 
         The Manager dispatches 'NONEXISTENT' (never created via task_update).
-        The host rejects the item silently.  Manager then calls complete_epic
-        (no runnable tasks → ok=True) and the run finishes as completed.
+        The host rejects the item; the Manager reports in its message body and
+        the run parks in waiting (a rejection is not a run failure).
         """
         from unittest.mock import patch
 
@@ -2889,7 +2800,6 @@ class TestDispatchRejections:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "NONEXISTENT"}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
         with patch("yukar.agents.orchestrator.create_model") as mock_cm:
@@ -2902,20 +2812,21 @@ class TestDispatchRejections:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-dispatch-not-found")
+            await run_until_parked(orch, root, project_id, epic_id, "run-dispatch-not-found")
 
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "completed", (
-            f"Run should complete when dispatch item is rejected; got {state.status!r}"
+        assert state.status == "waiting", (
+            f"Run should park when dispatch item is rejected; got {state.status!r}"
         )
 
-    async def test_unsatisfied_dep_task_blocked(self, git_repo: Path, tmp_path: Path) -> None:
-        """A task whose dependency is unsatisfied is eventually blocked.
+    async def test_unsatisfied_dep_task_stays_todo(self, git_repo: Path, tmp_path: Path) -> None:
+        """A dispatch of a dep-unsatisfied task is rejected; the task stays todo.
 
         T2 depends on T1 (never created/done).  Manager dispatches T2; the host
-        rejects it.  Manager calls complete_epic (T2 not runnable → ok=True).
-        Post-loop cleanup marks T2 blocked.
+        rejects it and the Manager ends its turn.  P3 removed the post-loop
+        cleanup, so nothing fabricates a blocked status — the plan stays as
+        the Manager left it.
         """
         from unittest.mock import patch
 
@@ -2942,7 +2853,6 @@ class TestDispatchRejections:
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T2"}]},
             ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
             TextTurn("Done."),
         ]
         with patch("yukar.agents.orchestrator.create_model") as mock_cm:
@@ -2955,12 +2865,12 @@ class TestDispatchRejections:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-dispatch-dep")
+            await run_until_parked(orch, root, project_id, epic_id, "run-dispatch-dep")
 
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         t2 = next(t for t in tf.tasks if t.id == "T2")
-        assert t2.status == "blocked", (
-            f"T2 with unsatisfied dep should be blocked, got {t2.status!r}"
+        assert t2.status == "todo", (
+            f"T2 with unsatisfied dep must stay todo (no fabricated blocked), got {t2.status!r}"
         )
 
     async def test_attempt_limit_blocks_task(self, git_repo: Path, tmp_path: Path) -> None:
@@ -2997,7 +2907,6 @@ class TestDispatchRejections:
                     tool_input={"items": dispatch_items},
                 )
             )
-        manager_script.append(ToolUseTurn(tool_name="complete_epic", tool_input={}))
         manager_script.append(TextTurn("Done."))
 
         # Worker does nothing useful; evaluator always rejects.
@@ -3025,7 +2934,7 @@ class TestDispatchRejections:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            await orch.start(root, project_id, epic_id, "run-attempt-limit")
+            await run_until_parked(orch, root, project_id, epic_id, "run-attempt-limit")
 
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         t1 = next(t for t in tf.tasks if t.id == "T1")
@@ -3035,94 +2944,33 @@ class TestDispatchRejections:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _MAX_MANAGER_TURNS exhaustion → error state (findings 3, 4, 8)
+# Tests: _MAX_MANAGER_TURNS exhaustion — cost backstop, not an error (P3)
 # ---------------------------------------------------------------------------
 
 
 class TestManagerTurnLimit:
-    """Verify that exhausting _MAX_MANAGER_TURNS results in run state='error'.
+    """The turn limit is a pure cost backstop under park-every-turn semantics.
 
-    Spec §6.2: 'When _MAX_MANAGER_TURNS is reached, the host terminates the loop
-    and sets run state to error'.
+    One user input drives exactly one turn, so reaching the limit just ends
+    the run TASK: the final turn already parked the run in ``waiting``, the
+    conversation is intact, and the next user message starts a continuation.
+    No error state, no RunFailedEvent, no RunCompletedEvent.
     """
 
     @pytest.fixture
     def git_repo(self, tmp_path: Path) -> Path:
         return make_git_repo(tmp_path, "myrepo")
 
-    async def test_turn_limit_sets_error_state(self, git_repo: Path, tmp_path: Path) -> None:
-        """Exhaust the turn limit and verify run state becomes 'error'.
-
-        The Manager stays PRODUCTIVE every turn (task_update keeps T1 todo, so
-        neither the deadlock guard nor the silent-stall park fires) but never
-        dispatches or calls complete_epic, forcing the loop to hit the patched
-        turn limit.  A manager that stalls silently now parks in awaiting_input
-        instead of burning turns — the limit remains the backstop for a manager
-        that keeps working without ever finishing.
-        """
-        from unittest.mock import patch
-
-        from yukar.agents.orchestrator import EpicOrchestrator
-        from yukar.config.settings import LLMSettings
-        from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.storage import state_repo
-
-        root, project_id, epic_id = _make_workspace(tmp_path)
-        await _bootstrap(root, project_id, epic_id, git_repo)
-
-        # One productive (task_update + text) pair per turn, patched limit = 3.
-        busy_turn = [
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T1",
-                    "title": "Stuck task",
-                    "status": "todo",
-                    "repo": git_repo.name,
-                },
-            ),
-            TextTurn("Reworked T1; still not done."),
-        ]
-        manager_script = [*busy_turn, *busy_turn, *busy_turn]
-
-        with (
-            patch("yukar.agents.orchestrator._MAX_MANAGER_TURNS", 3),
-            patch("yukar.agents.orchestrator.create_model") as mock_cm,
-        ):
-            mock_cm.side_effect = lambda settings, role=None, **kw: FakeModel(
-                script=list(manager_script)
-            )
-            orch = EpicOrchestrator(
-                llm_settings=LLMSettings(provider="fake"),
-                git_author_name="yukar",
-                git_author_email="yukar@localhost",
-                require_plan_approval=False,
-            )
-            # start() raises _ManagerTurnLimitError; catch it here.
-            with pytest.raises(Exception, match="turn limit"):
-                await orch.start(root, project_id, epic_id, "run-turn-limit")
-
-        state = await state_repo.get_state(root, project_id, epic_id)
-        assert state is not None, "state.yaml should exist"
-        assert state.status == "error", (
-            f"Run should be in error state after turn limit, got {state.status!r}"
-        )
-
-    async def test_turn_limit_publishes_run_failed_event(
-        self, git_repo: Path, tmp_path: Path
-    ) -> None:
-        """Exhausting the turn limit publishes a RunFailedEvent (not RunCompletedEvent).
-
-        Same setup as test_turn_limit_sets_error_state: the Manager stays
-        productive (task_update every turn) but never completes, hitting the
-        patched limit.
-        """
+    async def test_turn_limit_leaves_waiting_state(self, git_repo: Path, tmp_path: Path) -> None:
+        """Exhaust a patched 2-turn limit: the run task ends normally and the
+        state stays ``waiting`` (restartable as a continuation)."""
         from unittest.mock import patch
 
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
+        from yukar.storage import state_repo
 
         root, project_id, epic_id = _make_workspace(tmp_path)
         await _bootstrap(root, project_id, epic_id, git_repo)
@@ -3139,7 +2987,7 @@ class TestManagerTurnLimit:
             ),
             TextTurn("Reworked T1; still not done."),
         ]
-        manager_script = [*busy_turn, *busy_turn, *busy_turn]
+        manager_script = [*busy_turn, *busy_turn]
 
         events_received: list[Any] = []
 
@@ -3151,7 +2999,7 @@ class TestManagerTurnLimit:
         await asyncio.sleep(0)
 
         with (
-            patch("yukar.agents.orchestrator._MAX_MANAGER_TURNS", 3),
+            patch("yukar.agents.orchestrator._MAX_MANAGER_TURNS", 2),
             patch("yukar.agents.orchestrator.create_model") as mock_cm,
         ):
             mock_cm.side_effect = lambda settings, role=None, **kw: FakeModel(
@@ -3163,17 +3011,29 @@ class TestManagerTurnLimit:
                 git_author_email="yukar@localhost",
                 require_plan_approval=False,
             )
-            with pytest.raises(Exception, match="turn limit"):
-                await orch.start(root, project_id, epic_id, "run-turn-limit-event")
+            run_task = asyncio.create_task(
+                orch.start(root, project_id, epic_id, "run-turn-limit")
+            )
+            # Turn 0 parks; the user's reply drives turn 1, which exhausts the
+            # patched limit — the run task must then finish WITHOUT an error.
+            await wait_for_run_status(root, project_id, epic_id, "waiting", timeout=30.0)
+            orch.inject_message("manager", "keep going")
+            await asyncio.wait_for(run_task, timeout=30.0)
 
         await asyncio.wait_for(collector, timeout=5.0)
 
+        state = await state_repo.get_state(root, project_id, epic_id)
+        assert state is not None, "state.yaml should exist"
+        assert state.status == "waiting", (
+            f"Turn-limit exhaustion must leave the run waiting, got {state.status!r}"
+        )
+
         event_types = [getattr(ev, "type", None) for ev in events_received]
-        assert "run_failed" in event_types, (
-            f"Expected run_failed event on turn limit; got {event_types}"
+        assert "run_failed" not in event_types, (
+            "The turn limit is a cost backstop, not an error"
         )
         assert "run_completed" not in event_types, (
-            "run_completed must NOT be emitted when turn limit is hit"
+            "A conversation run never emits run_completed"
         )
 
 
@@ -3213,9 +3073,9 @@ class TestHITLEndToEnd:
                 recorded_prompts.append(json.dumps(messages, default=str))
                 return super().stream(messages, *args, **kwargs)
 
-        # turn 0: create T1 (todo); the trailing text ends the turn.
-        # turn 1: block T1 then complete_epic.  No task is dispatched, so no
-        # Worker/Evaluator runs — the test stays fast and focused on HITL wiring.
+        # turn 0: create T1 (todo); the trailing text ends the turn and the
+        # run parks in waiting.  No task is dispatched, so no Worker/Evaluator
+        # runs — the test stays fast and focused on HITL wiring.
         manager_script = [
             ToolUseTurn(
                 tool_name="task_update",
@@ -3227,17 +3087,6 @@ class TestHITLEndToEnd:
                 },
             ),
             TextTurn("Planned."),
-            ToolUseTurn(
-                tool_name="task_update",
-                tool_input={
-                    "task_id": "T1",
-                    "title": "T",
-                    "status": "blocked",
-                    "repo": git_repo.name,
-                },
-            ),
-            ToolUseTurn(tool_name="complete_epic", tool_input={}),
-            TextTurn("Done."),
         ]
 
         def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
@@ -3257,7 +3106,7 @@ class TestHITLEndToEnd:
         orch.inject_message("manager", marker)
 
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
-            await orch.start(root, project_id, epic_id, "run-hitl-e2e")
+            await run_until_parked(orch, root, project_id, epic_id, "run-hitl-e2e")
 
         assert recorded_prompts, "Manager model was never invoked"
         assert any(marker in p for p in recorded_prompts), (
@@ -3266,7 +3115,7 @@ class TestHITLEndToEnd:
 
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
-        assert state.status == "completed"
+        assert state.status == "waiting"
 
 
 # ---------------------------------------------------------------------------

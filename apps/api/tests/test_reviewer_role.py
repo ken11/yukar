@@ -780,7 +780,7 @@ class TestReviewerBlocksTrialMutations:
         task.done.return_value = False
         sup._runs[sup._key(pid, eid)] = _RunHandle(
             run_id="run-rev",
-            runner=MagicMock(),
+            runner=MagicMock(is_parked=False),  # executing (not parked)
             task=task,
             root=root,
             project_id=pid,

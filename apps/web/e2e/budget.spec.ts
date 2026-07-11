@@ -26,6 +26,7 @@
 
 import { expect, test } from "@playwright/test";
 import { BUDGET_SEED } from "./budget-seed";
+import { waitForRunWaiting } from "./wait-helpers";
 
 test.describe
   .serial("Budget exceeded scenario", () => {
@@ -98,26 +99,16 @@ test.describe
       await expect(page).toHaveURL(/\/threads\//, { timeout: 15_000 });
     });
 
-    // ---- 3. Run completes & confirm total_tokens > 0 ----
+    // ---- 3. Run parks & confirm total_tokens > 0 ----
 
-    test("4. run completes and total_tokens > 0", async ({ page }) => {
+    test("4. run parks in waiting and total_tokens > 0", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
-      // Wait for the run to reach a terminal-ish state (run/state — the epic
-      // itself stays open under the 1-bit lifecycle).
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            const body = await res.json();
-            return body.status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toMatch(/^(completed|interrupted|idle|error)$/);
+      // Standard turn-end wait: the manager's report text ends its turn and
+      // the run parks in "waiting" (the epic itself stays open under the
+      // 1-bit lifecycle).
+      await waitForRunWaiting(page, state.projectId, state.epicId);
 
       // Check usage state via GET /api/usage
       const usageRes = await page.request.get("/api/usage");
@@ -227,7 +218,21 @@ test.describe
         "over_budget is false — the budget limit set in test 5 is not taking effect",
       ).toBe(true);
 
-      // Attempt to run against the existing epic (re-running a completed epic is also subject to 409)
+      // When the budget flipped to exceeded (test 5), the usage tracker stops
+      // every active run (supervisor.stop on the live parked run = shelve:
+      // task cancel, state stays "waiting"). The parked run is therefore
+      // usually already gone and stop returns 404 ("nothing live to stop" is
+      // the normal resting state under P3). Issue a best-effort stop anyway
+      // so this test is order-independent, accepting both outcomes.
+      const stopRes = await page.request.post(
+        `/api/projects/${state.projectId}/epics/${state.epicId}/run/stop`,
+      );
+      console.log(`[budget] POST /run/stop status = ${stopRes.status()}`);
+      expect(
+        stopRes.ok() || stopRes.status() === 404,
+        `stop should succeed or 404 (no live run) but returned ${stopRes.status()}`,
+      ).toBeTruthy();
+
       // The budget check in start_run happens at the top of POST /run
       const runRes = await page.request.post(
         `/api/projects/${state.projectId}/epics/${state.epicId}/run`,

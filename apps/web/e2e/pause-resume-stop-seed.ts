@@ -4,13 +4,13 @@
  * YUKAR_FAKE_SLEEP=6.0 inserts a 6.0s delay between each chunk.
  * Because 6.0s > the supervisor's 5s cancel wait, stopping from the
  * running state causes the task to receive CancelledError and
- * state.status to become "idle" (the canonical idle path).
+ * state.status to stay "waiting" (the user-stop path).
  *
- * Turn-end semantics note: a manager turn that ends without an effector tool
- * (dispatch / task_update) gets ONE stall notice; a second silent turn PARKS
- * the run in awaiting_input.  To keep a long "running" window this script
- * alternates task_update + text — every turn is productive, so the host keeps
- * sending the one-shot notice and the run never parks.
+ * P3 turn-end semantics note: EVERY ended turn parks the run in "waiting"
+ * (a text/end_turn response yields to the user).  A long "running" window
+ * therefore has to come from WITHIN a single manager turn: consecutive
+ * tool_use turns make Strands recurse inside the same orchestrator turn, so
+ * the run stays "running" until the final text turn would end it.
  *
  * worker / evaluator are empty (they are never called because dispatch is not invoked).
  */
@@ -30,43 +30,23 @@ export const PAUSE_RESUME_SEED = {
   repoDir: path.join(base, "repo", "myrepo"),
 } as const;
 
-/** One productive manager turn: refresh T1 (effector) then narrate. */
-function turn(step: number, total: number, narration: string) {
-  return [
-    {
-      type: "tool_use",
-      tool_name: "task_update",
-      tool_input: {
-        task_id: "T1",
-        title: "Implement feature A",
-        status: "todo",
-        repo: "myrepo",
-        contract: "Implement feature A. Verify: tests pass.",
-      },
-    },
-    { type: "text", text: `${narration} (step ${step} of ${total}).` },
-  ];
-}
-
 /**
  * Fake LLM script for pause/resume/stop scenario.
  *
  * Turn layout (used together with YUKAR_FAKE_SLEEP=6.0):
- *   - Every turn: task_update keeps T1 "todo" (runnable_exists stays True,
- *     bypassing the deadlock guard) AND marks the turn productive so the
- *     turn-end semantics keep the run flowing (notice → next turn) instead
- *     of parking it in awaiting_input.
- *   - dispatch/complete_epic are never called, so the run keeps consuming
- *     manager turns until the tests pause / resume / stop it.
- *   - 15 turns × (task_update + text) × 6.0s sleeps ≈ a long running window;
- *     turns are not consumed while paused.
+ *   - 15 consecutive task_update tool_use turns: each tool result makes
+ *     Strands recurse within the SAME orchestrator turn, so the run keeps
+ *     "running" (no end_turn, no park) while the tests pause / resume / stop.
+ *   - dispatch is never called, so no worker/evaluator ever starts.
+ *   - The trailing text turn is never reached in practice (test 6 stops the
+ *     run first); it exists only to terminate the script cleanly if it is.
  *
  * Why FAKE_SLEEP=6.0 matters:
  *   supervisor.stop() waits 5s then cancels the asyncio.Task.
  *   If the manager is mid asyncio.sleep(6.0), it receives CancelledError and
- *   the orchestrator sets state.status = "idle" (the canonical idle path).
+ *   the orchestrator leaves state.status = "waiting" (the user-stop path).
  */
-const NARRATIONS = [
+const STEPS = [
   "Analyzing requirements",
   "Reviewing codebase structure",
   "Identifying dependencies",
@@ -85,7 +65,20 @@ const NARRATIONS = [
 ];
 
 export const PAUSE_RESUME_FAKE_SCRIPT = JSON.stringify({
-  manager: NARRATIONS.flatMap((narration, i) => turn(i + 1, NARRATIONS.length, narration)),
+  manager: [
+    ...STEPS.map((step, i) => ({
+      type: "tool_use",
+      tool_name: "task_update",
+      tool_input: {
+        task_id: "T1",
+        title: "Implement feature A",
+        status: "todo",
+        repo: "myrepo",
+        contract: `Implement feature A. Verify: tests pass. (${step} — step ${i + 1} of ${STEPS.length})`,
+      },
+    })),
+    { type: "text", text: "Planning pass finished." },
+  ],
   worker: [],
   evaluator: [],
 });

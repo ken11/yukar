@@ -1936,67 +1936,56 @@ class TestLedgerResilience:
         )
 
 
-class TestCompleteEpicLearnings:
-    """complete_epic must surface learnings that fail to embed/persist."""
+class TestRememberEmbedFailureSurfaced:
+    """remember() must surface a memory write that fails to embed/persist.
 
-    async def test_complete_epic_surfaces_embed_failure(self) -> None:
-        """A learning whose add() raises EmbedFailedError appears in learnings_failed."""
-        from types import SimpleNamespace
+    Successor of the complete_epic learnings tests: complete_epic is gone
+    (P3 — a conversation has no completion tool) and remember() is the only
+    memory-write path, so the embed-failure visibility guarantee moves here.
+    """
 
-        from yukar.agents.orchestrator import EpicOrchestrator
+    async def test_remember_surfaces_embed_failure(self) -> None:
+        """An add() that raises EmbedFailedError returns stored=False with
+        reason=embed_failed instead of crashing the tool call."""
+        from yukar.agents.orchestrator import _make_remember_tool
         from yukar.memory.store import EmbedFailedError
 
-        class _FakeStore:
+        class _BoomStore:
+            async def add(self, content: str, metadata: dict[str, Any] | None = None) -> Any:
+                raise EmbedFailedError("embed exploded")
+
+        remember = _make_remember_tool(_BoomStore(), "EP-1")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        result = await remember._tool_func(fact="boom", category="lesson", repo=None)
+        assert result == {"stored": False, "reason": "embed_failed"}
+
+    async def test_remember_success_and_duplicate_counts(self) -> None:
+        """Stored and duplicate outcomes are distinguishable to the Manager."""
+        from yukar.agents.orchestrator import _make_remember_tool
+
+        class _Store:
             def __init__(self) -> None:
                 self.calls: list[str] = []
 
             async def add(self, content: str, metadata: dict[str, Any] | None = None) -> Any:
                 self.calls.append(content)
-                if content == "boom":
-                    raise EmbedFailedError("embed exploded")
                 if content == "dup":
-                    return None  # duplicate
-                return "mem-0001"  # stored
+                    return None
+                return "mem-0001"
 
-        store = _FakeStore()
-        stub = SimpleNamespace(
-            _tasks_holder=[SimpleNamespace(tasks=[])],
-            _memory_store=store,
-            _epic_id="EP-1",
-            _epic_complete=False,
+        store = _Store()
+        published: list[tuple[str, str]] = []
+        remember = _make_remember_tool(
+            store,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+            "EP-1",
+            lambda kind, name: published.append((kind, name)),
         )
 
-        result = await EpicOrchestrator._do_complete_epic(stub, learnings=["good", "dup", "boom"])  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
-
-        assert result["ok"] is True, "completion correctness must not be blocked by embed loss"
-        assert result["learnings_stored"] == 1
-        assert result["learnings_duplicate"] == 1
-        assert len(result["learnings_failed"]) == 1
-        assert result["learnings_failed"][0]["reason"] == "embed_failed"
-        assert "embed exploded" in result["learnings_failed"][0]["error"]
-
-    async def test_complete_epic_all_stored_has_empty_failed(self) -> None:
-        """When every learning persists, learnings_failed is empty and counts are correct."""
-        from types import SimpleNamespace
-
-        from yukar.agents.orchestrator import EpicOrchestrator
-
-        class _OkStore:
-            async def add(self, content: str, metadata: dict[str, Any] | None = None) -> Any:
-                return "mem-xxxx"
-
-        stub = SimpleNamespace(
-            _tasks_holder=[SimpleNamespace(tasks=[])],
-            _memory_store=_OkStore(),
-            _epic_id="EP-1",
-            _epic_complete=False,
-        )
-
-        result = await EpicOrchestrator._do_complete_epic(stub, learnings=["a", "b"])  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
-        assert result["ok"] is True
-        assert result["learnings_stored"] == 2
-        assert result["learnings_duplicate"] == 0
-        assert result["learnings_failed"] == []
+        ok = await remember._tool_func(fact="good", category="lesson", repo=None)
+        dup = await remember._tool_func(fact="dup", category="lesson", repo=None)
+        assert ok == {"stored": True, "id": "mem-0001"}
+        assert dup == {"stored": False, "reason": "duplicate"}
+        # The sensitive-write event fires only for the successful store.
+        assert published == [("memory", "lesson")]
 
 
 class TestExchangeRobustness:

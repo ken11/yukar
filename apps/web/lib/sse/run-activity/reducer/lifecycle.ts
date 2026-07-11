@@ -51,7 +51,7 @@ export function handleLifecycle(
       };
     }
 
-    // #34: consolidated into finalizeTree()
+    // JOB runs only (resolve / arbiter). #34: consolidated into finalizeTree()
     case "RUN_COMPLETED": {
       const tree = state.treeState;
       const { manager, workers } = finalizeTree(tree);
@@ -79,28 +79,15 @@ export function handleLifecycle(
       };
     }
 
-    // User-initiated stop. run reverts to idle (re-runnable), so controls return to Start Run.
-    // Not a completion/failure, but finalize the tree's streaming/thinking display to stop it.
+    // User-initiated stop. The run settles back into "waiting" (your turn) —
+    // the conversation is intact and re-runnable. Not a completion/failure,
+    // but finalize the tree's streaming/thinking display to stop it.
     case "RUN_STOPPED": {
       const tree = state.treeState;
       const { manager, workers } = finalizeTree(tree);
       return {
         ...state,
-        runStatus: "idle",
-        pausePending: false,
-        runError: null,
-        awaitingInput: null,
-        treeState: { ...tree, manager, workers },
-      };
-    }
-
-    // System-initiated interruption (e.g. restart detection). Can be resumed from completed/interrupted (spec Wave 3).
-    case "RUN_INTERRUPTED": {
-      const tree = state.treeState;
-      const { manager, workers } = finalizeTree(tree);
-      return {
-        ...state,
-        runStatus: "interrupted",
+        runStatus: "waiting",
         pausePending: false,
         runError: null,
         awaitingInput: null,
@@ -114,44 +101,33 @@ export function handleLifecycle(
     case "RUN_RESUMED":
       return { ...state, runStatus: "running", pausePending: false, awaitingInput: null };
 
+    // The run parked in "waiting" — it is the user's turn. The question/report
+    // is the agent's final message in the thread (no payload here).
     case "USER_INPUT_REQUESTED": {
-      // Do not revert to awaiting_input for terminal runs (completed/error/interrupted)
-      // when a delayed awaiting snapshot arrives due to a race between REST(getRunState) and SSE.
-      // Symmetric guard to USER_INPUT_RESOLVED which only reverts to running when awaiting.
-      // Note: idle is the initial state and the restore origin on reload (idle→awaiting_input), so it is not excluded.
-      if (
-        state.runStatus === "completed" ||
-        state.runStatus === "error" ||
-        state.runStatus === "interrupted"
-      ) {
+      // Do not downgrade a terminal run (completed=job / error) when a delayed
+      // parked snapshot arrives due to a race between REST (getRunState) and SSE.
+      // Symmetric guard to USER_INPUT_RESOLVED which only reverts to running when waiting.
+      if (state.runStatus === "completed" || state.runStatus === "error") {
         return state;
-      }
-      // getRunState / cache restore dispatches with only status known and question="".
-      // An empty question confirms only runStatus as awaiting_input without changing awaitingInput.
-      //   - If an existing real awaitingInput(threadId+question) is present, preserve it entirely.
-      //   - Also keep null as null: set awaitingInput only when REST's pending_question or SSE replay's
-      //     user_input_requested (with question) arrives.
-      // This prevents the issue of a bubble being rendered in the intermediate state of question=""
-      // (because `if (awaitingInput?.question)` in runtime.ts:257 treats "" as falsy).
-      if (action.question === "") {
-        return { ...state, runStatus: "awaiting_input" };
       }
       return {
         ...state,
-        runStatus: "awaiting_input",
-        awaitingInput: { threadId: action.threadId, question: action.question },
+        runStatus: "waiting",
+        awaitingInput: { threadId: action.threadId },
       };
     }
 
     case "USER_INPUT_RESOLVED":
-      // Approval/answer completed: clear awaiting and revert to running.
-      // Only revert runStatus to running when it is awaiting_input.
-      // Guard to prevent erroneously reverting to running when a delayed resolved replays
-      // after a terminal state (completed/failed/stopped, etc.).
-      // Symmetric with MANAGER_TURN_STARTED which has the same "revert to running only when awaiting" guard.
+      // The user's reply woke the run: clear the parked marker and revert to running.
+      // Only revert when an actually-parked run exists (waiting + marker):
+      // "waiting" alone is also the default/stopped resting state, and a delayed
+      // resolved replay after stop / terminal states must not fake "running".
       return {
         ...state,
-        runStatus: state.runStatus === "awaiting_input" ? "running" : state.runStatus,
+        runStatus:
+          state.runStatus === "waiting" && state.awaitingInput !== null
+            ? "running"
+            : state.runStatus,
         awaitingInput: null,
       };
 

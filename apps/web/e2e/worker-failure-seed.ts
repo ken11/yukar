@@ -3,12 +3,13 @@
  *
  * The manager runs normally through task_update → dispatch,
  * then the worker's first turn is a RaiseTurn (MaxTokensReachedException) that causes it to fail.
- * Afterwards the manager calls complete_epic to finish the run.
+ * Afterwards the manager reports in body text and its turn end parks the run
+ * in "waiting" (P3: a conversation run never completes).
  *
  * Verification points:
  *   - The ThreadTreePanel WorkerNode shows status="failed"
  *   - The WorkerNode warning icon (status "失敗" label) is visible
- *   - run_state epic status is completed (Manager continues after Worker failure)
+ *   - run_state.status parks at "waiting" while the epic stays open
  */
 import os from "node:os";
 import path from "node:path";
@@ -32,8 +33,8 @@ export const WORKER_FAILURE_SEED = {
  * Manager:
  *   (0) task_update(T1)   — register task
  *   (1) dispatch(T1)      — delegate to Worker
- *   (2) complete_epic     — Manager continues and completes after Worker failure
- *   (3) text "Run finished with worker failure."
+ *   (2) text report       — Manager continues after the Worker failure; the
+ *       text turn ends the turn and the run parks in "waiting"
  *
  * Worker:
  *   (0) raise MaxTokensReachedException — Worker fails immediately
@@ -58,11 +59,6 @@ export const WORKER_FAILURE_FAKE_SCRIPT = JSON.stringify({
       type: "tool_use",
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
-    },
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
     },
     { type: "text", text: "Run finished with worker failure." },
   ],
@@ -98,11 +94,6 @@ export const WORKER_CONTEXT_OVERFLOW_FAKE_SCRIPT = JSON.stringify({
       type: "tool_use",
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T2", repo: "myrepo" }] },
-    },
-    {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
     },
     { type: "text", text: "Run finished with context overflow failure." },
   ],

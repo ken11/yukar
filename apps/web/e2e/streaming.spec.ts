@@ -12,13 +12,14 @@
  *   3. Assert that the text "まず計画を整理します" and the task_update ToolCallRow
  *      coexist inside a single [data-testid="agent-message"] bubble
  *   4. Save a screenshot to test-results/streaming-message-bubble.png
- *   5. Confirm via API polling that the run reaches "completed"
- *   6. After completed, count the bubbles to detect duplicate rendering (expected: 1)
+ *   5. Confirm via API polling that the work is done (run "waiting" + all tasks done)
+ *   6. After the work is done, count the bubbles to detect duplicate rendering (expected: 1)
  *   7. Save an element screenshot to test-results/streaming-combined-bubble.png
  */
 
 import { expect, test } from "@playwright/test";
 import { STREAMING_SEED } from "./streaming-seed";
+import { waitForWorkDone } from "./wait-helpers";
 
 test.describe
   .serial("MessageTurn streaming — mixed bubble", () => {
@@ -163,7 +164,7 @@ test.describe
       });
     });
 
-    // ---- 4. Confirm the run advances to completed ----
+    // ---- 4. Confirm the run advances to work done ----
 
     test("4. run completes", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
@@ -182,22 +183,12 @@ test.describe
         state.pageErrors.push({ message: err.message, stack: err.stack });
       });
 
-      await expect
-        .poll(
-          async () => {
-            const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-            );
-            return (await res.json()).status;
-          },
-          { timeout: 90_000, intervals: [500, 1000, 1000] },
-        )
-        .toBe("completed");
+      await waitForWorkDone(page, state.projectId, state.epicId);
     });
 
     // ---- 5. Confirm whether duplicate rendering occurs & take element screenshot ----
 
-    test("5. verify no duplicate bubble after completed", async ({ page }) => {
+    test("5. verify no duplicate bubble after the work is done", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
 
@@ -214,7 +205,7 @@ test.describe
         state.pageErrors.push({ message: err.message, stack: err.stack });
       });
 
-      // After confirmed completed, navigate back to the manager thread (opening a fresh page after SSE ended)
+      // After the work is confirmed done, navigate back to the manager thread (opening a fresh page after SSE ended)
       const managerUrl = state.threadUrl
         ? state.threadUrl
         : `/projects/${state.projectId}/epics/${state.epicId}/threads/manager`;
@@ -235,7 +226,7 @@ test.describe
 
       const count = await bubbles.count();
       console.log(
-        `[streaming-test] bubble count for "まず計画を整理します" after completed = ${count}`,
+        `[streaming-test] bubble count for "まず計画を整理します" after work done = ${count}`,
       );
 
       if (count !== 1) {
@@ -310,19 +301,18 @@ test.describe
     // The STREAMING_FAKE_SCRIPT script consists of the following utterances:
     //   (0) MessageTurn: text "まず計画を整理します" + task_update ToolCall           → 1 bubble
     //   (1) ToolUseTurn: dispatch                                                    → 1 bubble
-    //   (2) ToolUseTurn: complete_epic                                               → 1 bubble
-    //   (3) TextTurn: "Epic complete."                                               → 1 bubble
-    // There should be 4 bubbles total in the manager thread; fewer indicates the append bug.
+    //   (2) TextTurn: "Epic work is done." (final report; run parks in waiting)      → 1 bubble
+    // There should be 3 bubbles total in the manager thread; fewer indicates the append bug.
     //
     // Additionally, assert that the first bubble (containing "まず計画を整理します")
     // does not include content from subsequent utterances
-    // (i.e., strings like dispatch/complete_epic must not bleed in).
+    // (i.e., strings like dispatch / the final report must not bleed in).
 
     test("6. bubble isolation — exact count and no cross-contamination", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
 
-      // Navigate to the manager thread after completed
+      // Navigate to the manager thread after the work is done
       const managerUrl = state.threadUrl
         ? state.threadUrl
         : `/projects/${state.projectId}/epics/${state.epicId}/threads/manager`;
@@ -339,17 +329,17 @@ test.describe
       const allBubbles = page.locator('[data-testid="agent-message"]');
       const totalCount = await allBubbles.count();
       console.log(
-        `[bubble-isolation] total agent-message bubble count = ${totalCount} (expected: 4 utterances)`,
+        `[bubble-isolation] total agent-message bubble count = ${totalCount} (expected: 3 utterances)`,
       );
 
       // Verify the count matches the number of scripted utterances
-      // MessageTurn(1) + dispatch(1) + complete_epic(1) + "Epic complete."(1) = 4
+      // MessageTurn(1) + dispatch(1) + "Epic work is done."(1) = 3
       expect(
         totalCount,
-        `Manager should have 4 utterances, but ${totalCount} bubbles detected ` +
-          "(totalCount < 4 suggests the append bug where bubbles are merged; " +
-          "totalCount > 4 suggests duplicate rendering)",
-      ).toBe(4);
+        `Manager should have 3 utterances, but ${totalCount} bubbles detected ` +
+          "(totalCount < 3 suggests the append bug where bubbles are merged; " +
+          "totalCount > 3 suggests duplicate rendering)",
+      ).toBe(3);
 
       // Get the textContent of the first bubble (which contains "まず計画を整理します")
       const firstBubble = allBubbles.first();
@@ -359,18 +349,14 @@ test.describe
       );
 
       // Assert that content from subsequent utterances has not bled into the first bubble
-      // (if the append bug is present, strings like dispatch/complete_epic/Epic complete will appear)
+      // (if the append bug is present, strings like dispatch / the final report will appear)
       expect(
         firstBubbleText.includes("dispatch"),
         'The first bubble contains the string "dispatch" (subsequent utterance may have been appended)',
       ).toBe(false);
       expect(
-        firstBubbleText.includes("complete_epic"),
-        'The first bubble contains the string "complete_epic" (subsequent utterance may have been appended)',
-      ).toBe(false);
-      expect(
-        firstBubbleText.includes("Epic complete."),
-        'The first bubble contains the string "Epic complete." (subsequent utterance may have been appended)',
+        firstBubbleText.includes("Epic work is done."),
+        'The first bubble contains the string "Epic work is done." (subsequent utterance may have been appended)',
       ).toBe(false);
 
       // Re-confirm that the first bubble contains "まず計画を整理します" (the core of the script)

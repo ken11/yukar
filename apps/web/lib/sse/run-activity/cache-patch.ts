@@ -85,8 +85,10 @@ export function toRunActivityAction(event: RunEvent): RunActivityAction | null {
       return { type: "TOOL_RESULT", threadId: event.thread_id, event };
     }
     case "user_input_requested": {
-      // narrowing: event is UserInputRequestedEvent
-      return { type: "USER_INPUT_REQUESTED", threadId: event.thread_id, question: event.question };
+      // narrowing: event is UserInputRequestedEvent — the run parked in
+      // "waiting" (your turn). question is always empty in P3 (the question is
+      // the agent's final thread message) and is intentionally dropped here.
+      return { type: "USER_INPUT_REQUESTED", threadId: event.thread_id };
     }
     case "user_input_resolved": {
       // narrowing: event is UserInputResolvedEvent
@@ -184,11 +186,12 @@ export function applyRunCachePatch(
       );
       break;
     case "run_stopped":
-      // User-initiated stop → run becomes idle (re-runnable), not completed/error.
+      // User-initiated stop → run settles back into "waiting" (your turn,
+      // re-runnable), not completed/error.
       qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
       qc.invalidateQueries({ queryKey: queryKeys.tasks.get(projectId, epicId) });
       qc.setQueryData<RunState>(queryKeys.runState.get(projectId, epicId), (prev) =>
-        prev ? { ...prev, status: "idle", active_workers: [] } : prev,
+        prev ? { ...prev, status: "waiting", active_workers: [] } : prev,
       );
       break;
     case "run_paused":
@@ -200,27 +203,18 @@ export function applyRunCachePatch(
       qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
       break;
     case "user_input_requested":
-      // narrowing: event is UserInputRequestedEvent
-      // Keep pending_question in sync with the event (empty question = a
-      // question-less conversational park → null). Leaving a stale question in
-      // the cache would resurrect an already-answered bubble when the page
-      // remounts and restores from this cache.
-      qc.setQueryData<RunState>(queryKeys.runState.get(projectId, epicId), (prev) =>
-        prev
-          ? { ...prev, status: "awaiting_input", pending_question: event.question || null }
-          : prev,
-      );
+      // narrowing: event is UserInputRequestedEvent — the run parked in
+      // "waiting". pending_question no longer exists (the question is the
+      // agent's final thread message).
+      patchRunStatus(qc, projectId, epicId, "waiting");
       break;
     case "user_input_resolved":
       // narrowing: event is UserInputResolvedEvent
-      // Symmetric with reducer USER_INPUT_RESOLVED: revert to running only when awaiting_input.
+      // Symmetric with reducer USER_INPUT_RESOLVED: revert to running only when waiting.
       // Guard to prevent erroneously reverting to running when a delayed resolved arrives
-      // after a terminal state (completed/failed/stopped/error).
-      // The answered question must not linger in the cache (see above).
+      // after a terminal state (completed/failed/error).
       qc.setQueryData<RunState>(queryKeys.runState.get(projectId, epicId), (prev) =>
-        prev && prev.status === "awaiting_input"
-          ? { ...prev, status: "running", pending_question: null }
-          : prev,
+        prev && prev.status === "waiting" ? { ...prev, status: "running" } : prev,
       );
       break;
     case "worker_started": {

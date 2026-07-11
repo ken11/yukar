@@ -3,21 +3,15 @@
  *
  * Purpose:
  *   Verify Run pause, resume, and stop through the real UI.
- *   YUKAR_FAKE_SLEEP=6.0 + task_update(T1 todo) + 29 text turns keep the run
- *   in the "running" state for 540s or more, providing a window for pause/resume/stop.
+ *   YUKAR_FAKE_SLEEP=6.0 + 15 consecutive task_update tool turns keep the run
+ *   in the "running" state for a long window (P3: every ENDED turn parks the
+ *   run in "waiting", so the window comes from tool_use recursion INSIDE one
+ *   manager turn — no end_turn is emitted while the tests drive pause/resume/stop).
  *
- *   Key point 1: the first manager-script turn calls task_update to register T1 as
- *   "todo". This bypasses the backend deadlock guard (which would break immediately
- *   when runnable/in_flight are both zero), so subsequent text turns are consumed
- *   continuously (dispatch/complete_epic are not called, so the run keeps advancing
- *   through manager turns).
- *
- *   Key point 2: FAKE_SLEEP=6.0 > the supervisor's 5s timeout.
+ *   Key point: FAKE_SLEEP=6.0 > the supervisor's 5s timeout.
  *   When stopping from the running state, the manager is mid asyncio.sleep(6.0) and
  *   the supervisor cancels the asyncio.Task after 5s → CancelledError →
- *   the orchestrator sets state.status = "idle".
- *   (Stopping from the paused state causes the manager to return cleanly → "completed",
- *   so test 6 stops directly from the running state.)
+ *   the orchestrator leaves state.status = "waiting" (the user-stop path).
  *
  * Verification flow (serial):
  *   1. Create project
@@ -33,8 +27,8 @@
  *      → pause-run-btn / stop-run-btn visible, resume-run-btn hidden
  *   6. Click stop button (stop-run-btn) while still in running state
  *      → click stop-confirm-btn in StopConfirmDialog
- *      → supervisor cancels task after 5s → CancelledError → status = "idle"
- *      → poll until status becomes "idle" (up to 30s: 5s supervisor + 25s buffer)
+ *      → supervisor cancels task after 5s → CancelledError → status = "waiting"
+ *      → poll until status becomes "waiting" (up to 30s: 5s supervisor + 25s buffer)
  *      → start-run-btn visible
  *   7. Save screenshot (test-results/pause-resume-stop.png)
  *
@@ -46,16 +40,9 @@ import fs from "node:fs";
 import { expect, test } from "@playwright/test";
 import { PAUSE_RESUME_SEED } from "./pause-resume-stop-seed";
 
-// RunState.status enum (apps/api/src/yukar/models/run.py)
-// "idle" | "running" | "paused" | "awaiting_input" | "error" | "completed" | "interrupted"
-type RunStatus =
-  | "idle"
-  | "running"
-  | "paused"
-  | "awaiting_input"
-  | "error"
-  | "completed"
-  | "interrupted";
+// RunState.status enum (apps/api/src/yukar/models/run.py, P3 vocabulary)
+// "running" | "paused" | "waiting" | "error" | "completed" (job runs only)
+type RunStatus = "running" | "paused" | "waiting" | "error" | "completed";
 
 test.describe
   .serial("pause / resume / stop", () => {
@@ -240,23 +227,19 @@ test.describe
       await expect(page.getByTestId("resume-run-btn")).not.toBeVisible();
     });
 
-    // ---- 6. Stop → confirm idle ----
+    // ---- 6. Stop → confirm waiting ----
     //
-    // Reaching "idle" requires the CancelledError path.
-    //
-    // Stopping from running state:
+    // Stopping from running state (CancelledError path):
     //   supervisor.stop() → runner.stop() (_stopped=True, _paused.set())
     //   → wait 5s → timeout while mid asyncio.sleep(6.0)
     //   → handle.task.cancel() → CancelledError
-    //   → orchestrator: _stopped=True → state.status = "idle"
+    //   → orchestrator: _stopped=True → state.status = "waiting"
     //
-    // Stopping from paused state:
-    //   _paused.set() unblocks → sees _stopped=True and breaks
-    //   → _run_loop returns normally → state.status = "completed" (not idle)
-    //
-    // Therefore test 6 stops directly from the running state.
+    // P3: "waiting" is the single resting state — a stop never produces a
+    // distinct terminal status (the conversation is intact; the user can
+    // simply message again to continue).
 
-    test("6. stop run and verify idle state", async ({ page }) => {
+    test("6. stop run and verify waiting state", async ({ page }) => {
       expect(state.projectId, "projectId").toBeTruthy();
       expect(state.epicId, "epicId").toBeTruthy();
 
@@ -271,8 +254,7 @@ test.describe
         })
         .toBe("running");
 
-      // Stop directly from the running state.
-      // (Pausing first then stopping would result in "completed", so we skip the pause here.)
+      // Stop directly from the running state (the CancelledError path).
       const stopBtn = page.getByTestId("stop-run-btn");
       await expect(stopBtn).toBeVisible({ timeout: 10_000 });
       await stopBtn.click();
@@ -282,18 +264,18 @@ test.describe
       await expect(confirmBtn).toBeVisible({ timeout: 10_000 });
       await confirmBtn.click();
 
-      // Supervisor cancels the asyncio.Task after 5s → CancelledError → "idle".
+      // Supervisor cancels the asyncio.Task after 5s → CancelledError → "waiting".
       // With YUKAR_FAKE_SLEEP=6.0 the manager is mid asyncio.sleep(6.0).
       // Timeout: 5s (supervisor wait) + 25s (buffer) = 30s
       await expect
         .poll(() => getRunStatus(page, state.projectId, state.epicId), {
-          message: "Run status should become 'idle' after stopping (via CancelledError)",
+          message: "Run status should become 'waiting' after stopping (via CancelledError)",
           timeout: 30_000,
           intervals: [500, 1000, 1000, 2000],
         })
-        .toBe("idle");
+        .toBe("waiting");
 
-      // Button visibility for idle state: start-run-btn is visible
+      // Button visibility for waiting state: start-run-btn is visible
       await expect(page.getByTestId("start-run-btn")).toBeVisible({ timeout: 10_000 });
       // pause/resume/stop buttons are hidden
       await expect(page.getByTestId("pause-run-btn")).not.toBeVisible();
@@ -309,16 +291,16 @@ test.describe
 
       await page.goto(`/projects/${state.projectId}/epics/${state.epicId}`);
 
-      // Wait until idle is confirmed (just to be safe)
+      // Wait until waiting is confirmed (just to be safe)
       await expect
         .poll(() => getRunStatus(page, state.projectId, state.epicId), {
-          message: "Run status should be 'idle' for screenshot",
+          message: "Run status should be 'waiting' for screenshot",
           timeout: 15_000,
           intervals: [500, 1000],
         })
-        .toBe("idle");
+        .toBe("waiting");
 
-      // Take screenshot in idle state with the start button visible
+      // Take screenshot in the waiting state with the start button visible
       await expect(page.getByTestId("start-run-btn")).toBeVisible({ timeout: 10_000 });
 
       fs.mkdirSync("test-results", { recursive: true });

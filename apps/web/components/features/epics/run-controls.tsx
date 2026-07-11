@@ -3,8 +3,10 @@
 /**
  * RunControls — group of UI components for epic run control.
  *
- * Epic side is a 1-bit user-owned status (open ⇄ completed); the run side keeps
- * its own state branches (preparing/running/paused/awaiting_input/…).
+ * Epic side is a 1-bit user-owned status (open ⇄ completed); the run side is
+ * the P3 vocabulary (preparing / running / paused / waiting / error, plus
+ * completed for JOB runs only). "waiting" = your turn — the normal resting
+ * state, handled by the default open-epic branch.
  * Imported by EpicScopeHeader and EpicShell.
  */
 
@@ -85,7 +87,8 @@ export function StopConfirmDialog({
  *   - open      → all run operations + Complete + Ask Reviewer + Request Fix
  *   - completed → read-only: Reopen + Ask Reviewer (reviewer is read-only,
  *                 so inspecting finished work never requires reopening)
- * Run-state branches (preparing/running/paused/awaiting_input/…) are unchanged.
+ * Run-state branches: preparing/running/paused show execution controls;
+ * waiting (your turn — the resting state) falls into the default open branch.
  *
  * Pass activityState directly as the return value of useRunActivity().
  */
@@ -192,9 +195,8 @@ export function RunControlsBar({
   const isPreparing = runStatus === "preparing";
   const isRunning = runStatus === "running";
   const isPaused = runStatus === "paused";
-  const isAwaitingInput = runStatus === "awaiting_input";
+  // JOB runs only (resolve / arbiter) — a conversation run never completes.
   const isCompleted = runStatus === "completed";
-  const isInterrupted = runStatus === "interrupted";
   const pausePending = activityState.pausePending;
 
   const pauseLabel = pausePending ? t("common.pausing") : t("common.pause");
@@ -279,23 +281,6 @@ export function RunControlsBar({
     );
   }
 
-  if (isAwaitingInput) {
-    return (
-      <button
-        type="button"
-        data-testid="stop-run-btn"
-        onClick={onStopRequest}
-        disabled={actionMutation.isPending}
-        className="flex items-center gap-1.5 rounded border border-error/40 px-3 py-1.5 text-body-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50"
-        title={t("run.stopWarning")}
-        aria-label={t("common.stop")}
-      >
-        <Icon name="stop" className="text-[16px]" />
-        <span className="hidden sm:inline">{t("common.stop")}</span>
-      </button>
-    );
-  }
-
   if (isRunning) {
     return (
       <>
@@ -358,32 +343,10 @@ export function RunControlsBar({
     );
   }
 
-  if (isInterrupted) {
-    return (
-      <>
-        {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
-        <button
-          type="button"
-          onClick={() => runMutation.mutate()}
-          disabled={runMutation.isPending}
-          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          title={runMutation.isPending ? t("common.resuming") : t("common.resumeFromInterrupt")}
-        >
-          <Icon name="play_arrow" className="text-[16px]" />
-          <span className="hidden sm:inline">
-            {runMutation.isPending ? t("common.resuming") : t("common.resumeFromInterrupt")}
-          </span>
-        </button>
-        {renderReviewerButton()}
-        {renderRequestFixButton()}
-        {renderCompleteButton()}
-      </>
-    );
-  }
-
-  // Run finished (runStatus="completed" from state.yaml): the epic itself stays
-  // open — finishing a run never transitions the epic. Offer Rerun, and the
-  // shared open-epic actions (Reviewer / Request Fix / Complete).
+  // JOB run finished (runStatus="completed" — resolve / arbiter only; a
+  // conversation run never completes). The epic itself stays open — finishing
+  // a job never transitions the epic. Offer Rerun, and the shared open-epic
+  // actions (Reviewer / Request Fix / Complete).
   if (isCompleted) {
     return (
       <>
@@ -408,8 +371,10 @@ export function RunControlsBar({
     );
   }
 
-  // idle / default (open epic, no active run)
-  const canStart = !isPreparing && !isRunning && !isPaused && !isAwaitingInput;
+  // waiting / default (open epic, no executing turn — it is the user's turn).
+  // A parked conversation does not hold the run slot, so all open-epic actions
+  // are available; Start Run continues the conversation.
+  const canStart = !isPreparing && !isRunning && !isPaused;
   return (
     <>
       {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}

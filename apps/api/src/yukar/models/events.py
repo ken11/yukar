@@ -44,6 +44,12 @@ class RunStartedEvent(BaseEvent):
 
 
 class RunCompletedEvent(BaseEvent):
+    """Terminal event for JOB runs only (resolve / arbiter / dummy).
+
+    Conversation runs (Manager / Reviewer) never emit this: a conversation has
+    no end — its turns park in ``waiting`` instead (``UserInputRequestedEvent``).
+    """
+
     type: Literal["run_completed"] = "run_completed"
 
 
@@ -53,9 +59,9 @@ class RunFailedEvent(BaseEvent):
 
 
 class RunStoppedEvent(BaseEvent):
-    """User-initiated stop (CancelledError).  The run halts and the epic becomes
-    re-runnable (state.yaml → ``idle``); not a failure.  Distinct from
-    ``run_completed`` so the UI can show "stopped" rather than "completed"."""
+    """User-initiated stop.  The run halts and the epic becomes re-runnable
+    (state.yaml → ``waiting``); not a failure.  Distinct from ``run_completed``
+    so the UI can show "stopped" rather than "completed"."""
 
     type: Literal["run_stopped"] = "run_stopped"
 
@@ -240,11 +246,12 @@ class PauseEffectiveEvent(BaseEvent):
 
 
 class UserInputRequestedEvent(BaseEvent):
-    """Emitted when the Manager calls ``ask_user()`` and the run enters awaiting_input.
+    """Emitted when a conversation run parks in ``waiting`` — it is the user's turn.
 
-    The run blocks until the user sends a reply via POST /threads/{thread_id}/messages.
-    ``question`` is the natural-language question/plan summary the Manager wants to
-    present to the user.  ``thread_id`` is the Manager trial's thread_id.
+    Every ended agent turn publishes this (the agent's question or report is
+    its final message in the thread, so ``question`` is always empty for new
+    events; the field survives for legacy replay compatibility until the P5
+    event rename).  ``thread_id`` is the conversation the run is bound to.
     """
 
     type: Literal["user_input_requested"] = "user_input_requested"
@@ -253,14 +260,14 @@ class UserInputRequestedEvent(BaseEvent):
 
 
 class UserInputResolvedEvent(BaseEvent):
-    """Emitted when the Manager receives the user's reply and resumes from awaiting_input.
+    """Emitted when a waiting run receives the user's reply and leaves ``waiting``.
 
     Paired with ``UserInputRequestedEvent`` — publish this immediately after the run
     transitions back to ``running``.  Because both events land in the replay buffer,
     a subscriber that reconnects mid-run will receive request→resolved in order,
-    so the final replayed state is ``running`` rather than ``awaiting_input``.
+    so the final replayed state is ``running`` rather than the stale ``waiting``.
 
-    ``thread_id`` is the Manager trial's thread_id.
+    ``thread_id`` is the conversation the run is bound to.
     """
 
     type: Literal["user_input_resolved"] = "user_input_resolved"
@@ -277,8 +284,8 @@ class EpicStatusChangedEvent(BaseEvent):
 
     The only writer is ``PATCH /epics/{id}`` — the epic status is user-owned
     and never transitions automatically.  Pass ``run_id=""`` (there is no
-    active run when the status is changed; a completed-switch is rejected
-    while a run is active).
+    executing run when the status is changed; a completed-switch is rejected
+    while a turn is executing, and a merely-waiting live run is shelved first).
     """
 
     type: Literal["epic_status_changed"] = "epic_status_changed"
@@ -345,10 +352,10 @@ class UserMessageCommittedEvent(BaseEvent):
     - Messages whose content contains a ``toolResult`` block are excluded
       (those are tool-use reply frames, not human-authored text).
     - Assistant messages are NOT published.
-    - Orchestrator-generated planning prompts (Epic initialisation boilerplate,
-      task-state summaries, resume instructions) are NOT published — only
-      genuine human-authored text (HITL inject, ask_user reply, seed_prompt
-      from user) triggers this event.
+    - Orchestrator-generated prompts (Epic initialisation boilerplate, resume
+      instructions) are NOT published — only genuine human-authored text
+      (HITL inject, a reply that woke a waiting run, seed_prompt from user)
+      triggers this event.
     """
 
     type: Literal["user_message_committed"] = "user_message_committed"
@@ -366,15 +373,15 @@ class SensitiveFileWrittenEvent(BaseEvent):
     """Emitted when the Manager writes a sensitive prompt-injection surface.
 
     Covers: ``write_agent_config``, ``write_skill``, ``write_agent_profile``,
-    ``remember``, and ``complete_epic`` learnings.  These files are appended
-    verbatim to agent system prompts or future Manager turns, so unexpected
-    writes by a prompt-injected Manager are surfaced here for operator visibility.
+    and ``remember``.  These files are appended verbatim to agent system
+    prompts or future Manager turns, so unexpected writes by a prompt-injected
+    Manager are surfaced here for operator visibility.
 
     ``kind`` identifies the type of write:
     - ``"agent_config"``   → per-role custom instructions (.yukar/agents/{role}.md)
     - ``"skill"``          → project skill (skills/{name}/SKILL.md)
     - ``"agent_profile"``  → named agent profile (.yukar/agent_profiles/{name}.yaml)
-    - ``"memory"``         → project memory entry (remember() or complete_epic learning)
+    - ``"memory"``         → project memory entry (remember())
 
     ``name`` is the role/skill name/profile name/memory-category for context.
     """

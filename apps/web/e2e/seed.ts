@@ -45,7 +45,9 @@ export const SEED = {
  * commits on the Evaluator's accept.  Each scripted tool_use / text turn becomes a
  * separate assistant message, so the conversation renders one bubble per utterance.
  *
- * Manager:   task_update(T1) → dispatch(T1) → complete_epic → text
+ * Manager:   task_update(T1) → dispatch(T1) → text report  (the text turn ends
+ *            the turn, so the run parks in "waiting" — a conversation never
+ *            "completes"; work-done is detected as waiting + all tasks done)
  * Worker:    fs_write(hello.py) → repo_grep("hello") → fs_write(util.py) → text  (no commit)
  * Evaluator: read_diff (host-staged) → submit_verdict(accepted) → text
  */
@@ -68,11 +70,9 @@ export const FAKE_SCRIPT = JSON.stringify({
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
     {
-      type: "tool_use",
-      tool_name: "complete_epic",
-      tool_input: {},
+      type: "text",
+      text: "All tasks are done: hello.py and util.py were implemented and accepted. Please review the branch diff.",
     },
-    { type: "text", text: "Epic complete." },
   ],
   worker: [
     {
@@ -110,8 +110,10 @@ export const FAKE_SCRIPT = JSON.stringify({
   ],
   // Reviewer (read-only): inspect the branch diff (git-based) AND read a file
   // from the active manager trial's worktree via fs_read (proves the worktree-
-  // backed read-only tools are wired), then report to the user via ask_user
-  // (which parks the run at awaiting_input). Only used by reviewer.spec.
+  // backed read-only tools are wired), then report in plain body text.  The
+  // text turn ends the turn, so the run parks in "waiting" (your turn) —
+  // reporting is conversation, not a state-machine event. Only used by
+  // reviewer.spec.
   reviewer: [
     {
       type: "tool_use",
@@ -124,13 +126,8 @@ export const FAKE_SCRIPT = JSON.stringify({
       tool_input: { path: "hello.py", repo: "myrepo" },
     },
     {
-      type: "tool_use",
-      tool_name: "ask_user",
-      tool_input: {
-        question:
-          "Reviewed the branch: hello.py and util.py are present and match the epic's intent. Approve as-is?",
-      },
+      type: "text",
+      text: "Reviewed the branch: hello.py and util.py are present and match the epic's intent. Approve as-is?",
     },
-    { type: "text", text: "Awaiting your decision." },
   ],
 });
