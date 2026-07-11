@@ -15,6 +15,7 @@ from yukar.models.events import (
     BudgetExceededEvent,
     DelegationEvent,
     DiffUpdateEvent,
+    EpicMergedEvent,
     EpicMergeProgressEvent,
     EpicStatusChangedEvent,
     EvalResultEvent,
@@ -76,8 +77,9 @@ class RunEventSchema(BaseModel):
     # HITL approval gate
     user_input_requested: UserInputRequestedEvent | None = None
     user_input_resolved: UserInputResolvedEvent | None = None
-    # Epic lifecycle (Close / Merge)
+    # Epic lifecycle (user status toggle / merge fact)
     epic_status_changed: EpicStatusChangedEvent | None = None
+    epic_merged: EpicMergedEvent | None = None
     epic_merge_progress: EpicMergeProgressEvent | None = None
     # HITL user message committed (PR-B)
     user_message_committed: UserMessageCommittedEvent | None = None

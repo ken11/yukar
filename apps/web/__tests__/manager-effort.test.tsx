@@ -50,7 +50,7 @@ const baseEpic = {
   title: "Test epic",
   description: "",
   acceptance_criteria: "",
-  status: "planned" as const,
+  status: "open" as const,
   branch: "",
   project_id: "proj1",
   manager_effort: "high" as const,

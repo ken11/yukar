@@ -106,13 +106,17 @@ export function EpicShell({
       projectId,
       epicId,
       project,
-      epic,
+      // Prefer the live-fetched epic: mutations (complete / reopen via
+      // useCompleteEpic / useReopenEpic) invalidate epics.detail, and children
+      // like RunControlsBar branch on epic.status — the stale RSC prop would
+      // leave the controls on the wrong branch until a full reload.
+      epic: liveEpic ?? epic,
       activityState,
       setPausePending,
       clearLiveBuffer,
       setMobileChromeHidden,
     }),
-    [projectId, epicId, project, epic, activityState, setPausePending, clearLiveBuffer],
+    [projectId, epicId, project, epic, liveEpic, activityState, setPausePending, clearLiveBuffer],
   );
 
   return (

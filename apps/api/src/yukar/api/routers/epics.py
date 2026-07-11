@@ -41,10 +41,9 @@ class PatchEpicRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     acceptance_criteria: str | None = None
-    status: (
-        Literal["planned", "in_progress", "in_review", "completed", "failed", "closed", "merged"]
-        | None
-    ) = None
+    # The epic lifecycle is a single user-owned bit: "open" reopens the epic,
+    # "completed" finishes it (including abandoning unfinished work).
+    status: Literal["open", "completed"] | None = None
     manager_effort: Literal["high", "xhigh", "max"] | None = None
 
 
@@ -57,12 +56,12 @@ class PatchEpicRequest(BaseModel):
 async def list_epics(
     project_id: str,
     root: WorkspaceRootDep,
-    include_closed: bool = False,
+    include_completed: bool = False,
 ) -> list[Epic]:
     await get_project_or_404(root, project_id)
     epics = await epic_repo.list_epics(root, project_id)
-    if not include_closed:
-        epics = [e for e in epics if e.status != "closed"]
+    if not include_completed:
+        epics = [e for e in epics if e.status != "completed"]
     return epics
 
 
@@ -82,7 +81,7 @@ async def create_epic(project_id: str, body: CreateEpicRequest, root: WorkspaceR
         title=body.title,
         description=body.description,
         acceptance_criteria=body.acceptance_criteria,
-        status="planned",
+        status="open",
         branch=branch,
         touched_repos=[],
         manager_effort=body.manager_effort,
@@ -106,13 +105,13 @@ async def patch_epic(
     root: WorkspaceRootDep,
     supervisor: SupervisorDep,
 ) -> Epic:
-    # Guard: prevent reaching a terminal / approved status while a run is active.
-    # ``completed`` is the user's "approve" action and, like close/merge, must
-    # not race an in-flight run — consistent with the dedicated /close endpoint.
-    if body.status in {"closed", "merged", "completed"} and supervisor.is_running(
-        project_id, epic_id
-    ):
-        raise HTTPException(status_code=409, detail="A run is active — close is not allowed")
+    # Guard: completing an epic (the user's single "finish" action — approving
+    # done work or abandoning unfinished work) must not race an in-flight run.
+    # The caller has to stop the run first.  Reopening ("open") needs no guard.
+    if body.status == "completed" and supervisor.is_running(project_id, epic_id):
+        raise HTTPException(
+            status_code=409, detail="A run is active — completing is not allowed"
+        )
     epic = await get_epic_or_404(root, project_id, epic_id)
     previous_status = epic.status
     if body.title is not None:
@@ -138,39 +137,4 @@ async def patch_epic(
                 status=epic.status,
             ),
         )
-    return epic
-
-
-@router.post("/{epic_id}/close", response_model=Epic)
-async def close_epic(
-    project_id: str,
-    epic_id: str,
-    root: WorkspaceRootDep,
-    supervisor: SupervisorDep,
-) -> Epic:
-    """Mark an epic as closed (user-driven terminal status).
-
-    Returns 409 if a run is currently active — the caller must stop the run
-    first.  Closing is idempotent: closing an already-closed epic is allowed
-    (the updated_at timestamp is refreshed).
-
-    Publishes an EpicStatusChangedEvent so other browser tabs can react
-    without polling.
-    """
-    if supervisor.is_running(project_id, epic_id):
-        raise HTTPException(status_code=409, detail="A run is active — close is not allowed")
-    epic = await get_epic_or_404(root, project_id, epic_id)
-    epic.status = "closed"
-    epic.updated_at = datetime.now(UTC)
-    await epic_repo.save_epic(root, project_id, epic)
-    event_bus.publish(
-        project_id,
-        epic_id,
-        EpicStatusChangedEvent(
-            project_id=project_id,
-            epic_id=epic_id,
-            run_id="",
-            status="closed",
-        ),
-    )
     return epic

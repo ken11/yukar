@@ -6,7 +6,8 @@
  *   2. Create Epic 2 → run → completed
  *   3. Select both from Epics board → Merge Selected
  *   4. MergeProgressPanel shows SSE progress → phase=finished
- *   5. Confirm both Epic statuses are "merged" via GET /epics
+ *   5. Confirm both Epics carry the merge fact (merged_at) via GET /epics —
+ *      the epic status itself stays "open" (1-bit lifecycle)
  *   6. Save screenshot
  *
  * Worker script is per_call format: 1st Epic writes epic1.py, 2nd Epic writes epic2.py.
@@ -25,8 +26,8 @@ test.describe
       epicId2: "",
     };
 
-    // ---- Helper: wait for epic status via API polling ----
-    async function waitForEpicStatus(
+    // ---- Helper: wait for run/state status via API polling ----
+    async function waitForRunStatus(
       page: import("@playwright/test").Page,
       epicId: string,
       expectedStatus: string,
@@ -35,12 +36,31 @@ test.describe
       await expect
         .poll(
           async () => {
-            const res = await page.request.get(`/api/projects/${state.projectId}/epics/${epicId}`);
+            const res = await page.request.get(
+              `/api/projects/${state.projectId}/epics/${epicId}/run/state`,
+            );
             return (await res.json()).status;
           },
           { timeout: timeoutMs, intervals: [500, 1000, 2000] },
         )
         .toBe(expectedStatus);
+    }
+
+    // ---- Helper: wait for the merge fact (epic.merged_at) via API polling ----
+    async function waitForMergedFact(
+      page: import("@playwright/test").Page,
+      epicId: string,
+      timeoutMs = 120_000,
+    ): Promise<void> {
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(`/api/projects/${state.projectId}/epics/${epicId}`);
+            return Boolean((await res.json()).merged_at);
+          },
+          { timeout: timeoutMs, intervals: [500, 1000, 2000] },
+        )
+        .toBe(true);
     }
 
     // ---- Helper: start run and wait for redirect to manager thread ----
@@ -102,7 +122,7 @@ test.describe
       await startRun(page, state.epicId1);
 
       // Wait for completed (1st run uses per_call[0] = writes epic1.py)
-      await waitForEpicStatus(page, state.epicId1, "in_review");
+      await waitForRunStatus(page, state.epicId1, "completed");
       console.log(`[arbiter-merge] Epic 1 completed`);
     });
 
@@ -143,7 +163,7 @@ test.describe
       await startRun(page, state.epicId2);
 
       // Wait for completed (2nd run uses per_call[1] = writes epic2.py)
-      await waitForEpicStatus(page, state.epicId2, "in_review");
+      await waitForRunStatus(page, state.epicId2, "completed");
       console.log(`[arbiter-merge] Epic 2 completed`);
     });
 
@@ -156,8 +176,9 @@ test.describe
       // Navigate to Epics board (/epics is the board; /projects/{id} is the overview)
       await page.goto(`/projects/${state.projectId}/epics`);
 
-      // Completed Epics appear under the "all" filter (isTerminalStatus covers only closed/merged)
-      // isMergeable = has branch + not closed/merged = completed shows a checkbox
+      // Both epics stay open after their runs (runs never transition the epic),
+      // so they appear under the "all" filter with a merge checkbox
+      // (isMergeable = open + has branch + no merge fact yet).
 
       // Click Epic 1 checkbox
       const checkbox1 = page.getByRole("button", {
@@ -197,27 +218,36 @@ test.describe
       // MergeProgressPanel is shown only when mergeRunId is in state.
       // The board must therefore retain the run_id from the previous step's click.
       // Since page is not shared even in serial tests, poll the API here to
-      // wait until Epic status becomes merged.
+      // wait until the merge fact (merged_at) is recorded on both Epics.
 
-      // First poll until both Epics are merged
-      await waitForEpicStatus(page, state.epicId1, "merged", 180_000);
-      await waitForEpicStatus(page, state.epicId2, "merged", 30_000);
+      // First poll until both Epics carry the merge fact
+      await waitForMergedFact(page, state.epicId1, 180_000);
+      await waitForMergedFact(page, state.epicId2, 30_000);
       console.log(`[arbiter-merge] Both epics merged`);
 
-      // Confirm all Epics via GET /epics
+      // Confirm all Epics via GET /epics — merging records a fact attribute
+      // (merged_at) and leaves the 1-bit epic status open.
       const epicsRes = await page.request.get(
-        `/api/projects/${state.projectId}/epics?include_closed=true`,
+        `/api/projects/${state.projectId}/epics?include_completed=true`,
       );
       expect(epicsRes.status()).toBe(200);
-      const epics = (await epicsRes.json()) as Array<{ id: string; status: string }>;
+      const epics = (await epicsRes.json()) as Array<{
+        id: string;
+        status: string;
+        merged_at?: string | null;
+      }>;
       console.log(
-        `[arbiter-merge] epics = ${JSON.stringify(epics.map((e) => ({ id: e.id, status: e.status })))}`,
+        `[arbiter-merge] epics = ${JSON.stringify(
+          epics.map((e) => ({ id: e.id, status: e.status, merged_at: e.merged_at })),
+        )}`,
       );
 
       const epic1 = epics.find((e) => e.id === state.epicId1);
       const epic2 = epics.find((e) => e.id === state.epicId2);
-      expect(epic1?.status, `Epic 1 (${state.epicId1}) status`).toBe("merged");
-      expect(epic2?.status, `Epic 2 (${state.epicId2}) status`).toBe("merged");
+      expect(epic1?.merged_at, `Epic 1 (${state.epicId1}) merge fact`).toBeTruthy();
+      expect(epic2?.merged_at, `Epic 2 (${state.epicId2}) merge fact`).toBeTruthy();
+      expect(epic1?.status, `Epic 1 (${state.epicId1}) stays open`).toBe("open");
+      expect(epic2?.status, `Epic 2 (${state.epicId2}) stays open`).toBe("open");
     });
 
     // -----------------------------------------------------------------------
@@ -227,10 +257,10 @@ test.describe
       // Show epics board with merged filter
       await page.goto(`/projects/${state.projectId}/epics`);
 
-      // Click merged filter chip to display merged epics
+      // Click merged filter chip — it filters on the merge fact (merged_at)
       await page.getByTestId("epic-filter-merged").click();
 
-      // Confirm both Epics are displayed as merged
+      // Confirm both Epics are displayed under the merged-fact filter
       const card1 = page.getByTestId(`epic-card-${state.epicId1}`);
       const card2 = page.getByTestId(`epic-card-${state.epicId2}`);
       await expect(card1).toBeVisible({ timeout: 10_000 });

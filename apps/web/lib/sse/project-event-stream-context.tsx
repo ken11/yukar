@@ -12,6 +12,7 @@
 
 import { createContext, useCallback, useContext, useRef } from "react";
 import type {
+  EpicMergedEvent,
   EpicMergeProgressEvent,
   EpicStatusChangedEvent,
   ProjectLifecycleEvent,
@@ -27,6 +28,7 @@ export type ProjectStreamEvent =
   | ProjectLifecycleEvent
   | EpicMergeProgressEvent
   | EpicStatusChangedEvent
+  | EpicMergedEvent
   | SensitiveFileWrittenEvent;
 
 /** Guard: checks whether SSE data has the shape of a ProjectStreamEvent */

@@ -23,7 +23,9 @@ For each epic IN ORDER, for each repo in ``epic.touched_repos``:
   5. Forward-merge: ``git/diff.py merge(repo_path, branch=epic.branch, …)``
      (epic→main).  ``MergeConflictError`` (shouldn't happen) and
      ``GitVettingError`` are treated as per-epic failure (not 500).
-  6. After all repos succeed → ``epic.status="merged"`` via ``save_epic``.
+  6. After all repos succeed → record the merge fact (``merged_at`` +
+     ``EpicMergedEvent``) via ``record_epic_merged``.  The epic stays open —
+     only the user flips ``epic.status``.
 
 On any per-epic failure: record the result, CONTINUE with the next epic.
 At the end, publish final ``EpicMergeProgressEvent(phase="finished")``.
@@ -72,7 +74,6 @@ from yukar.models.epic import Epic
 from yukar.models.events import (
     EpicMergeProgressEvent,
     EpicMergeResult,
-    EpicStatusChangedEvent,
     RunCompletedEvent,
     RunFailedEvent,
     RunStartedEvent,
@@ -81,8 +82,9 @@ from yukar.models.events import (
 )
 from yukar.models.run import RunState
 from yukar.runs.common import run_single_sandbox_agent, save_and_publish_state
+from yukar.runs.merge_facts import record_epic_merged
 from yukar.storage import state_repo
-from yukar.storage.epic_repo import get_epic, save_epic
+from yukar.storage.epic_repo import get_epic
 from yukar.storage.project_repo import get_repo
 from yukar.usage.tracker import ARBITER_EPIC_SENTINEL
 
@@ -271,6 +273,16 @@ class ArbiterRunner:
                 epic_id=real_epic_id,
                 status="skipped",
                 detail="epic not found",
+            )
+
+        if epic.status == "completed":
+            # Re-checked here (not only in the router) because the epic can be
+            # completed between start_merge validation and this point — a merge
+            # must never touch a read-only completed epic.
+            return EpicMergeResult(
+                epic_id=real_epic_id,
+                status="skipped",
+                detail="epic is completed — reopen it before merging",
             )
 
         if not epic.branch:
@@ -647,9 +659,9 @@ class ArbiterRunner:
                     repos=merged_repos,
                 )
 
-            # Mark epic as merged.
-            epic.status = "merged"
-            await save_epic(root, project_id, epic)
+            # Record the merge fact (idempotent; publishes EpicMergedEvent).
+            # The epic itself stays open — merging never completes an epic.
+            await record_epic_merged(root, project_id, epic, run_id=run_id)
 
             await save_and_publish_state(
                 root,
@@ -657,20 +669,12 @@ class ArbiterRunner:
                 real_epic_id,
                 state,
                 "completed",
-                EpicStatusChangedEvent(
-                    project_id=project_id,
-                    epic_id=real_epic_id,
-                    run_id=run_id,
-                    status="merged",
-                ),
-                pub_epic,
-            )
-            pub_epic(
                 RunCompletedEvent(
                     project_id=project_id,
                     epic_id=real_epic_id,
                     run_id=run_id,
-                )
+                ),
+                pub_epic,
             )
 
             return EpicMergeResult(

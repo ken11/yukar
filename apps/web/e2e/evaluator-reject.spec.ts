@@ -86,27 +86,26 @@ test.describe
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
-      // Poll until the epic reaches completed after the
+      // Poll run/state until the run completes after the
       // Evaluator reject → re-dispatch → accept → complete_epic cycle (max 120 s)
       await expect
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             return (await res.json()).status;
           },
           { timeout: 120_000, intervals: [500, 1000, 2000] },
         )
-        .toBe("in_review");
+        .toBe("completed");
 
-      // Confirm run/state status is also completed
-      const runStateRes = await page.request.get(
-        `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
+      // The epic itself stays open — finishing a run never transitions the
+      // 1-bit user-owned epic status.
+      const epicRes = await page.request.get(
+        `/api/projects/${state.projectId}/epics/${state.epicId}`,
       );
-      const runState = await runStateRes.json();
-      console.log(`[evaluator-reject] run/state status = ${runState.status}`);
-      expect(runState.status).toBe("completed");
+      expect((await epicRes.json()).status).toBe("open");
     });
 
     test("4. assert reject cycle via thread list", async ({ page }) => {

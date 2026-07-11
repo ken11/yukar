@@ -6,9 +6,10 @@
  *   → change to max → page.reload() → max persists
  *   → verify manager_effort=max via GET /epics/{id}
  *
- * Scenario B — Epic close:
- *   Close a planned epic with the close button
- *   → verify status=closed via GET /epics/{id}
+ * Scenario B — Epic complete / reopen (1-bit user-owned lifecycle):
+ *   Complete an open epic with the complete button
+ *   → verify status=completed via GET /epics/{id}
+ *   → reopen it with the reopen button → verify status=open
  *
  * No run is needed (fake script is noop).
  *
@@ -161,9 +162,9 @@ test.describe
       await expect(page.getByTestId("effort-btn-max")).toHaveAttribute("aria-pressed", "true");
     });
 
-    // ---- Scenario B: Epic close ----
+    // ---- Scenario B: Epic complete / reopen (1-bit user-owned lifecycle) ----
 
-    test("B-1. create planned epic for close test", async ({ page }) => {
+    test("B-1. create epic for complete test (status=open)", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
 
       await page.goto(`/projects/${state.projectId}`);
@@ -171,9 +172,9 @@ test.describe
       await page.getByTestId("new-epic-btn").first().click();
       await expect(page.getByRole("dialog")).toBeVisible();
 
-      await page.getByTestId("epic-title-input").fill("close-test epic");
-      await page.getByTestId("epic-description-input").fill("Testing epic close.");
-      await page.getByTestId("epic-ac-input").fill("epic can be closed");
+      await page.getByTestId("epic-title-input").fill("complete-test epic");
+      await page.getByTestId("epic-description-input").fill("Testing epic complete/reopen.");
+      await page.getByTestId("epic-ac-input").fill("epic can be completed and reopened");
 
       await page.getByTestId("form-dialog-submit").click();
 
@@ -183,34 +184,29 @@ test.describe
       state.epicB_Id = epicMatch?.[1] ?? "";
       expect(state.epicB_Id).toBeTruthy();
 
-      // Verify via API that the epic is in planned state
+      // Verify via API that a fresh epic starts open
       const res = await page.request.get(
         `/api/projects/${state.projectId}/epics/${state.epicB_Id}`,
       );
       expect(res.ok()).toBeTruthy();
       const epic = await res.json();
-      expect(epic.status).toBe("planned");
+      expect(epic.status).toBe("open");
     });
 
-    test("B-2. close epic and verify status=closed via API", async ({ page }) => {
+    test("B-2. complete epic and verify status=completed via API", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
       expect(state.epicB_Id).toBeTruthy();
 
-      // Navigate to the epic page (thread page) — close button is in RunControlsBar (EpicScopeHeader)
-      // EpicScopeHeader is part of EpicShell and is shown on any thread page URL
+      // Navigate to the epic page (thread page) — the complete button is in
+      // RunControlsBar (EpicScopeHeader), shown on any thread page URL.
       await page.goto(`/projects/${state.projectId}/epics/${state.epicB_Id}/threads/manager`);
 
-      // Wait for close button to appear (inside RunControlsBar in EpicScopeHeader)
-      const closeBtn = page.getByTestId("close-epic-btn");
-      await expect(closeBtn).toBeVisible({ timeout: 15_000 });
+      const completeBtn = page.getByTestId("complete-epic-btn");
+      await expect(completeBtn).toBeVisible({ timeout: 15_000 });
+      await completeBtn.click();
 
-      // Click the close button
-      await closeBtn.click();
-
-      // After close, should redirect to /epics list
-      await page.waitForURL(/\/epics$/, { timeout: 15_000 });
-
-      // Verify status=closed via API
+      // Verify status=completed via API (no navigation — the page stays put and
+      // the controls flip to the read-only completed branch).
       await expect
         .poll(
           async () => {
@@ -223,6 +219,38 @@ test.describe
           },
           { timeout: 10_000, intervals: [500, 1000] },
         )
-        .toBe("closed");
+        .toBe("completed");
+
+      // Completed epic is read-only: the controls now offer Reopen.
+      await expect(page.getByTestId("reopen-btn")).toBeVisible({ timeout: 15_000 });
+    });
+
+    test("B-3. reopen epic and verify status=open via API", async ({ page }) => {
+      expect(state.projectId).toBeTruthy();
+      expect(state.epicB_Id).toBeTruthy();
+
+      await page.goto(`/projects/${state.projectId}/epics/${state.epicB_Id}/threads/manager`);
+
+      const reopenBtn = page.getByTestId("reopen-btn");
+      await expect(reopenBtn).toBeVisible({ timeout: 15_000 });
+      await reopenBtn.click();
+
+      // Reopening flips the bit back to open (PATCH {status:"open"}).
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(
+              `/api/projects/${state.projectId}/epics/${state.epicB_Id}`,
+            );
+            if (!res.ok()) return null;
+            const epic = await res.json();
+            return epic.status;
+          },
+          { timeout: 10_000, intervals: [500, 1000] },
+        )
+        .toBe("open");
+
+      // Open epic shows the full control set again (start run is back).
+      await expect(page.getByTestId("start-run-btn")).toBeVisible({ timeout: 15_000 });
     });
   });

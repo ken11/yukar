@@ -206,7 +206,30 @@ describe("useMergeProgress", () => {
           project_id: "proj1",
           epic_id: "EP-1",
           run_id: "",
-          status: "closed",
+          status: "completed",
+        }),
+      );
+    });
+
+    expect(onInvalidate).toHaveBeenCalledOnce();
+  });
+
+  it("calls onInvalidate on epic_merged event (merge fact recorded)", () => {
+    const onInvalidate = vi.fn();
+    renderHook(() => useMergeProgress("proj1", onInvalidate), {
+      wrapper: makeWrapper("proj1"),
+    });
+    const es = MockEventSource.instances[0];
+
+    act(() => {
+      es.emit(
+        "epic_merged",
+        JSON.stringify({
+          type: "epic_merged",
+          project_id: "proj1",
+          epic_id: "EP-1",
+          run_id: "",
+          merged_at: "2026-07-11T00:00:00Z",
         }),
       );
     });

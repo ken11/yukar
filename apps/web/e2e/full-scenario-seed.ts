@@ -13,7 +13,8 @@
  *   3. User asks for a revision → Manager re-plans and re-asks.  [turn 1]
  *   4. User approves → Manager dispatches the Worker (the approval gate lets it
  *      through only now), the Evaluator accepts, the Manager self-checks the
- *      branch diff, then completes → epic goes in_review.  [turn 2]
+ *      branch diff, then completes → run/state becomes completed (the epic
+ *      stays open — only the user flips its status).  [turn 2]
  *
  * The Manager script is a FLAT list; the FakeModel cursor advances across turns.
  * A `text` turn ends the Strands loop, so the orchestrator's turn-loop observes
@@ -117,7 +118,7 @@ export const FULL_SCENARIO_FAKE_SCRIPT = JSON.stringify({
     { type: "tool_use", tool_name: "ask_user", tool_input: { question: Q_REVIEW } },
     { type: "text", text: "レビュー結果を報告しました。" },
     // After the user's acknowledgement the reviewer wraps up (turn ends with no
-    // ask_user → the run completes; the epic stays in_review either way).
+    // ask_user → the run completes; the epic's status is untouched either way).
     { type: "text", text: "承知しました。ご確認ありがとうございました。" },
   ],
 });

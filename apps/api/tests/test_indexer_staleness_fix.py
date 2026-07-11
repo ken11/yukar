@@ -147,12 +147,13 @@ class TestIndexBuildFailure:
         )
         assert "my-repo" in failed_events[0].error or "simulated" in failed_events[0].error
 
-        # Epic status must be 'failed'.
+        # The epic status is untouched (user-owned 1-bit): the failure is
+        # surfaced via RunFailedEvent only.
         from yukar.storage.epic_repo import get_epic
 
         epic = await get_epic(root, "proj", "EP-1")
         assert epic is not None
-        assert epic.status == "failed"
+        assert epic.status == "open"
 
 
 # ---------------------------------------------------------------------------
@@ -848,9 +849,8 @@ class TestContinuationPreparingStop:
         workspace.mkdir()
         root = str(workspace)
 
-        # Use a completed epic so start_continuation can reopen it.
         proj = Project(id="proj", name="Test Project")
-        epic = Epic(id="EP-1", slug="test", title="Test", status="completed")
+        epic = Epic(id="EP-1", slug="test", title="Test")
         await save_project(root, proj)
         await save_epic(root, "proj", epic)
         await _setup_repo_in_project(root, "proj", "my-repo", tmp_path / "repo")

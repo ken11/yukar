@@ -10,6 +10,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   ActiveWorker,
+  Epic,
   Message,
   RunEvent,
   RunState,
@@ -281,6 +282,19 @@ export function applyRunCachePatch(
       // #18: aggregate with umbrella key queryKeys.git.all()
       qc.invalidateQueries({ queryKey: queryKeys.git.all() });
       break;
+    case "epic_merged": {
+      // narrowing: event is EpicMergedEvent
+      // Merge fact recorded (attribute, not a status): patch merged_at into the
+      // epic detail/list caches so the "merged" badge appears without a refetch.
+      // The epic stays open — no status change is involved.
+      qc.setQueryData<Epic>(queryKeys.epics.detail(projectId, epicId), (prev) =>
+        prev ? { ...prev, merged_at: event.merged_at } : prev,
+      );
+      qc.setQueryData<Epic[]>(queryKeys.epics.list(projectId), (prev) =>
+        prev ? prev.map((e) => (e.id === epicId ? { ...e, merged_at: event.merged_at } : e)) : prev,
+      );
+      break;
+    }
     case "user_message_committed": {
       // narrowing: event is UserMessageCommittedEvent
       // PR-C: immediate visibility of injected utterances.

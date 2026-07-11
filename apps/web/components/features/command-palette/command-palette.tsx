@@ -84,7 +84,10 @@ export function CommandPalette() {
 
   const { data: epicsData } = useQuery({
     queryKey: queryKeys.epics.list(projectId ?? ""),
-    queryFn: () => listEpics(projectId ?? ""),
+    // includeCompleted=true: the epics.list query key is shared with the board
+    // (which fetches all epics) — a completed-less fetch here would clobber
+    // that cache. Completed epics sort to the bottom of the palette anyway.
+    queryFn: () => listEpics(projectId ?? "", true),
     enabled: open && !!projectId && !isSearchMode,
     staleTime: 30_000,
   });
@@ -173,9 +176,9 @@ export function CommandPalette() {
       });
     }
 
-    // Epic list — place closed/merged at the end (de-emphasize terminal)
+    // Epic list — place completed epics at the end (de-emphasize finished work)
     if (projectId && epicsData) {
-      // #5: unify closed/merged detection with isTerminalStatus()
+      // #5: unify completed detection with isTerminalStatus()
       const activeEpics = epicsData.filter((e) => !isTerminalStatus(e.status));
       const terminalEpics = epicsData.filter((e) => isTerminalStatus(e.status));
       for (const epic of [...activeEpics, ...terminalEpics]) {

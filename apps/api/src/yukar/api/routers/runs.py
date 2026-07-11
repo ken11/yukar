@@ -53,9 +53,11 @@ async def start_run(
     - If a run is currently active (is_running=True): return 409 Conflict.
     - Budget exhausted: return 409 Conflict.
 
-    ``in_review`` (and ``completed`` / ``interrupted``) epics may be re-started
-    freely — the existing session history allows the Manager to resume context,
-    which is how the user requests a revision after reviewing the work.
+    Open epics may be (re-)started freely — the existing session history allows
+    the Manager to resume context, which is how the user requests a revision
+    after reviewing the work.  A completed epic returns 409: completing is a
+    user decision, and starting a run is not an implicit reopen (the user must
+    reopen the epic first).
 
     TOCTOU guard: reload the epic and register supervisor.start under
     epic_thread_lock so a concurrent run cannot start (and delete the worktree)
@@ -67,8 +69,10 @@ async def start_run(
     from yukar.storage.thread_locks import epic_thread_lock
 
     epic = await get_epic_or_404(root, project_id, epic_id)
-    if epic.status == "closed":
-        raise HTTPException(status_code=409, detail="Epic is closed")
+    if epic.status == "completed":
+        raise HTTPException(
+            status_code=409, detail="Epic is completed — reopen it before starting a run"
+        )
     # 409 only when a live run is already executing — not for terminal states.
     if supervisor.is_running(project_id, epic_id):
         raise HTTPException(status_code=409, detail="Run already active for this epic")
@@ -82,14 +86,17 @@ async def start_run(
     # epic_thread_lock (outer) → _start_lock (inner) — fixed, no cycle.
     async with epic_thread_lock(project_id, epic_id):
         # Re-read epic inside the lock so we see any status change that arrived
-        # between the pre-lock check above and now (e.g. concurrent close()).
+        # between the pre-lock check above and now (e.g. a concurrent "completed"
+        # PATCH).
         from yukar.storage.epic_repo import get_epic as _get_epic
 
         epic_fresh = await _get_epic(root, project_id, epic_id)
         if epic_fresh is None:
             raise HTTPException(status_code=404, detail=f"Epic not found: {epic_id!r}")
-        if epic_fresh.status == "closed":
-            raise HTTPException(status_code=409, detail="Epic is closed")
+        if epic_fresh.status == "completed":
+            raise HTTPException(
+                status_code=409, detail="Epic is completed — reopen it before starting a run"
+            )
 
         # Resolve the active manager-trial thread_id so that the run is bound to
         # the correct worktree (worktrees/{manager_thread_id}/{repo}).

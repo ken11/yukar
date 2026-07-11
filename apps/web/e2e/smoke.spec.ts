@@ -3,7 +3,7 @@
  * Web(:3000) → API(:8000); Manager/Worker/Evaluator replay YUKAR_FAKE_SCRIPT (see seed.ts).
  *
  * Demonstrates (screenshots under playwright-report/):
- *   #1  Epic closed → redirect to the epic list
+ *   #1  Completing the epic (1-bit lifecycle) → controls flip to Reopen
  *   #2  Per-utterance bubble splitting — Manager thread renders one bubble per utterance
  *   #3  Hand-off persistence — Worker thread shows the Manager→Worker hand-off (user message)
  *   #4  commit-after-eval — host commit makes hello.py / util.py appear in the epic⇔default diff
@@ -59,18 +59,20 @@ test.describe
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // Wait for completion via the API (deterministic fake run).
+      // Wait for completion via the API (deterministic fake run). Finishing a
+      // run never transitions the epic (1-bit lifecycle) — the completion
+      // signal is the run state, not epic.status.
       await expect
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             return (await res.json()).status;
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("in_review");
+        .toBe("completed");
 
       // Discover the worker thread id for the hand-off assertion.
       const tRes = await page.request.get(
@@ -125,14 +127,27 @@ test.describe
       await expect(panel.locator("text=util.py")).toBeVisible({ timeout: 10_000 });
     });
 
-    test("#1: closing the epic redirects to the epic list", async ({ page }) => {
+    test("#1: completing the epic flips the controls to Reopen", async ({ page }) => {
       await page.goto(`/projects/${state.projectId}/epics/${state.epicId}/threads/manager`);
-      const closeBtn = page.getByTestId("close-epic-btn");
-      await expect(closeBtn).toBeVisible({ timeout: 20_000 });
-      await closeBtn.click();
-      await expect(page).toHaveURL(new RegExp(`/projects/${state.projectId}/epics$`), {
-        timeout: 15_000,
-      });
-      await page.screenshot({ path: `${SHOTS}/smoke-1-after-close-redirect.png`, fullPage: true });
+      const completeBtn = page.getByTestId("complete-epic-btn");
+      await expect(completeBtn).toBeVisible({ timeout: 20_000 });
+      await completeBtn.click();
+
+      // The user's single "finish" action: epic.status flips to completed …
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(
+              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+            );
+            return (await res.json()).status;
+          },
+          { timeout: 15_000, intervals: [500, 1000] },
+        )
+        .toBe("completed");
+
+      // … and the header controls flip to the read-only branch (Reopen).
+      await expect(page.getByTestId("reopen-btn")).toBeVisible({ timeout: 15_000 });
+      await page.screenshot({ path: `${SHOTS}/smoke-1-after-complete.png`, fullPage: true });
     });
   });

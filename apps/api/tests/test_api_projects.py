@@ -88,7 +88,7 @@ class TestEpicsCRUD:
         assert data["id"] == "EP-1"
         assert data["slug"] == "refactor-auth"
         assert data["branch"] == "yukar/ep-1-refactor-auth"
-        assert data["status"] == "planned"
+        assert data["status"] == "open"
 
     async def test_epic_counter_increments(self, app_client: AsyncClient) -> None:
         await self._create_project(app_client)
@@ -107,9 +107,9 @@ class TestEpicsCRUD:
     async def test_patch_epic_status(self, app_client: AsyncClient) -> None:
         await self._create_project(app_client)
         await app_client.post("/api/projects/proj/epics", json={"title": "E"})
-        r = await app_client.patch("/api/projects/proj/epics/EP-1", json={"status": "in_progress"})
+        r = await app_client.patch("/api/projects/proj/epics/EP-1", json={"status": "completed"})
         assert r.status_code == 200
-        assert r.json()["status"] == "in_progress"
+        assert r.json()["status"] == "completed"
 
     async def test_list_epics(self, app_client: AsyncClient) -> None:
         await self._create_project(app_client)

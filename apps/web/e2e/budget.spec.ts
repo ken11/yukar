@@ -104,19 +104,20 @@ test.describe
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
-      // Wait for the epic to become completed
+      // Wait for the run to reach a terminal-ish state (run/state — the epic
+      // itself stays open under the 1-bit lifecycle).
       await expect
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             const body = await res.json();
             return body.status;
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toMatch(/^(completed|interrupted|idle|in_review)$/);
+        .toMatch(/^(completed|interrupted|idle|error)$/);
 
       // Check usage state via GET /api/usage
       const usageRes = await page.request.get("/api/usage");

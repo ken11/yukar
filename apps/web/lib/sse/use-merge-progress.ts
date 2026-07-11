@@ -59,8 +59,8 @@ export function useMergeProgress(
         if (ev.phase === "epic_done" || isFinished) {
           onInvalidateRef.current?.();
         }
-      } else if (data.type === "epic_status_changed") {
-        // Any status change (close/reopen/merge) → refresh board
+      } else if (data.type === "epic_status_changed" || data.type === "epic_merged") {
+        // User status toggle (complete/reopen) or a recorded merge fact → refresh board
         onInvalidateRef.current?.();
       }
     });

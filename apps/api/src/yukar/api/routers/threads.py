@@ -253,6 +253,14 @@ async def create_thread(
         if epic is None:
             raise HTTPException(status_code=404, detail=f"Epic not found: {epic_id!r}")
 
+        # A new manager trial (or same-branch continuation) is new WORK —
+        # completed epics are read-only until the user reopens them.
+        if body.role == "manager" and epic.status == "completed":
+            raise HTTPException(
+                status_code=409,
+                detail="Epic is completed — reopen it before starting a new trial",
+            )
+
         # A trial's lifecycle (new trial / archive+new / same-branch continuation)
         # must not change while ANY run holds this epic's single run slot — this
         # includes a read-only REVIEWER run, whose ``manager_thread_id`` is the
@@ -504,21 +512,24 @@ async def start_review(
     ``epic.active_thread_id``: the manager trial remains the active trial, and the
     reviewer's ``read_branch_diff`` reads that trial's branch via ``epic.branch``.
 
+    A completed epic still allows a review: the reviewer is read-only, so
+    inspecting finished work never requires reopening the epic.
+
     Raises:
         409: If a run is already active for this epic, an arbiter merge is in
-            progress, the epic is closed, or the budget is exhausted.
+            progress, or the budget is exhausted.
     """
     from yukar.storage.epic_repo import get_epic
     from yukar.storage.thread_locks import epic_thread_lock
 
-    epic_pre = await get_epic_or_404(root, project_id, epic_id)
+    await get_epic_or_404(root, project_id, epic_id)
 
     # Pre-checks (outside the lock) so we never create an orphan reviewer thread
     # for a request that supervisor.start would reject anyway.  These mirror every
-    # RuntimeError supervisor.start can raise (running / arbiter / budget / closed);
-    # supervisor.start re-checks them under its own lock, but doing it here first
-    # means a rejected request never leaves a persisted-but-unrunnable reviewer
-    # thread behind (reviewer threads cannot be archived).
+    # RuntimeError supervisor.start can raise for a reviewer (running / arbiter /
+    # budget); supervisor.start re-checks them under its own lock, but doing it
+    # here first means a rejected request never leaves a persisted-but-unrunnable
+    # reviewer thread behind (reviewer threads cannot be archived).
     if supervisor.is_running(project_id, epic_id):
         raise HTTPException(
             status_code=409,
@@ -528,8 +539,6 @@ async def start_review(
         raise HTTPException(
             status_code=409, detail="A merge (arbiter) is in progress for this project"
         )
-    if epic_pre.status == "closed":
-        raise HTTPException(status_code=409, detail="Epic is closed")
     if usage_tracker.is_over_budget():
         raise HTTPException(status_code=409, detail="Budget limit reached")
 
@@ -537,14 +546,12 @@ async def start_review(
         epic = await get_epic(root, project_id, epic_id)
         if epic is None:
             raise HTTPException(status_code=404, detail=f"Epic not found: {epic_id!r}")
-        # Re-check under the lock (serialises against a concurrent run start / close).
+        # Re-check under the lock (serialises against a concurrent run start).
         if supervisor.is_running(project_id, epic_id):
             raise HTTPException(
                 status_code=409,
                 detail="A run is already active for this epic. Stop it before starting a review.",
             )
-        if epic.status == "closed":
-            raise HTTPException(status_code=409, detail="Epic is closed")
 
         review_context = await _build_review_context(root, project_id, epic_id, epic)
 

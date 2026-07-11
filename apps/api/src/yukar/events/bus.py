@@ -56,6 +56,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from yukar.models.events import (
+    EpicMergedEvent,
     EpicMergeProgressEvent,
     EpicStatusChangedEvent,
     ManagerMessageEvent,
@@ -108,6 +109,7 @@ _LIFECYCLE_TYPES = (
     UserInputRequestedEvent,
     UserInputResolvedEvent,
     EpicStatusChangedEvent,
+    EpicMergedEvent,
     EpicMergeProgressEvent,
     SensitiveFileWrittenEvent,
 )

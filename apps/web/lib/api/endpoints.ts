@@ -62,6 +62,7 @@ export type StopMergeResponse = components["schemas"]["StopMergeResponse"];
 export type EpicMergeProgressEvent = components["schemas"]["EpicMergeProgressEvent"];
 export type EpicMergeResult = components["schemas"]["EpicMergeResult"];
 export type EpicStatusChangedEvent = components["schemas"]["EpicStatusChangedEvent"];
+export type EpicMergedEvent = components["schemas"]["EpicMergedEvent"];
 
 export type RunPausedEvent = components["schemas"]["RunPausedEvent"];
 export type RunResumedEvent = components["schemas"]["RunResumedEvent"];
@@ -104,7 +105,8 @@ export type RunEvent =
   | UserInputRequestedEvent
   | UserInputResolvedEvent
   | UserMessageCommittedEvent
-  | SensitiveFileWrittenEvent;
+  | SensitiveFileWrittenEvent
+  | EpicMergedEvent;
 
 /** Lifecycle-only events emitted by the project-level SSE stream. */
 export type ProjectLifecycleEvent =
@@ -164,8 +166,8 @@ export function deleteProject(projectId: string): Promise<void> {
 
 // ---- Epics ----
 
-export function listEpics(projectId: string, includeClosed = false): Promise<Epic[]> {
-  const q = includeClosed ? "?include_closed=true" : "";
+export function listEpics(projectId: string, includeCompleted = false): Promise<Epic[]> {
+  const q = includeCompleted ? "?include_completed=true" : "";
   return apiFetch(`/api/projects/${projectId}/epics${q}`);
 }
 
@@ -178,10 +180,6 @@ export function createEpic(projectId: string, body: CreateEpicRequest): Promise<
 
 export function getEpic(projectId: string, epicId: string): Promise<Epic> {
   return apiFetch(`/api/projects/${projectId}/epics/${epicId}`);
-}
-
-export function closeEpic(projectId: string, epicId: string): Promise<Epic> {
-  return apiFetch(`/api/projects/${projectId}/epics/${epicId}/close`, { method: "POST" });
 }
 
 export function patchEpic(

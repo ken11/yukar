@@ -267,6 +267,7 @@ describe("finding[event-stream-double-dispatch]: mutual exclusivity of named eve
     "user_input_resolved",
     "token_usage",
     "epic_status_changed",
+    "epic_merged",
     "epic_merge_progress",
   ] as const)("allow-list named event '%s' is dispatched once with the correct type", (eventType) => {
     const received: { type: string; data: unknown }[] = [];

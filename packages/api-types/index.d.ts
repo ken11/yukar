@@ -77,33 +77,6 @@ export interface paths {
         patch: operations["patch_epic_api_projects__project_id__epics__epic_id__patch"];
         trace?: never;
     };
-    "/api/projects/{project_id}/epics/{epic_id}/close": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Close Epic
-         * @description Mark an epic as closed (user-driven terminal status).
-         *
-         *     Returns 409 if a run is currently active — the caller must stop the run
-         *     first.  Closing is idempotent: closing an already-closed epic is allowed
-         *     (the updated_at timestamp is refreshed).
-         *
-         *     Publishes an EpicStatusChangedEvent so other browser tabs can react
-         *     without polling.
-         */
-        post: operations["close_epic_api_projects__project_id__epics__epic_id__close_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/projects/{project_id}/epics/{epic_id}/run": {
         parameters: {
             query?: never;
@@ -123,9 +96,11 @@ export interface paths {
          *     - If a run is currently active (is_running=True): return 409 Conflict.
          *     - Budget exhausted: return 409 Conflict.
          *
-         *     ``in_review`` (and ``completed`` / ``interrupted``) epics may be re-started
-         *     freely — the existing session history allows the Manager to resume context,
-         *     which is how the user requests a revision after reviewing the work.
+         *     Open epics may be (re-)started freely — the existing session history allows
+         *     the Manager to resume context, which is how the user requests a revision
+         *     after reviewing the work.  A completed epic returns 409: completing is a
+         *     user decision, and starting a run is not an implicit reopen (the user must
+         *     reopen the epic first).
          *
          *     TOCTOU guard: reload the epic and register supervisor.start under
          *     epic_thread_lock so a concurrent run cannot start (and delete the worktree)
@@ -291,9 +266,12 @@ export interface paths {
          *     ``epic.active_thread_id``: the manager trial remains the active trial, and the
          *     reviewer's ``read_branch_diff`` reads that trial's branch via ``epic.branch``.
          *
+         *     A completed epic still allows a review: the reviewer is read-only, so
+         *     inspecting finished work never requires reopening the epic.
+         *
          *     Raises:
          *         409: If a run is already active for this epic, an arbiter merge is in
-         *             progress, the epic is closed, or the budget is exhausted.
+         *             progress, or the budget is exhausted.
          */
         post: operations["start_review_api_projects__project_id__epics__epic_id__review_post"];
         delete?: never;
@@ -1657,10 +1635,10 @@ export interface components {
             acceptance_criteria: string;
             /**
              * Status
-             * @default planned
+             * @default open
              * @enum {string}
              */
-            status: "planned" | "in_progress" | "in_review" | "completed" | "failed" | "closed" | "merged";
+            status: "open" | "completed";
             /**
              * Branch
              * @default
@@ -1668,6 +1646,8 @@ export interface components {
             branch: string;
             /** Touched Repos */
             touched_repos?: string[];
+            /** Merged At */
+            merged_at?: string | null;
             /**
              * Manager Effort
              * @default high
@@ -1752,13 +1732,47 @@ export interface components {
             repos?: string[];
         };
         /**
-         * EpicStatusChangedEvent
-         * @description Emitted when an epic's status changes via a user/arbiter action.
+         * EpicMergedEvent
+         * @description Emitted once when the epic's merge fact is recorded (``merged_at`` set).
          *
-         *     Distinct from automatic supervisor transitions (in_progress/completed/failed).
-         *     Fired for manual status changes — e.g. ``closed`` (user action), ``merged``
-         *     (arbiter action), and any other transition applied via ``PATCH /epics/{id}``.
-         *     Pass ``run_id=""`` when there is no active run (e.g. on close).
+         *     Fired by the shared helper when EVERY repo's epic branch has been merged
+         *     into its default branch (single-repo merge via ``POST /git/merge`` or a
+         *     batch arbiter merge).  This is a fact notification, not a lifecycle
+         *     transition: the epic stays open and the UI shows a "merged" badge.
+         *     Idempotent at the source — recorded (and published) at most once per epic.
+         */
+        EpicMergedEvent: {
+            /** Project Id */
+            project_id: string;
+            /** Epic Id */
+            epic_id: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts?: string;
+            /**
+             * Type
+             * @default epic_merged
+             * @constant
+             */
+            type: "epic_merged";
+            /**
+             * Merged At
+             * Format: date-time
+             */
+            merged_at: string;
+        };
+        /**
+         * EpicStatusChangedEvent
+         * @description Emitted when the user flips the epic's 1-bit status (open ⇄ completed).
+         *
+         *     The only writer is ``PATCH /epics/{id}`` — the epic status is user-owned
+         *     and never transitions automatically.  Pass ``run_id=""`` (there is no
+         *     active run when the status is changed; a completed-switch is rejected
+         *     while a run is active).
          */
         EpicStatusChangedEvent: {
             /** Project Id */
@@ -1782,7 +1796,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "planned" | "in_progress" | "in_review" | "completed" | "failed" | "closed" | "merged";
+            status: "open" | "completed";
         };
         /**
          * EpicUsageBreakdown
@@ -2245,7 +2259,7 @@ export interface components {
             /** Acceptance Criteria */
             acceptance_criteria?: string | null;
             /** Status */
-            status?: ("planned" | "in_progress" | "in_review" | "completed" | "failed" | "closed" | "merged") | null;
+            status?: ("open" | "completed") | null;
             /** Manager Effort */
             manager_effort?: ("high" | "xhigh" | "max") | null;
         };
@@ -2546,6 +2560,7 @@ export interface components {
             user_input_requested?: components["schemas"]["UserInputRequestedEvent"] | null;
             user_input_resolved?: components["schemas"]["UserInputResolvedEvent"] | null;
             epic_status_changed?: components["schemas"]["EpicStatusChangedEvent"] | null;
+            epic_merged?: components["schemas"]["EpicMergedEvent"] | null;
             epic_merge_progress?: components["schemas"]["EpicMergeProgressEvent"] | null;
             user_message_committed?: components["schemas"]["UserMessageCommittedEvent"] | null;
             sensitive_file_written?: components["schemas"]["SensitiveFileWrittenEvent"] | null;
@@ -3710,7 +3725,7 @@ export interface operations {
     list_epics_api_projects__project_id__epics_get: {
         parameters: {
             query?: {
-                include_closed?: boolean;
+                include_completed?: boolean;
             };
             header?: never;
             path: {
@@ -3822,38 +3837,6 @@ export interface operations {
                 "application/json": components["schemas"]["PatchEpicRequest"];
             };
         };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Epic"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    close_epic_api_projects__project_id__epics__epic_id__close_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-                epic_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

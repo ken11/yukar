@@ -3,7 +3,8 @@
 /**
  * RunControls — group of UI components for epic run control.
  *
- * Holds 6-state run-control branching logic, pause pending, banners, and SSE keying.
+ * Epic side is a 1-bit user-owned status (open ⇄ completed); the run side keeps
+ * its own state branches (preparing/running/paused/awaiting_input/…).
  * Imported by EpicScopeHeader and EpicShell.
  */
 
@@ -15,7 +16,7 @@ import { runAction, startReview, startRun } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { useT } from "@/lib/i18n/provider";
 import type { useRunActivity } from "@/lib/sse/use-run-activity";
-import { extractCloseError, useApproveEpic, useCloseEpic, useReopenEpic } from "./use-close-epic";
+import { extractCompleteError, useCompleteEpic, useReopenEpic } from "./use-close-epic";
 
 // ---------------------------------------------------------------------------
 // StopConfirmDialog
@@ -78,7 +79,13 @@ export function StopConfirmDialog({
 // ---------------------------------------------------------------------------
 
 /**
- * 6-state run-control button group. Used in EpicScopeHeader.
+ * Run-control button group. Used in EpicScopeHeader.
+ *
+ * The epic side is a single user-owned bit:
+ *   - open      → all run operations + Complete + Ask Reviewer + Request Fix
+ *   - completed → read-only: Reopen + Ask Reviewer (reviewer is read-only,
+ *                 so inspecting finished work never requires reopening)
+ * Run-state branches (preparing/running/paused/awaiting_input/…) are unchanged.
  *
  * Pass activityState directly as the return value of useRunActivity().
  */
@@ -92,7 +99,7 @@ export function RunControlsBar({
 }: {
   projectId: string;
   epicId: string;
-  /** Current persisted Epic.status (from server) — used to show Close/Reopen */
+  /** Current persisted Epic.status (from server) — "open" | "completed" */
   epicStatus?: string;
   activityState: ReturnType<typeof useRunActivity>["state"];
   setPausePending: (v: boolean) => void;
@@ -102,46 +109,43 @@ export function RunControlsBar({
   const router = useRouter();
   const qc = useQueryClient();
 
-  const [closeError, setCloseError] = useState<string | null>(null);
-  const [approveError, setApproveError] = useState<string | null>(null);
+  const [completeError, setCompleteError] = useState<string | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
-  const closeMutation = useCloseEpic(projectId);
+  const completeMutation = useCompleteEpic(projectId);
   const reopenMutation = useReopenEpic(projectId);
-  const approveMutation = useApproveEpic(projectId);
 
-  const isClosed = epicStatus === "closed";
-  const isMerged = epicStatus === "merged";
-  const isInReview = epicStatus === "in_review";
+  const isEpicCompleted = epicStatus === "completed";
 
   /**
-   * Close button — shared across the isCompleted / isInterrupted / idle branches.
-   * Implemented as a render helper called via `{renderCloseButton()}` rather than a component
-   * (`<CloseButton/>`) to avoid remounting the subtree on every parent re-render
-   * (nested component definitions change type on each render).
+   * Complete button — the user's single "finish" action (approve done work or
+   * abandon unfinished work). Shared across every open-epic branch that is not
+   * actively running. Implemented as a render helper called via
+   * `{renderCompleteButton()}` rather than a component (`<CompleteButton/>`) to
+   * avoid remounting the subtree on every parent re-render (nested component
+   * definitions change type on each render).
    */
-  const renderCloseButton = () => (
+  const renderCompleteButton = () => (
     <>
-      {closeError && <span className="text-[11px] text-error">{closeError}</span>}
+      {completeError && <span className="text-[11px] text-error">{completeError}</span>}
       <button
         type="button"
-        data-testid="close-epic-btn"
+        data-testid="complete-epic-btn"
         onClick={() => {
-          setCloseError(null);
-          closeMutation.mutate(epicId, {
-            onSuccess: () => {
-              router.push(`/projects/${projectId}/epics`);
-            },
+          setCompleteError(null);
+          completeMutation.mutate(epicId, {
             onError: (err) => {
-              setCloseError(extractCloseError(err, t("epic.closeRunActive")));
+              setCompleteError(extractCompleteError(err, t("epic.completeRunActive")));
             },
           });
         }}
-        disabled={closeMutation.isPending}
+        disabled={completeMutation.isPending}
         className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
-        title={t("epic.close")}
+        title={t("epic.completeTitle")}
       >
-        <Icon name="lock" className="text-[16px]" />
-        <span className="hidden sm:inline">{closeMutation.isPending ? "…" : t("epic.close")}</span>
+        <Icon name="check_circle" className="text-[16px]" />
+        <span className="hidden sm:inline">
+          {completeMutation.isPending ? "…" : t("epic.complete")}
+        </span>
       </button>
     </>
   );
@@ -199,6 +203,64 @@ export function RunControlsBar({
     setPausePending(true);
     actionMutation.mutate("pause");
   };
+
+  /** Ask Reviewer — available on every open epic branch without an active run,
+   *  and on completed epics (the reviewer is read-only). */
+  const renderReviewerButton = () => (
+    <button
+      type="button"
+      data-testid="start-review-btn"
+      onClick={() => {
+        setReviewError(null);
+        reviewMutation.mutate();
+      }}
+      disabled={reviewMutation.isPending}
+      className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+      title={t("epic.reviewCheckTitle")}
+    >
+      <Icon name="fact_check" className="text-[16px]" />
+      <span className="hidden sm:inline">
+        {reviewMutation.isPending ? "…" : t("epic.reviewCheck")}
+      </span>
+    </button>
+  );
+
+  /** Request Fix — jump to the active manager conversation. */
+  const renderRequestFixButton = () => (
+    <button
+      type="button"
+      onClick={() =>
+        router.push(`/projects/${projectId}/epics/${epicId}/threads/${managerThreadId}`)
+      }
+      className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface"
+      title={t("common.requestFix")}
+    >
+      <Icon name="forum" className="text-[16px]" />
+      <span className="hidden sm:inline">{t("common.requestFix")}</span>
+    </button>
+  );
+
+  // Completed epic (user-owned bit): read-only — Reopen + Ask Reviewer.
+  // Run operations are rejected by the backend (409) until the user reopens.
+  if (isEpicCompleted) {
+    return (
+      <>
+        {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
+        <button
+          type="button"
+          data-testid="reopen-btn"
+          onClick={() => reopenMutation.mutate(epicId)}
+          disabled={reopenMutation.isPending}
+          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+          title={t("epic.reopen")}
+        >
+          <Icon name="lock_open" className="text-[16px]" />
+          <span className="hidden sm:inline">{t("epic.reopen")}</span>
+        </button>
+        {renderReviewerButton()}
+      </>
+    );
+  }
 
   if (isPreparing) {
     return (
@@ -299,6 +361,7 @@ export function RunControlsBar({
   if (isInterrupted) {
     return (
       <>
+        {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
         <button
           type="button"
           onClick={() => runMutation.mutate()}
@@ -311,108 +374,17 @@ export function RunControlsBar({
             {runMutation.isPending ? t("common.resuming") : t("common.resumeFromInterrupt")}
           </span>
         </button>
-        <button
-          type="button"
-          onClick={() =>
-            router.push(`/projects/${projectId}/epics/${epicId}/threads/${managerThreadId}`)
-          }
-          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface"
-          title={t("common.requestFix")}
-        >
-          <Icon name="forum" className="text-[16px]" />
-          <span className="hidden sm:inline">{t("common.requestFix")}</span>
-        </button>
-        {renderCloseButton()}
+        {renderReviewerButton()}
+        {renderRequestFixButton()}
+        {renderCompleteButton()}
       </>
     );
   }
 
-  if (isInReview) {
-    // All tasks done — awaiting the user's review. The user approves (→ completed,
-    // e.g. an investigation epic) or merges from the Diff tab (→ merged). Request
-    // Fix reopens the conversation for a revision run.
-    return (
-      <>
-        {approveError && <span className="text-[11px] text-error">{approveError}</span>}
-        {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
-        <button
-          type="button"
-          data-testid="approve-epic-btn"
-          onClick={() => {
-            setApproveError(null);
-            approveMutation.mutate(epicId, {
-              onError: (err) => {
-                setApproveError(extractCloseError(err, t("epic.closeRunActive")));
-              },
-            });
-          }}
-          disabled={approveMutation.isPending}
-          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          title={t("epic.approveTitle")}
-        >
-          <Icon name="check_circle" className="text-[16px]" />
-          <span className="hidden sm:inline">
-            {approveMutation.isPending ? "…" : t("epic.approve")}
-          </span>
-        </button>
-        <button
-          type="button"
-          data-testid="start-review-btn"
-          onClick={() => {
-            setReviewError(null);
-            reviewMutation.mutate();
-          }}
-          disabled={reviewMutation.isPending}
-          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
-          title={t("epic.reviewCheckTitle")}
-        >
-          <Icon name="fact_check" className="text-[16px]" />
-          <span className="hidden sm:inline">
-            {reviewMutation.isPending ? "…" : t("epic.reviewCheck")}
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            router.push(`/projects/${projectId}/epics/${epicId}/threads/${managerThreadId}`)
-          }
-          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface"
-          title={t("common.requestFix")}
-        >
-          <Icon name="forum" className="text-[16px]" />
-          <span className="hidden sm:inline">{t("common.requestFix")}</span>
-        </button>
-        {renderCloseButton()}
-      </>
-    );
-  }
-
-  if (isClosed) {
-    return (
-      <button
-        type="button"
-        data-testid="reopen-btn"
-        onClick={() => reopenMutation.mutate(epicId)}
-        disabled={reopenMutation.isPending}
-        className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
-        title={t("epic.reopen")}
-      >
-        <Icon name="lock_open" className="text-[16px]" />
-        <span className="hidden sm:inline">{t("epic.reopen")}</span>
-      </button>
-    );
-  }
-
-  if (isMerged) {
-    // Merged is terminal — no controls beyond navigation
-    return null;
-  }
-
-  // Completed epic: reachable via the persisted run status (state.yaml) or the
-  // user-approved epic status. Either way the work is done and idle, so the
-  // read-only Reviewer must stay available — the user can still ask it to
-  // verify the branch after approval, not only while in_review.
-  if (isCompleted || epicStatus === "completed") {
+  // Run finished (runStatus="completed" from state.yaml): the epic itself stays
+  // open — finishing a run never transitions the epic. Offer Rerun, and the
+  // shared open-epic actions (Reviewer / Request Fix / Complete).
+  if (isCompleted) {
     return (
       <>
         {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
@@ -429,43 +401,18 @@ export function RunControlsBar({
             {runMutation.isPending ? t("common.starting") : t("common.rerun")}
           </span>
         </button>
-        <button
-          type="button"
-          data-testid="start-review-btn"
-          onClick={() => {
-            setReviewError(null);
-            reviewMutation.mutate();
-          }}
-          disabled={reviewMutation.isPending}
-          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
-          title={t("epic.reviewCheckTitle")}
-        >
-          <Icon name="fact_check" className="text-[16px]" />
-          <span className="hidden sm:inline">
-            {reviewMutation.isPending ? "…" : t("epic.reviewCheck")}
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            router.push(`/projects/${projectId}/epics/${epicId}/threads/${managerThreadId}`)
-          }
-          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90"
-          title={t("common.requestFix")}
-        >
-          <Icon name="forum" className="text-[16px]" />
-          <span className="hidden sm:inline">{t("common.requestFix")}</span>
-        </button>
-        {/* Close — tertiary, always available when completed */}
-        {renderCloseButton()}
+        {renderReviewerButton()}
+        {renderRequestFixButton()}
+        {renderCompleteButton()}
       </>
     );
   }
 
-  // idle / default
+  // idle / default (open epic, no active run)
   const canStart = !isPreparing && !isRunning && !isPaused && !isAwaitingInput;
   return (
     <>
+      {reviewError && <span className="text-[11px] text-error">{reviewError}</span>}
       <button
         type="button"
         data-testid="start-run-btn"
@@ -479,7 +426,9 @@ export function RunControlsBar({
           {runMutation.isPending ? t("common.starting") : t("run.startRun")}
         </span>
       </button>
-      {renderCloseButton()}
+      {renderReviewerButton()}
+      {renderRequestFixButton()}
+      {renderCompleteButton()}
     </>
   );
 }

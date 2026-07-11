@@ -10,50 +10,40 @@ import type { Epic } from "@/lib/api/endpoints";
 import { ApiError, listEpics, startMerge } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
-import { isTerminalStatus } from "@/lib/epic-utils";
 import { useT } from "@/lib/i18n/provider";
 import { MergeProgressPanel } from "./merge-progress-panel";
 import { NewEpicModal } from "./new-epic-modal";
-import { useCloseEpic, useReopenEpic } from "./use-close-epic";
+import { useCompleteEpic, useReopenEpic } from "./use-close-epic";
 
 /**
  * Filter values for the board.
- * Default ("all") HIDES closed only — merged is included in "all".
- * closed/merged only appear in isolation when their chip is explicitly selected.
+ * The epic status is a single user-owned bit (open ⇄ completed); "merged" is a
+ * fact attribute (merged_at) — a merged epic can be either open or completed.
+ * "all" shows everything.
  */
-type FilterValue =
-  | "all"
-  | "planned"
-  | "in_progress"
-  | "in_review"
-  | "completed"
-  | "failed"
-  | "closed"
-  | "merged";
+type FilterValue = "all" | "open" | "completed" | "merged";
 
 interface EpicsBoardClientProps {
   projectId: string;
   initialEpics: Epic[];
 }
 
-/** epics that are "mergeable" = have a branch and are not already closed/merged */
+/** epics that are "mergeable" = open, have a branch, and no recorded merge fact */
 function isMergeable(e: Epic): boolean {
-  // #5: unify closed/merged detection with isTerminalStatus()
-  return !!e.branch && !isTerminalStatus(e.status);
+  return !!e.branch && e.status === "open" && !e.merged_at;
 }
 
 /**
  * EpicsBoardClient — board index for /projects/[p]/epics.
  * Receives initialEpics from RSC and live-updates via TanStack Query.
  * Status filter runs on the client only.
- * Default view hides closed only; merged is shown in "all".
  * Multi-select mode launches an arbiter batch merge.
  */
 export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientProps) {
   const t = useT();
   const qc = useQueryClient();
 
-  // Fetch all records with include_closed=true (filtering is done on the client)
+  // Fetch all records with include_completed=true (filtering is done on the client)
   const { data: epics = initialEpics } = useQuery({
     queryKey: queryKeys.epics.list(projectId),
     queryFn: () => listEpics(projectId, true),
@@ -85,24 +75,18 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
 
   const filterOptions: { value: FilterValue; labelKey: string }[] = [
     { value: "all", labelKey: "epicsBoard.filter.all" },
-    { value: "planned", labelKey: "epic.status.planned" },
-    { value: "in_progress", labelKey: "epic.status.running" },
-    { value: "in_review", labelKey: "epic.status.in_review" },
+    { value: "open", labelKey: "epic.status.open" },
     { value: "completed", labelKey: "epic.status.completed" },
-    { value: "failed", labelKey: "epic.status.error" },
-    { value: "closed", labelKey: "epic.status.closed" },
     { value: "merged", labelKey: "epic.status.merged" },
   ];
 
   const filtered =
     filter === "all"
-      ? // "all" hides only closed; merged is included (merged = successful terminal state)
-        epics.filter((e) => e.status !== "closed")
-      : filter === "closed"
-        ? epics.filter((e) => e.status === "closed")
-        : filter === "merged"
-          ? epics.filter((e) => e.status === "merged")
-          : epics.filter((e) => e.status === filter);
+      ? epics
+      : filter === "merged"
+        ? // merged is a fact attribute, not a status — filter on merged_at
+          epics.filter((e) => !!e.merged_at)
+        : epics.filter((e) => e.status === filter);
 
   const toggleSelect = useCallback((epicId: string) => {
     setSelected((prev) =>
@@ -249,14 +233,11 @@ function EpicBoardRow({
   const t = useT();
   const managerSeg = epic.active_thread_id ?? "manager";
   const href = `/projects/${projectId}/epics/${epic.id}/threads/${managerSeg}`;
-  const isRunning = epic.status === "in_progress";
-  const isClosed = epic.status === "closed";
-  const isMerged = epic.status === "merged";
+  const isCompleted = epic.status === "completed";
+  const isMerged = !!epic.merged_at;
 
-  const closeMutation = useCloseEpic(projectId);
+  const completeMutation = useCompleteEpic(projectId);
   const reopenMutation = useReopenEpic(projectId);
-
-  const statusForBadge = isClosed ? "closed" : isMerged ? "merged" : epic.status;
 
   return (
     <div
@@ -270,8 +251,7 @@ function EpicBoardRow({
       style={{
         borderBottom: "1px solid var(--edge-shadow)",
         paddingLeft: "16px",
-        boxShadow: isRunning ? "inset 2px 0 0 0 var(--color-light)" : undefined,
-        opacity: isClosed || isMerged ? 0.6 : undefined,
+        opacity: isCompleted ? 0.6 : undefined,
       }}
     >
       {/* Checkbox (mergeable epics only) */}
@@ -314,14 +294,15 @@ function EpicBoardRow({
         )}
       </Link>
 
-      {/* StatusBadge — pushed right on mobile (title is on its own line) */}
-      <StatusBadge
-        status={statusForBadge as Parameters<typeof StatusBadge>[0]["status"]}
-        className="ml-auto md:ml-0"
-      />
+      {/* StatusBadge — pushed right on mobile (title is on its own line).
+          The merged badge is a fact attribute shown alongside the status. */}
+      <span className="ml-auto flex items-center gap-2 md:ml-0">
+        {isMerged && <StatusBadge status="merged" />}
+        <StatusBadge status={epic.status} />
+      </span>
 
-      {/* Inline close / reopen action */}
-      {isClosed ? (
+      {/* Inline complete / reopen action */}
+      {isCompleted ? (
         <button
           type="button"
           data-testid={`reopen-btn-${epic.id}`}
@@ -332,18 +313,18 @@ function EpicBoardRow({
         >
           {t("epic.reopen")}
         </button>
-      ) : !isMerged && epic.status !== "in_progress" ? (
+      ) : (
         <button
           type="button"
-          data-testid={`close-btn-${epic.id}`}
-          onClick={() => closeMutation.mutate(epic.id)}
-          disabled={closeMutation.isPending}
-          title={t("epic.close")}
+          data-testid={`complete-btn-${epic.id}`}
+          onClick={() => completeMutation.mutate(epic.id)}
+          disabled={completeMutation.isPending}
+          title={t("epic.completeTitle")}
           className="shrink-0 rounded border border-outline-variant px-2 py-1 font-mono text-[11px] text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
         >
-          <Icon name="lock" className="text-[13px]" />
+          <Icon name="check_circle" className="text-[13px]" />
         </button>
-      ) : null}
+      )}
 
       {/* chevron */}
       <Link

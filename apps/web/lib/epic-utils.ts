@@ -9,11 +9,13 @@
 import type { Epic, ThreadEntry } from "./api/endpoints";
 
 /**
- * Returns whether an Epic's status is a "terminal state".
- * closed / merged are excluded from resume/merge targets and are pushed to the end of the list.
+ * Returns whether an Epic is completed (the user-owned 1-bit lifecycle:
+ * open ⇄ completed). Completed epics are excluded from resume/merge targets
+ * and are pushed to the end of lists. "Merged" is a fact attribute
+ * (epic.merged_at), not a terminal state — merged epics may stay open.
  */
 export function isTerminalStatus(status: string | undefined): boolean {
-  return status === "closed" || status === "merged";
+  return status === "completed";
 }
 
 /**

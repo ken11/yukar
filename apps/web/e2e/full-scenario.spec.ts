@@ -7,13 +7,14 @@
  *
  * Block 1 — Same-trial new session (also the basic-scenario regression):
  *   basic HITL (plan → user revises → re-plan → user approves → dispatch →
- *   evaluate → manager self-check → in_review) → user merges → user starts a NEW
- *   session on the SAME trial (continue-on-branch) with an extra request → the
- *   new session's Manager re-runs the basic scenario on the same branch.
+ *   evaluate → manager self-check → run completed; the epic stays open) → user
+ *   merges (merge fact recorded, epic still open) → user starts a NEW session on
+ *   the SAME trial (continue-on-branch) with an extra request → the new
+ *   session's Manager re-runs the basic scenario on the same branch.
  *
  * Block 2 — Reviewer:
- *   basic HITL → in_review → user invokes the Reviewer → the Reviewer reads the
- *   branch (read_branch_diff + fs_read on the manager trial's worktree) and
+ *   basic HITL → run completed → user invokes the Reviewer → the Reviewer reads
+ *   the branch (read_branch_diff + fs_read on the manager trial's worktree) and
  *   reports to the user via ask_user, WITHOUT changing the epic lifecycle → user
  *   reviews → user can instruct a fix on the Manager thread (composer available)
  *   → user merges.
@@ -32,7 +33,12 @@ async function getEpic(
   page: Page,
   projectId: string,
   epicId: string,
-): Promise<{ status: string; branch?: string; active_thread_id?: string | null }> {
+): Promise<{
+  status: string;
+  branch?: string;
+  active_thread_id?: string | null;
+  merged_at?: string | null;
+}> {
   const res = await page.request.get(`/api/projects/${projectId}/epics/${epicId}`);
   return res.json();
 }
@@ -99,12 +105,18 @@ async function replyOnThread(page: Page, replyText: string): Promise<void> {
 }
 
 /**
- * Drive the Manager HITL dance from the plan question to in_review, assuming the
- * Manager has already started and the page is on its thread: it presents a plan
- * (Q_PLAN), the user requests a revision, it re-plans (Q_REVISED), the user
- * approves, and only then does the gated dispatch run through to in_review.
+ * Drive the Manager HITL dance from the plan question to run completion,
+ * assuming the Manager has already started and the page is on its thread: it
+ * presents a plan (Q_PLAN), the user requests a revision, it re-plans
+ * (Q_REVISED), the user approves, and only then does the gated dispatch run
+ * through to completion (run/state "completed" — the epic itself stays open;
+ * finishing a run never transitions the 1-bit epic status).
  */
-async function approvePlanToInReview(page: Page, projectId: string, epicId: string): Promise<void> {
+async function approvePlanToCompletion(
+  page: Page,
+  projectId: string,
+  epicId: string,
+): Promise<void> {
   await expect(page.getByText(Q_PLAN)).toBeVisible({ timeout: 60_000 });
   // The approval gate: before approval no Worker runs — T1 stays "todo".
   await expect
@@ -117,17 +129,15 @@ async function approvePlanToInReview(page: Page, projectId: string, epicId: stri
   await replyOnThread(page, "テストの観点も計画に含めてください。");
   await expect(page.getByText(Q_REVISED)).toBeVisible({ timeout: 60_000 });
 
+  // The run is parked at awaiting_input here, so polling for "completed" below
+  // cannot false-positive on a stale state from a previous run.
   await replyOnThread(page, "はい、その計画で承認します。進めてください。");
   await expect
-    .poll(() => getEpicStatus(page, projectId, epicId), {
+    .poll(() => getRunStatus(page, projectId, epicId), {
       timeout: 90_000,
       intervals: [500, 1000, 2000],
     })
-    .toBe("in_review");
-}
-
-async function getEpicStatus(page: Page, projectId: string, epicId: string): Promise<string> {
-  return (await getEpic(page, projectId, epicId)).status;
+    .toBe("completed");
 }
 
 async function mergeEpic(page: Page, projectId: string, epicId: string): Promise<void> {
@@ -135,9 +145,16 @@ async function mergeEpic(page: Page, projectId: string, epicId: string): Promise
     data: { repo: "myrepo", message: "Merge epic" },
   });
   expect(res.ok(), `merge should succeed: ${res.status()} ${await res.text()}`).toBeTruthy();
+  // Merging records a fact attribute (merged_at); the epic stays open.
   await expect
-    .poll(() => getEpicStatus(page, projectId, epicId), { timeout: 30_000, intervals: [500, 1000] })
-    .toBe("merged");
+    .poll(async () => Boolean((await getEpic(page, projectId, epicId)).merged_at), {
+      timeout: 30_000,
+      intervals: [500, 1000],
+    })
+    .toBe(true);
+  expect((await getEpic(page, projectId, epicId)).status, "merge leaves the epic open").toBe(
+    "open",
+  );
 }
 
 // ===========================================================================
@@ -155,7 +172,9 @@ test.describe
       contId: "",
     };
 
-    test("basic scenario: plan → revise → approve → implement → in_review", async ({ page }) => {
+    test("basic scenario: plan → revise → approve → implement → run completed", async ({
+      page,
+    }) => {
       const ids = await createProjectAndEpic(
         page,
         "same-trial-project",
@@ -168,7 +187,7 @@ test.describe
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      await approvePlanToInReview(page, s.projectId, s.epicId);
+      await approvePlanToCompletion(page, s.projectId, s.epicId);
 
       // The Worker actually implemented + Evaluator accepted → T1 done, and the
       // branch carries hello.py (the Manager self-checked it via read_branch_diff).
@@ -225,10 +244,10 @@ test.describe
       // Post the additional request → the NEW session's Manager runs the basic
       // scenario again on the same branch.
       await replyOnThread(page, "util.py も追加してください。");
-      await approvePlanToInReview(page, s.projectId, s.epicId);
+      await approvePlanToCompletion(page, s.projectId, s.epicId);
 
-      // The epic lifecycle reopened and completed on the SAME branch; the active
-      // trial is now the continuation conversation.
+      // The continuation ran on the SAME branch (the epic stayed open the whole
+      // time); the active trial is now the continuation conversation.
       const epic = await getEpic(page, s.projectId, s.epicId);
       expect(epic.branch, "still the same branch — no new trial").toBe(s.branch);
       expect(epic.active_thread_id, "active session is the continuation").toBe(s.contId);
@@ -245,7 +264,7 @@ test.describe
   .serial("reviewer (basic HITL → review → report → fix-entry + merge)", () => {
     const s = { projectId: "", epicId: "", reviewerId: "" };
 
-    test("basic scenario to in_review", async ({ page }) => {
+    test("basic scenario to run completion", async ({ page }) => {
       const ids = await createProjectAndEpic(
         page,
         "reviewer-project",
@@ -257,7 +276,7 @@ test.describe
 
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
-      await approvePlanToInReview(page, s.projectId, s.epicId);
+      await approvePlanToCompletion(page, s.projectId, s.epicId);
     });
 
     test("user invokes the Reviewer → it reviews and reports, epic untouched", async ({ page }) => {
@@ -289,7 +308,7 @@ test.describe
       );
       expect(JSON.stringify(await mRes.json())).toContain("greet");
       const epic = await getEpic(page, s.projectId, s.epicId);
-      expect(epic.status, "reviewer leaves the epic in_review").toBe("in_review");
+      expect(epic.status, "reviewer leaves the epic open").toBe("open");
       expect(epic.active_thread_id, "manager trial stays the active trial").toBe("manager");
 
       await page.screenshot({ path: `${SHOTS}/reviewer-report.png`, fullPage: true });

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -13,7 +12,6 @@ from pydantic import BaseModel
 from yukar.api.routers import get_epic_or_404, get_repo_or_404
 from yukar.config import paths as p
 from yukar.deps import SettingsDep, SupervisorDep, UsageTrackerDep, WorkspaceRootDep
-from yukar.events import bus as event_bus
 from yukar.git.diff import (
     GitVettingError,
     MergeConflictError,
@@ -28,8 +26,8 @@ from yukar.git.status import get_status
 from yukar.git.worktree import delete_branch, remove_worktree
 from yukar.models.diff import DiffResult, DiffSummary, FileStat, RepoPruneResult
 from yukar.models.epic import Epic
-from yukar.models.events import EpicStatusChangedEvent
-from yukar.storage.epic_repo import get_epic, save_epic
+from yukar.runs.merge_facts import record_epic_merged
+from yukar.storage.epic_repo import get_epic
 from yukar.storage.project_repo import get_repo, list_repos
 
 logger = logging.getLogger(__name__)
@@ -139,23 +137,23 @@ async def _finalize_epic_if_all_merged(
     project_id: str,
     epic: Epic,
 ) -> None:
-    """Check if all repos are merged; if so, set epic.status='merged' and publish event.
+    """Record the merge fact (``merged_at``) once every repo is merged.
 
-    Called after a successful single-repo merge (``POST /git/merge``).  Marks
-    the epic as merged when EVERY repo in the project's repo list has the epic
-    branch already merged into its default branch, or the branch does not exist
-    in that repo (branch absent means it was never created or already pruned —
+    Called after a successful single-repo merge (``POST /git/merge``).  Records
+    the fact when EVERY repo in the project's repo list has the epic branch
+    already merged into its default branch, or the branch does not exist in
+    that repo (branch absent means it was never created or already pruned —
     both are semantically equivalent to "merged" for the per-repo check).
 
-    Statuses that are already terminal (``closed``, ``merged``) are not
-    overwritten: ``closed`` is a user-driven terminal state that takes
-    precedence; ``merged`` means it was already finalised (idempotent).
+    The merge fact is an attribute, not a status: the epic stays open and only
+    the user completes it.  Recording is idempotent — once ``merged_at`` is
+    set, this function is a no-op (``record_epic_merged`` enforces it).
 
     Errors in the per-repo ancestor check are logged and treated as
     ``not-yet-merged`` (fail-safe: we never prematurely declare an epic merged).
     """
-    # Guard: only touch active epics; never overwrite 'closed'.
-    if epic.status in ("closed", "merged"):
+    # Idempotence: the merge fact is recorded (and announced) at most once.
+    if epic.merged_at is not None:
         return
 
     branch = epic.branch
@@ -193,21 +191,9 @@ async def _finalize_epic_if_all_merged(
         if not merged:
             return  # at least one repo is not yet merged
 
-    # All repos are merged — finalise the epic.
-    logger.info("All repos merged for epic %s; setting status='merged'", epic.id)
-    epic.status = "merged"
-    epic.updated_at = datetime.now(UTC)
-    await save_epic(root, project_id, epic)
-    event_bus.publish(
-        project_id,
-        epic.id,
-        EpicStatusChangedEvent(
-            project_id=project_id,
-            epic_id=epic.id,
-            run_id="",
-            status="merged",
-        ),
-    )
+    # All repos are merged — record the merge fact (the epic stays open).
+    logger.info("All repos merged for epic %s; recording merged_at", epic.id)
+    await record_epic_merged(root, project_id, epic)
 
 
 @router.post("/git/merge")
@@ -227,11 +213,17 @@ async def git_merge(
             detail="A batch merge (arbiter) is in progress for this project",
         )
 
-    repo_info = await get_repo_or_404(root, project_id, body.repo)
-
     epic = await get_epic(root, project_id, epic_id)
     if epic is None or not epic.branch:
         raise HTTPException(status_code=404, detail="Epic branch not found")
+    # A merge mutates the default branch — completed epics are read-only
+    # until the user reopens them (merge, then complete, is the normal order).
+    if epic.status == "completed":
+        raise HTTPException(
+            status_code=409, detail="Epic is completed — reopen it before merging"
+        )
+
+    repo_info = await get_repo_or_404(root, project_id, body.repo)
 
     try:
         sha = await merge(
@@ -297,10 +289,13 @@ async def git_resolve(
     """
     # Validate repo exists.
     await get_repo_or_404(root, project_id, body.repo)
-    # Validate epic exists and is not closed.
+    # Validate epic exists and is not completed (a conflict-resolve run mutates
+    # the epic worktree — completed epics are read-only until reopened).
     epic = await get_epic_or_404(root, project_id, epic_id)
-    if epic.status == "closed":
-        raise HTTPException(status_code=409, detail="Epic is closed")
+    if epic.status == "completed":
+        raise HTTPException(
+            status_code=409, detail="Epic is completed — reopen it before resolving conflicts"
+        )
 
     if supervisor.is_running(project_id, epic_id):
         raise HTTPException(status_code=409, detail="A run is already active for this epic")

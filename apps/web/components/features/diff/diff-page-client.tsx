@@ -315,6 +315,7 @@ function DiffToolbarActions({
   epicId,
   files,
   isRunning,
+  epicCompleted,
   showCommitInput,
   commitMsg,
   commitPending,
@@ -333,6 +334,8 @@ function DiffToolbarActions({
   epicId: string;
   files: DiffResult["files"];
   isRunning: boolean;
+  /** Completed epics are read-only — the merge action is hidden until reopen. */
+  epicCompleted: boolean;
   showCommitInput: boolean;
   commitMsg: string;
   commitPending: boolean;
@@ -406,7 +409,7 @@ function DiffToolbarActions({
             {t("diff.commit")}
           </PrimaryActionButton>
         )
-      ) : showMergeConfirm ? (
+      ) : epicCompleted ? null : showMergeConfirm ? (
         <div className="flex items-center gap-2">
           <span className="text-body-sm text-on-surface-variant">
             {t("diff.mergeConfirmQuestion")}
@@ -524,8 +527,11 @@ export function DiffPageClient({ projectId, epicId, epic, initialDiffs }: DiffPa
       setMergeError(null);
     },
     onError: (err) => {
-      if (err instanceof ApiError && err.status === 409) {
-        const conflicts = extractConflicts(err);
+      // A 409 is a merge conflict ONLY when the body carries a conflict list.
+      // Other 409s (completed epic, active run) are plain errors — rendering
+      // them as an empty "conflict" would offer a resolve flow that cannot work.
+      const conflicts = err instanceof ApiError && err.status === 409 ? extractConflicts(err) : [];
+      if (conflicts.length > 0) {
         setConflictFiles(conflicts);
         setMergeError(null);
       } else {
@@ -567,7 +573,9 @@ export function DiffPageClient({ projectId, epicId, epic, initialDiffs }: DiffPa
         selectedFile.endsWith(f.newPath),
     ) ?? parsedFiles[0];
 
-  const isEpicCompleted = epic?.status === "completed" || epic?.status === "merged";
+  // Clean up (prune) is offered once the work is finished: the user completed
+  // the epic, or the merge fact (merged_at) has been recorded.
+  const isEpicCompleted = epic?.status === "completed" || !!epic?.merged_at;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -599,6 +607,7 @@ export function DiffPageClient({ projectId, epicId, epic, initialDiffs }: DiffPa
             epicId={epicId}
             files={files}
             isRunning={isRunning}
+            epicCompleted={epic?.status === "completed"}
             showCommitInput={showCommitInput}
             commitMsg={commitMsg}
             commitPending={commitMutation.isPending}

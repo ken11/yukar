@@ -186,13 +186,13 @@ test.describe
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             return (await res.json()).status;
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("in_review");
+        .toBe("completed");
     });
 
     // ---- 5. Confirm whether duplicate rendering occurs & take element screenshot ----

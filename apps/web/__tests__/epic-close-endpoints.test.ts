@@ -1,15 +1,11 @@
 /**
- * Epic Close / Reopen / Merge endpoint tests (Feature 1 + Feature 2).
+ * Epic complete / reopen / merge endpoint tests (1-bit epic lifecycle).
+ *
+ * The old POST /close and the in_review "approve" collapsed into a single
+ * user-owned toggle: PATCH { status: "completed" } / PATCH { status: "open" }.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ApiError,
-  closeEpic,
-  listEpics,
-  patchEpic,
-  startMerge,
-  stopMerge,
-} from "../lib/api/endpoints";
+import { ApiError, listEpics, patchEpic, startMerge, stopMerge } from "../lib/api/endpoints";
 
 const mockFetch = vi.fn();
 
@@ -33,71 +29,61 @@ function mockResponse(status: number, body: unknown) {
 const baseEpic = {
   id: "EP-1",
   title: "Test",
-  status: "completed" as const,
+  status: "open" as const,
   project_id: "proj1",
 };
 
-// ---- listEpics include_closed ----
+// ---- listEpics include_completed ----
 
 describe("listEpics", () => {
-  it("defaults to no include_closed query param", async () => {
+  it("defaults to no include_completed query param", async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(200, []));
     await listEpics("proj1");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).not.toContain("include_closed");
+    expect(url).not.toContain("include_completed");
   });
 
-  it("appends include_closed=true when requested", async () => {
+  it("appends include_completed=true when requested", async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(200, []));
     await listEpics("proj1", true);
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("include_closed=true");
+    expect(url).toContain("include_completed=true");
   });
 });
 
-// ---- closeEpic ----
+// ---- patchEpic (complete / reopen) ----
 
-describe("closeEpic", () => {
-  it("POSTs to .../close and returns Epic", async () => {
-    const closed = { ...baseEpic, status: "closed" };
-    mockFetch.mockResolvedValueOnce(mockResponse(200, closed));
+describe("patchEpic status toggle", () => {
+  it("PATCHes status to completed (the single finish action)", async () => {
+    const completed = { ...baseEpic, status: "completed" };
+    mockFetch.mockResolvedValueOnce(mockResponse(200, completed));
 
-    const result = await closeEpic("proj1", "EP-1");
-    expect(result.status).toBe("closed");
-
-    const call = mockFetch.mock.calls[0];
-    expect(call[0]).toContain("/api/projects/proj1/epics/EP-1/close");
-    expect(call[1].method).toBe("POST");
-  });
-
-  it("throws ApiError 409 when run is active", async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(409, { detail: "run active" }));
-    await expect(closeEpic("proj1", "EP-1")).rejects.toBeInstanceOf(ApiError);
-  });
-});
-
-// ---- patchEpic ----
-
-describe("patchEpic", () => {
-  it("PATCHes status to planned (reopen)", async () => {
-    const reopened = { ...baseEpic, status: "planned" };
-    mockFetch.mockResolvedValueOnce(mockResponse(200, reopened));
-
-    const result = await patchEpic("proj1", "EP-1", { status: "planned" });
-    expect(result.status).toBe("planned");
+    const result = await patchEpic("proj1", "EP-1", { status: "completed" });
+    expect(result.status).toBe("completed");
 
     const call = mockFetch.mock.calls[0];
     expect(call[0]).toContain("/api/projects/proj1/epics/EP-1");
     expect(call[1].method).toBe("PATCH");
     const body = JSON.parse(call[1].body);
-    expect(body.status).toBe("planned");
+    expect(body.status).toBe("completed");
   });
 
-  it("allows patching only status field", async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(200, { ...baseEpic, status: "planned" }));
-    await patchEpic("proj1", "EP-1", { status: "planned" });
+  it("PATCHes status to open (reopen)", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse(200, baseEpic));
+
+    const result = await patchEpic("proj1", "EP-1", { status: "open" });
+    expect(result.status).toBe("open");
+
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(Object.keys(body)).toEqual(["status"]);
+    expect(body.status).toBe("open");
+  });
+
+  it("throws ApiError 409 when completing while a run is active", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse(409, { detail: "run active" }));
+    await expect(patchEpic("proj1", "EP-1", { status: "completed" })).rejects.toBeInstanceOf(
+      ApiError,
+    );
   });
 });
 

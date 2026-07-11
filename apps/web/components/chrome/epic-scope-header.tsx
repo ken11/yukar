@@ -38,18 +38,11 @@ function resolveStatus(epicStatus: string | undefined, runStatus: string): Statu
   if (runStatus === "paused") return "paused";
   if (runStatus === "awaiting_input") return "awaiting";
   if (runStatus === "interrupted") return "interrupted";
-  // Persisted epic status is authoritative for terminal / review / idle states.
-  // A finished run leaves runStatus="completed", but the epic is only "in_review"
-  // (awaiting the user) until they merge or approve — so epic.status wins here.
-  if (epicStatus === "in_review") return "in_review";
-  if (epicStatus === "merged") return "merged";
+  // Epic status is a single user-owned bit: completed wins over any stale run
+  // state (no run can be active on a completed epic). "Merged" is a fact
+  // attribute (epic.merged_at) rendered as a separate badge, not a status.
   if (epicStatus === "completed") return "completed";
-  if (epicStatus === "closed") return "closed";
-  if (epicStatus === "failed") return "error";
-  if (epicStatus === "in_progress") return "in_progress";
-  if (epicStatus === "planned") return "planned";
-  if (epicStatus === "blocked") return "blocked";
-  // Remaining cases: fall back to the run status.
+  // Open epic without an active run: fall back to the run status.
   if (runStatus === "completed") return "completed";
   if (runStatus === "error") return "error";
   return "idle";
@@ -67,11 +60,6 @@ const MOBILE_STATUS_GLYPH: Record<string, { icon: string; color?: string; labelK
     color: "var(--color-running)",
     labelKey: "epic.status.running",
   },
-  in_progress: {
-    icon: "radio_button_checked",
-    color: "var(--color-running)",
-    labelKey: "epic.status.running",
-  },
   preparing: { icon: "sync", labelKey: "epic.status.preparing" },
   awaiting: {
     icon: "pending_actions",
@@ -80,13 +68,8 @@ const MOBILE_STATUS_GLYPH: Record<string, { icon: string; color?: string; labelK
   },
   paused: { icon: "pause", labelKey: "epic.status.paused" },
   interrupted: { icon: "warning", labelKey: "epic.status.interrupted" },
-  in_review: { icon: "rate_review", labelKey: "epic.status.in_review" },
   completed: { icon: "check", labelKey: "epic.status.completed" },
-  merged: { icon: "check", labelKey: "epic.status.merged" },
-  closed: { icon: "lock", labelKey: "epic.status.closed" },
   error: { icon: "error", color: "var(--color-error)", labelKey: "epic.status.error" },
-  planned: { icon: "schedule", labelKey: "epic.status.planned" },
-  blocked: { icon: "block", labelKey: "epic.status.blocked" },
   idle: { icon: "circle", labelKey: "epic.status.idle" },
 };
 
@@ -237,6 +220,8 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
           )}
         >
           <TelemetryInstrument tasksDone={tasksDone} tasksTotal={tasksTotal} />
+          {/* Merge fact badge (epic.merged_at) — an attribute, independent of the status */}
+          {epic?.merged_at && <StatusBadge status="merged" />}
           <StatusBadge status={status} />
           <RunControlsBar
             projectId={projectId}

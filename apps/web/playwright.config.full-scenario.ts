@@ -2,9 +2,9 @@
  * Playwright config for the full-scenario E2E (gate ON).
  *
  * Drives the complete basic HITL flow (plan → revise → approve → dispatch →
- * evaluate → self-check → in_review) and then the two features built on top of
- * it: the same-trial new session (continue-on-branch after merge) and the
- * read-only Reviewer.  The plan-approval gate is LEFT ON.
+ * evaluate → self-check → run completed; the epic stays open) and then the two
+ * features built on top of it: the same-trial new session (continue-on-branch
+ * after merge) and the read-only Reviewer.  The plan-approval gate is LEFT ON.
  *
  * Prerequisite: ports 8000 and 3000 must be free before running.
  */

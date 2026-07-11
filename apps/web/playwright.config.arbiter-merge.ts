@@ -3,7 +3,8 @@
  *
  * Scenario:
  *   Run two Epics to completion using Fake runs, then bulk-merge them from the Epics board.
- *   MergeProgressPanel shows progress via SSE; verify both Epics become "merged".
+ *   MergeProgressPanel shows progress via SSE; verify both Epics carry the
+ *   merge fact (merged_at) while staying open.
  *
  * Launch strategy:
  *   - FastAPI (8000): started with ARBITER_MERGE_FAKE_SCRIPT (per_call format worker)

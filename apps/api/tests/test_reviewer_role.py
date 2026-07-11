@@ -232,7 +232,7 @@ class TestReviewerRunLifecycle:
                 id=eid,
                 slug="s",
                 title="Add auth",
-                status="in_review",
+                status="open",
                 branch="yukar/ep-rev-s",
                 active_thread_id="manager",
             ),
@@ -273,7 +273,7 @@ class TestReviewerRunLifecycle:
         loaded = await get_epic(root, pid, eid)
         assert loaded is not None
         assert loaded.active_thread_id == "manager"
-        assert loaded.status == "in_review"
+        assert loaded.status == "open"
 
     @pytest.mark.asyncio
     async def test_start_review_409_when_run_active(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -293,7 +293,7 @@ class TestReviewerRunLifecycle:
         root = str(tmp_path / "ws")
         pid, eid = "p-rev2", "EP-rev2"
         await save_project(root, Project(id=pid, name=pid))
-        await save_epic(root, pid, Epic(id=eid, slug="s", title="T", status="in_review"))
+        await save_epic(root, pid, Epic(id=eid, slug="s", title="T", status="open"))
 
         sup = RunSupervisor()
         with (
@@ -311,12 +311,11 @@ class TestReviewerRunLifecycle:
         assert ei.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_start_review_409_when_epic_closed_leaves_no_orphan(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """POST /review on a closed epic returns 409 BEFORE creating any thread —
-        reviewer threads cannot be archived, so an orphan would be permanent."""
-        from unittest.mock import patch
-
-        from fastapi import HTTPException
+    async def test_start_review_allowed_on_completed_epic(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """POST /review works on a completed epic — the reviewer is read-only,
+        so inspecting finished work never requires reopening the epic
+        (regression guard for the 523a495 behaviour, now backend-enforced)."""
+        from unittest.mock import AsyncMock, patch
 
         from yukar.api.routers import threads as threads_router
         from yukar.api.routers.threads import StartReviewRequest
@@ -328,17 +327,14 @@ class TestReviewerRunLifecycle:
         from yukar.storage.project_repo import save_project
 
         root = str(tmp_path / "ws")
-        pid, eid = "p-rev-closed", "EP-rev-closed"
+        pid, eid = "p-rev-done", "EP-rev-done"
         await save_project(root, Project(id=pid, name=pid))
-        await save_epic(root, pid, Epic(id=eid, slug="s", title="T", status="closed"))
+        await save_epic(root, pid, Epic(id=eid, slug="s", title="T", status="completed"))
 
         sup = RunSupervisor()
-        # start() is patched to assert it is NEVER reached (the guard must fire first).
-        with (
-            patch.object(sup, "start", side_effect=AssertionError("start must not run")),
-            pytest.raises(HTTPException) as ei,
-        ):
-            await threads_router.start_review(
+        mock_start = AsyncMock(return_value="run-rev")
+        with patch.object(sup, "start", mock_start):
+            entry = await threads_router.start_review(
                 project_id=pid,
                 epic_id=eid,
                 body=StartReviewRequest(),
@@ -346,10 +342,43 @@ class TestReviewerRunLifecycle:
                 supervisor=sup,
                 usage_tracker=_fake_tracker(),
             )
-        assert ei.value.status_code == 409
-        # No reviewer thread was persisted — nothing to orphan.
+        assert entry.role == "reviewer"
+        assert mock_start.await_count == 1
         tf = await threads_repo.get_threads(root, pid, eid)
-        assert not any(t.role == "reviewer" for t in tf.threads)
+        assert any(t.id == entry.id and t.role == "reviewer" for t in tf.threads)
+
+    @pytest.mark.asyncio
+    async def test_supervisor_start_reviewer_allowed_on_completed_epic(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The supervisor's completed-epic TOCTOU guard only blocks manager runs:
+        a reviewer run starts fine on a completed epic (read-only contract)."""
+        from unittest.mock import patch
+
+        from yukar.models.epic import Epic
+        from yukar.runs.runner import DummyRunner
+        from yukar.runs.supervisor import RunSupervisor
+        from yukar.storage.epic_repo import get_epic, save_epic
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-rev-done2", "EP-rev-done2"
+        await save_epic(root, pid, Epic(id=eid, slug="s", title="T", status="completed"))
+
+        sup = RunSupervisor()
+        dummy = DummyRunner()
+
+        async def _instant_start(root_: str, project_id: str, epic_id: str, run_id: str) -> None:
+            pass
+
+        with (
+            patch.object(dummy, "start", side_effect=_instant_start),
+            patch.object(sup, "_make_runner", return_value=dummy),
+        ):
+            await sup.start(root, pid, eid, manager_thread_id="rev-1", agent_role="reviewer")
+            await sup._runs[(pid, eid)].task
+
+        # The epic stays completed — the reviewer run never touches the status.
+        loaded = await get_epic(root, pid, eid)
+        assert loaded is not None
+        assert loaded.status == "completed"
 
     @pytest.mark.asyncio
     async def test_post_message_to_reviewer_thread_routes_reviewer_mode(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -373,7 +402,7 @@ class TestReviewerRunLifecycle:
         await save_epic(
             root,
             pid,
-            Epic(id=eid, slug="s", title="T", status="in_review", active_thread_id="manager"),
+            Epic(id=eid, slug="s", title="T", status="open", active_thread_id="manager"),
         )
         await _seed_manager_conversation(root, pid, eid)
         await threads_repo.add_thread(
@@ -420,7 +449,7 @@ class TestReviewerRunLifecycle:
 
         root = str(tmp_path / "ws")
         pid, eid = "p-rev4", "EP-rev4"
-        await save_epic(root, pid, Epic(id=eid, slug="s", title="T", status="in_review"))
+        await save_epic(root, pid, Epic(id=eid, slug="s", title="T", status="open"))
 
         sup = RunSupervisor()
         dummy = DummyRunner()
@@ -449,7 +478,7 @@ class TestReviewerRunLifecycle:
         )
         loaded = await get_epic(root, pid, eid)
         assert loaded is not None
-        assert loaded.status == "in_review"  # unchanged by the reviewer run
+        assert loaded.status == "open"  # unchanged by the reviewer run
 
 
 def _reviewer_orchestrator():  # type: ignore[no-untyped-def]
@@ -496,7 +525,7 @@ class TestReviewerWorktreeTools:
 
         orch = _reviewer_orchestrator()
         orch._epic = Epic(
-            id=eid, slug="s", title="T", status="in_review", touched_repos=["repoA", "repoB"]
+            id=eid, slug="s", title="T", status="open", touched_repos=["repoA", "repoB"]
         )
         tools = await orch._build_worktree_ro_tools(root, pid, eid)
         by_name = {getattr(t, "tool_name", None): t for t in tools}
@@ -538,7 +567,7 @@ class TestReviewerWorktreeTools:
 
         orch = _reviewer_orchestrator()
         # touched_repos is empty: the repo has not been touched by any task yet.
-        orch._epic = Epic(id=eid, slug="s", title="T", status="in_review", touched_repos=[])
+        orch._epic = Epic(id=eid, slug="s", title="T", status="open", touched_repos=[])
         tools = await orch._build_worktree_ro_tools(root, pid, eid)
         by_name = {getattr(t, "tool_name", None): t for t in tools}
         assert set(by_name) == {"run_tests", "fs_read", "repo_grep"}
@@ -554,7 +583,7 @@ class TestReviewerWorktreeTools:
 
         orch = _reviewer_orchestrator()
         orch._epic = Epic(
-            id="EP-nw", slug="s", title="T", status="in_review", touched_repos=["myrepo"]
+            id="EP-nw", slug="s", title="T", status="open", touched_repos=["myrepo"]
         )
         # No project/repo was ever saved under (root, "p").
         tools = await orch._build_worktree_ro_tools(str(tmp_path / "ws"), "p", "EP-nw")
@@ -583,7 +612,7 @@ class TestReviewerWorktreeTools:
 
         orch = _reviewer_orchestrator()
         orch._epic = Epic(
-            id=eid, slug="s", title="T", status="in_review", touched_repos=["myrepo"]
+            id=eid, slug="s", title="T", status="open", touched_repos=["myrepo"]
         )
         tools = await orch._build_worktree_ro_tools(root, pid, eid)
         names = {getattr(t, "tool_name", None) for t in tools}
@@ -613,7 +642,7 @@ class TestReviewerWorktreeTools:
 
         orch = _reviewer_orchestrator()
         orch._epic = Epic(
-            id=eid, slug="s", title="T", status="in_review", touched_repos=["myrepo"]
+            id=eid, slug="s", title="T", status="open", touched_repos=["myrepo"]
         )
         tools = await orch._build_worktree_ro_tools(root, pid, eid, include_run_tests=False)
         by_name = {getattr(t, "tool_name", None): t for t in tools}
@@ -660,7 +689,7 @@ class TestReviewerLegacyEpic:
         repo_dir.mkdir()
         await save_repo(root, pid, Repo(name="myrepo", path=str(repo_dir)))
 
-        # Legacy epic on disk: old-style branch, NO active_thread_id, in_review.
+        # Legacy epic on disk: old-style branch, NO active_thread_id.
         await save_epic(
             root,
             pid,
@@ -668,7 +697,7 @@ class TestReviewerLegacyEpic:
                 id=eid,
                 slug="legacy",
                 title="Legacy",
-                status="in_review",
+                status="open",
                 branch="yukar/ep-legacy-legacy",
                 touched_repos=["myrepo"],
                 active_thread_id=None,
@@ -723,11 +752,11 @@ class TestReviewerLegacyEpic:
         assert call.kwargs["agent_role"] == "reviewer"
         assert "use OAuth, not passwords" in call.kwargs["review_context"]
 
-        # The legacy epic is untouched: active_thread_id stays None, status in_review.
+        # The legacy epic is untouched: active_thread_id stays None, status open.
         loaded = await get_epic(root, pid, eid)
         assert loaded is not None
         assert loaded.active_thread_id is None
-        assert loaded.status == "in_review"
+        assert loaded.status == "open"
 
 
 # ---------------------------------------------------------------------------
@@ -783,7 +812,7 @@ class TestReviewerBlocksTrialMutations:
                 id=eid,
                 slug="s",
                 title="T",
-                status="in_review",
+                status="open",
                 branch="yukar/ep-rev-guard",
                 active_thread_id="th-M",
             ),

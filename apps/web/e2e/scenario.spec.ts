@@ -95,19 +95,20 @@ test.describe
       // We're now redirected to the manager thread page
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // Wait for the epic to reach "completed" status via API polling.
+      // Wait for the run to finish via API polling (run/state — finishing a run
+      // never transitions the epic under the 1-bit lifecycle).
       // The fake run should complete fast (YUKAR_FAKE_SLEEP=0) but we give it 90s.
       await expect
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             return (await res.json()).status;
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("in_review");
+        .toBe("completed");
     });
 
     // ---- 4. Tasks page: T1 with contract ----

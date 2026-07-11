@@ -140,11 +140,12 @@ export function useEventStream<T = unknown>({
         user_input_resolved: true,
         user_message_committed: true,
         sensitive_file_written: true,
+        epic_merged: true,
       };
       // UsageStream-only events (not part of RunEvent)
       const _usageEventTypes = ["token_usage", "budget_exceeded"] as const;
 
-      // Project-level lifecycle events (Feature 1/2: close + arbiter merge)
+      // Project-level lifecycle events (user status toggle + arbiter merge)
       const _projectEventTypes = ["epic_status_changed", "epic_merge_progress"] as const;
 
       const eventTypes: string[] = [

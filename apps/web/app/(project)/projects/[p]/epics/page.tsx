@@ -4,7 +4,9 @@ import { listEpics } from "@/lib/api/endpoints";
 
 export default async function EpicsBoardPage({ params }: { params: Promise<{ p: string }> }) {
   const { p } = await params;
-  const initialEpics = await listEpics(p).catch(() => [] as Epic[]);
+  // include_completed=true — the board shows open and completed epics alike
+  // (matches the client-side refetch in EpicsBoardClient).
+  const initialEpics = await listEpics(p, true).catch(() => [] as Epic[]);
 
   return <EpicsBoardClient projectId={p} initialEpics={initialEpics} />;
 }

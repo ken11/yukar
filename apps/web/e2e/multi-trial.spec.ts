@@ -65,18 +65,18 @@ test.describe
       await page.getByTestId("start-run-btn").click();
       await expect(page).toHaveURL(/\/threads\/manager/, { timeout: 15_000 });
 
-      // Poll via API until completed (fake run is deterministic)
+      // Poll run/state via API until completed (fake run is deterministic)
       await expect
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             return (await res.json()).status;
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toBe("in_review");
+        .toBe("completed");
 
       // Record the manager thread id immediately after the run
       const tRes = await page.request.get(

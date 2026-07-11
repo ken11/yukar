@@ -5,16 +5,12 @@ Invariants:
   - max_parallel_epics is enforced via a semaphore.
   - pause/resume/stop are forwarded to the underlying runner.
 
-Epic / state status transitions (architecture.md §3.2):
-  - supervisor owns epic.yaml.status; orchestrator owns state.yaml.status.
-  - epic.yaml:
-      planned → in_progress  : on run start (before runner.start is awaited)
-      in_progress → in_review: on successful run completion (awaits USER review;
-            the supervisor never auto-completes — only the user reaches
-            completed/merged via the API)
-      in_progress → failed   : on run failure (unhandled exception)
-      stop: epic.yaml stays in_progress — the run was interrupted and can be
-            restarted by the user.
+Epic / state status (architecture.md §3.2):
+  - epic.yaml.status is USER-owned (open ⇄ completed via PATCH /epics/{id}).
+    The supervisor NEVER transitions it: starting, finishing, or failing a run
+    leaves the epic status untouched.  The supervisor only reads it as a gate —
+    a completed epic rejects new manager runs (the user must reopen it first);
+    reviewer runs are read-only and stay allowed.
   - state.yaml (RunState.status managed by orchestrator):
       idle    → running   : orchestrator.start() begins
       running → completed : successful full-loop completion
@@ -41,12 +37,12 @@ import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from yukar.config.settings import Settings
 from yukar.models.roles import AgentRole
 from yukar.runs.runner import DummyRunner, RunnerProtocol
-from yukar.storage.epic_repo import get_epic, save_epic
+from yukar.storage.epic_repo import get_epic
 
 # Sentinel epic_id used as the key for the batch-merge (arbiter) run.
 # It is not a real epic on disk.  The supervisor registers the arbiter runner
@@ -340,25 +336,6 @@ def _emit_preparing_stopped(
     )
 
 
-async def _transition_epic_status(
-    root: str,
-    project_id: str,
-    epic_id: str,
-    status: Literal["planned", "in_progress", "in_review", "failed"],
-) -> None:
-    """Update epic.yaml.status atomically.  No-op if the epic cannot be loaded.
-
-    Only the supervisor-driven transitions appear here. ``completed`` and
-    ``merged`` are deliberately absent: they are user-driven approval/merge
-    actions reached via the API (PATCH status / git merge), never set
-    automatically when a run finishes.
-    """
-    epic = await get_epic(root, project_id, epic_id)
-    if epic is not None:
-        epic.status = status
-        await save_epic(root, project_id, epic)
-
-
 class RunSupervisor:
     def __init__(
         self,
@@ -419,8 +396,9 @@ class RunSupervisor:
     ) -> str:
         """Start a new run. Returns the run_id.
 
-        Raises RuntimeError if a run is already active for this epic.
-        Epic status: planned → in_progress (here, before runner starts).
+        Raises RuntimeError if a run is already active for this epic, or if the
+        epic is completed (manager runs only — the user must reopen it first).
+        The epic status is never written here: it is user-owned (1-bit).
 
         Args:
             manager_thread_id: The thread_id this run drives.  For a manager run
@@ -428,10 +406,9 @@ class RunSupervisor:
                 reviewer's own thread (its conversation is stored there).
                 Defaults to "manager" (single-trial, backward-compatible case).
             agent_role: ``"manager"`` (default) or ``"reviewer"``.  A reviewer
-                run is read-only and does NOT drive the epic lifecycle: none of
-                the epic.yaml status transitions below fire for it, and the fatal
-                index guard is skipped (the reviewer reads the branch diff, which
-                is git-based, so a missing/stale index must not block it).
+                run is read-only: it may run even on a completed epic, and the
+                fatal index guard is skipped (the reviewer reads the branch diff,
+                which is git-based, so a missing/stale index must not block it).
             review_context: For a reviewer run, the Manager↔user conversation used
                 to seed the reviewer's turn-0 prompt.  Ignored for manager runs.
         """
@@ -458,11 +435,12 @@ class RunSupervisor:
             if self._usage_tracker is not None and self._usage_tracker.is_over_budget():
                 raise RuntimeError("Budget limit reached")
             # TOCTOU guard: re-check epic status inside the lock so a concurrent
-            # close() call that landed between the router check and lock acquisition
-            # cannot be silently overwritten by the supervisor's in_progress transition.
+            # "mark completed" (PATCH) that landed between the router check and
+            # lock acquisition still blocks the run.  Reviewer runs are read-only
+            # and stay allowed on a completed epic.
             _epic_check = await get_epic(root, project_id, epic_id)
-            if _epic_check is not None and _epic_check.status == "closed":
-                raise RuntimeError("Epic is closed")
+            if _is_manager and _epic_check is not None and _epic_check.status == "completed":
+                raise RuntimeError("Epic is completed — reopen it before starting a run")
 
             run_id = f"run-{uuid.uuid4().hex}"
             runner = self._make_runner(
@@ -470,12 +448,6 @@ class RunSupervisor:
                 agent_role=agent_role,
                 review_context=review_context,
             )
-
-            # Transition epic status to in_progress before the runner task starts.
-            # A reviewer run must NOT touch the epic lifecycle (it runs while the
-            # epic is in_review and leaves it there).
-            if _is_manager:
-                await _transition_epic_status(root, project_id, epic_id, "in_progress")
 
             _indexer_service = self._indexer_service
             # Mutable flag shared between this closure and the _RunHandle so that
@@ -504,7 +476,6 @@ class RunSupervisor:
                         if _is_manager:
                             await _ensure_repos_indexed(root, project_id, _indexer_service)
                     except IndexNotReadyError as idx_err:
-                        await _transition_epic_status(root, project_id, epic_id, "failed")
                         event_bus.publish(
                             project_id,
                             epic_id,
@@ -534,19 +505,10 @@ class RunSupervisor:
                         _emit_preparing_stopped(root, project_id, epic_id, run_id)
                         return
 
-                    try:
-                        await runner.start(root, project_id, epic_id, run_id)
-                        # The Manager finishing does NOT mean the epic is done. It
-                        # only means the work is ready for the USER to review. The
-                        # user then merges (→ merged) or approves (→ completed).
-                        # See models.epic.EpicStatus for the lifecycle rationale.
-                        # A reviewer run leaves the epic status untouched.
-                        if _is_manager:
-                            await _transition_epic_status(root, project_id, epic_id, "in_review")
-                    except Exception:
-                        if _is_manager:
-                            await _transition_epic_status(root, project_id, epic_id, "failed")
-                        raise
+                    # Run the agent.  The run finishing (or failing) does NOT
+                    # touch epic.yaml.status — the epic is user-owned (1-bit)
+                    # and run outcomes are reported via Run* events only.
+                    await runner.start(root, project_id, epic_id, run_id)
 
             task: asyncio.Task[None] = asyncio.create_task(
                 _run_with_semaphore(),
@@ -978,10 +940,10 @@ class RunSupervisor:
         (the user's message) so the Manager treats it as an incoming request
         rather than starting a brand-new epic plan from scratch.
 
-        epic.yaml.status is set to ``in_progress`` here (same as ``start``) for a
-        manager run.  If it was ``in_review`` (or ``completed``) this effectively
-        reopens the epic for revision.  A reviewer continuation leaves the epic
-        status untouched (same read-only contract as ``start``).
+        epic.yaml.status is never written here (it is user-owned, 1-bit).  A
+        manager continuation on a completed epic is rejected — continuing is
+        NOT an implicit reopen; the user must reopen the epic first.  A reviewer
+        continuation is read-only and stays allowed on a completed epic.
 
         Args:
             root: Workspace root.
@@ -999,8 +961,8 @@ class RunSupervisor:
             The new run_id.
 
         Raises:
-            RuntimeError: If a run is already active for this epic, or budget
-                is exhausted.
+            RuntimeError: If a run is already active for this epic, the epic is
+                completed (manager continuation), or budget is exhausted.
         """
         _is_manager = agent_role == "manager"
         async with self._start_lock:
@@ -1011,11 +973,17 @@ class RunSupervisor:
                 raise RuntimeError("A merge (arbiter) is in progress for this project")
             if self._usage_tracker is not None and self._usage_tracker.is_over_budget():
                 raise RuntimeError("Budget limit reached")
-            # TOCTOU guard: re-check inside the lock so a concurrent close()
-            # cannot be silently overwritten by the in_progress transition below.
+            # TOCTOU guard: re-check inside the lock so a concurrent
+            # "mark completed" (PATCH) still blocks the continuation.  A manager
+            # continuation is NOT an implicit reopen — the user must reopen the
+            # epic first.  Reviewer continuations are read-only and stay allowed.
             _epic_check_cont = await get_epic(root, project_id, epic_id)
-            if _epic_check_cont is not None and _epic_check_cont.status == "closed":
-                raise RuntimeError("Epic is closed")
+            if (
+                _is_manager
+                and _epic_check_cont is not None
+                and _epic_check_cont.status == "completed"
+            ):
+                raise RuntimeError("Epic is completed — reopen it before continuing")
 
             run_id = f"run-{uuid.uuid4().hex}"
             runner = self._make_continuation_runner(
@@ -1024,11 +992,6 @@ class RunSupervisor:
                 agent_role=agent_role,
                 review_context=review_context,
             )
-
-            # Reopen the epic for revision (in_review/completed → in_progress).
-            # A reviewer continuation is read-only and leaves the status alone.
-            if _is_manager:
-                await _transition_epic_status(root, project_id, epic_id, "in_progress")
 
             _indexer_service_cont = self._indexer_service
             # Same stop_flag mechanism as start(): shared between the closure and
@@ -1057,7 +1020,6 @@ class RunSupervisor:
                                 root, project_id, _indexer_service_cont
                             )
                     except IndexNotReadyError as idx_err:
-                        await _transition_epic_status(root, project_id, epic_id, "failed")
                         event_bus.publish(
                             project_id,
                             epic_id,
@@ -1079,19 +1041,9 @@ class RunSupervisor:
                         _emit_preparing_stopped(root, project_id, epic_id, run_id)
                         return
 
-                    try:
-                        await runner.start(root, project_id, epic_id, run_id)
-                        # The Manager finishing does NOT mean the epic is done. It
-                        # only means the work is ready for the USER to review. The
-                        # user then merges (→ merged) or approves (→ completed).
-                        # See models.epic.EpicStatus for the lifecycle rationale.
-                        # A reviewer continuation leaves the epic status untouched.
-                        if _is_manager:
-                            await _transition_epic_status(root, project_id, epic_id, "in_review")
-                    except Exception:
-                        if _is_manager:
-                            await _transition_epic_status(root, project_id, epic_id, "failed")
-                        raise
+                    # Run the agent.  As with start(), the run outcome never
+                    # touches epic.yaml.status (user-owned, 1-bit).
+                    await runner.start(root, project_id, epic_id, run_id)
 
             task: asyncio.Task[None] = asyncio.create_task(
                 _run_with_semaphore(),

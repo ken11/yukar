@@ -5,7 +5,7 @@
  *   Epic run → conflict.txt EPIC version committed.
  *   Inside the test, commit MAIN version to main → Merge to default → 409 conflict.
  *   Resolve with Agent → resolve run (per_call[1] worker) → RESOLVED version committed.
- *   Merge to default again → success → epic = merged.
+ *   Merge to default again → success → merge fact (merged_at) recorded, epic stays open.
  *
  * Launch strategy:
  *   - FastAPI (8000): started with CONFLICT_RESOLVE_FAKE_SCRIPT (per_call worker)

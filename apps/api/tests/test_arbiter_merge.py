@@ -2,7 +2,7 @@
 
 Covers:
 1. Git helpers: start_conflict_merge → manual resolve → forward merge (no agent).
-2. ArbiterRunner: clean merge (no conflicts) → epic.status "merged".
+2. ArbiterRunner: clean merge (no conflicts) → merge fact recorded (merged_at).
 3. ArbiterRunner: conflict then abort → EpicMergeResult("conflict_unresolved").
 4. ArbiterRunner: vetting_refused path (.gitattributes with filter=lfs).
 5. ArbiterRunner: serial two-epic — B worktree sees A's merged commit on main.
@@ -89,7 +89,7 @@ async def _bootstrap_project_epic(
     repo_name: str = "repo",
     branch: str = "yukar/ep-1-test",
     touched_repos: list[str] | None = None,
-    status: str = "planned",
+    status: str = "open",
 ) -> None:
     """Write minimal project + repo + epic to workspace."""
     from yukar.models.epic import Epic
@@ -257,13 +257,13 @@ class TestStartConflictMergeHelpers:
 
 
 # ---------------------------------------------------------------------------
-# 2. ArbiterRunner: clean merge (no conflicts) → epic "merged"
+# 2. ArbiterRunner: clean merge (no conflicts) → merge fact recorded
 # ---------------------------------------------------------------------------
 
 
 class TestArbiterRunnerCleanMerge:
-    async def test_clean_merge_flips_epic_to_merged(self, tmp_path: Path) -> None:
-        """Clean merge (no conflicts) marks epic as 'merged'."""
+    async def test_clean_merge_records_merge_fact(self, tmp_path: Path) -> None:
+        """Clean merge (no conflicts) records merged_at; the epic stays open."""
         from yukar.config.settings import LLMSettings
         from yukar.runs.arbiter_runner import ArbiterRunner
         from yukar.storage.epic_repo import get_epic
@@ -292,7 +292,9 @@ class TestArbiterRunnerCleanMerge:
 
         loaded = await get_epic(root, "proj", "EP-1")
         assert loaded is not None
-        assert loaded.status == "merged"
+        assert loaded.merged_at is not None
+        # Merging is a recorded fact, not a lifecycle transition.
+        assert loaded.status == "open"
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +360,8 @@ class TestArbiterRunnerConflictUnresolved:
 
         loaded = await get_epic(root, "proj", "EP-1")
         assert loaded is not None
-        # Status should NOT be "merged" since the agent couldn't resolve.
-        assert loaded.status != "merged"
+        # The merge fact must NOT be recorded since the agent couldn't resolve.
+        assert loaded.merged_at is None
 
         # Check results in the final progress event.
         if received_results:
@@ -1033,13 +1035,15 @@ class TestGitMergeArbiterGuard:
 
 
 # ---------------------------------------------------------------------------
-# 16. POST /git/resolve — 409 when epic is closed
+# 16. POST /git/resolve — 409 when epic is completed
 # ---------------------------------------------------------------------------
 
 
-class TestGitResolveClosedEpicGuard:
-    async def test_resolve_409_when_epic_closed(self, app_client: Any, tmp_workspace: Path) -> None:
-        """POST /git/resolve returns 409 when the epic is closed."""
+class TestGitResolveCompletedEpicGuard:
+    async def test_resolve_409_when_epic_completed(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        """POST /git/resolve returns 409 when the epic is completed."""
         root = str(tmp_workspace)
         pid, eid = "proj", "EP-1"
 
@@ -1066,7 +1070,7 @@ class TestGitResolveClosedEpicGuard:
                 title="T",
                 branch="yukar/ep-1-t",
                 touched_repos=["r"],
-                status="closed",
+                status="completed",
             ),
         )
 
@@ -1075,4 +1079,4 @@ class TestGitResolveClosedEpicGuard:
             json={"repo": "r"},
         )
         assert resp.status_code == 409, resp.text
-        assert "closed" in resp.json()["detail"].lower()
+        assert "completed" in resp.json()["detail"].lower()

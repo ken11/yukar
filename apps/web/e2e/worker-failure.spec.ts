@@ -9,15 +9,18 @@
  * Verification flow:
  *   1. Create project → create epic → start run
  *   2. Navigate to the manager thread page
- *   3. Confirm via API polling that the run advances to completed
- *      (after Worker failure, Manager calls continue_epic to finish)
+ *   3. Confirm via API polling that the run parks at awaiting_input (the
+ *      Manager's complete_epic is rejected because T1 reverted to todo, and its
+ *      final text turn yields to the user) while the epic stays open (a run
+ *      failure never transitions the 1-bit epic status)
  *   4. Verify that the "失敗" label appears on the Worker node in the thread tree panel
- *   5. Verify that WorkerFailedEvent was delivered via SSE and run/state status is completed
+ *   5. Verify that WorkerFailedEvent was delivered via SSE
  *
  * Worker failure mechanism:
  *   - Worker RaiseTurn(MaxTokensReachedException) → WorkerFailedEvent emitted
  *   - ThreadTreePanel WorkerNode: status="failed" → "失敗" label + warning icon
- *   - run_state.status: completed because Manager calls complete_epic
+ *   - run_state.status: awaiting_input (turn-end semantics — the Manager ends
+ *     its turn without a tool call after the rejected complete_epic)
  *
  * The context_overflow variant (ContextWindowOverflowException) is also verified in a
  * separate test within the same describe block.
@@ -103,42 +106,36 @@ test.describe
       await expect(page).toHaveURL(/\/threads\//, { timeout: 15_000 });
     });
 
-    test("3. epic reaches terminal state after worker failure", async ({ page }) => {
+    test("3. run yields to the user after worker failure", async ({ page }) => {
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
       // When the Worker fails with MaxTokensReachedException, the following happens:
       //   1. WorkerFailedEvent is emitted and task T1 reverts to "todo"
-      //   2. The Manager's FakeScript is exhausted and the orchestrator errors
-      //      (complete_epic is rejected because T1 is runnable → turn limit reached → exception)
-      //   3. The supervisor transitions the epic status to "failed"
-      // This is the correct behavior: when Worker fails and Manager cannot recover, epic becomes "failed".
+      //   2. The Manager's complete_epic is rejected (T1 is runnable again) and
+      //      its final text turn ends without a tool call → turn-end semantics
+      //      park the run at awaiting_input (the user's turn to decide)
+      //   3. The epic itself stays open (a run-level failure never transitions
+      //      the 1-bit epic status)
       await expect
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             return (await res.json()).status;
           },
           { timeout: 90_000, intervals: [500, 1000, 1000] },
         )
-        .toMatch(/^failed$/);
+        .toBe("awaiting_input");
 
-      // Log the final epic status
+      // The epic status is untouched by the failed run.
       const epicRes = await page.request.get(
         `/api/projects/${state.projectId}/epics/${state.epicId}`,
       );
       const epicBody = await epicRes.json();
       console.log(`[worker-failure] epic status = ${epicBody.status}`);
-
-      // Verify run/state status
-      const runStateRes = await page.request.get(
-        `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
-      );
-      const runState = await runStateRes.json();
-      console.log(`[worker-failure] run/state status = ${runState.status}`);
-      expect(runState.status).toBe("error");
+      expect(epicBody.status).toBe("open");
     });
 
     test("4. Worker node shows failed status in thread tree panel", async ({ page }) => {
@@ -185,14 +182,14 @@ test.describe
       expect(state.projectId).toBeTruthy();
       expect(state.epicId).toBeTruthy();
 
-      // Re-run is possible (202) even when epic is in the failed state.
-      // If a run is still in progress, 409 is returned (both are acceptable).
+      // A parked (awaiting_input) run is still live, so POST /run returns 409;
+      // if the run has fully terminated instead, a new run starts (202).
       const res = await page.request.post(
         `/api/projects/${state.projectId}/epics/${state.epicId}/run`,
       );
       const status = res.status();
       console.log(`[worker-failure] POST /run status after worker failure = ${status}`);
-      // 202 (new run started) or 409 (still running or epic closed) are both acceptable
+      // 202 (new run started) or 409 (still running) are both acceptable
       expect([202, 409]).toContain(status);
     });
   });

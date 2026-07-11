@@ -1,51 +1,23 @@
 "use client";
 
 /**
- * useCloseEpic / useReopenEpic — TanStack Query mutations for Feature 1 (Epic Close).
+ * useCompleteEpic / useReopenEpic — TanStack Query mutations for the 1-bit epic
+ * lifecycle (open ⇄ completed, user-owned).
  *
- * closeEpic:  POST /api/projects/{p}/epics/{id}/close → Epic  (409 if run active)
- * reopenEpic: PATCH /api/projects/{p}/epics/{id}      body { status: "planned" } → Epic
+ * completeEpic: PATCH /api/projects/{p}/epics/{id} body { status: "completed" } → Epic
+ *               (409 if a run is active — stop the run first)
+ * reopenEpic:   PATCH /api/projects/{p}/epics/{id} body { status: "open" } → Epic
  *
- * Both invalidate epics.list + epics.detail on success.
+ * "Complete" is the user's single finish action: it covers both approving done
+ * work and abandoning unfinished work (the old close/approve pair collapsed
+ * into one operation). Both mutations invalidate epics.list + epics.detail.
  */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ApiError, closeEpic, patchEpic } from "@/lib/api/endpoints";
+import { ApiError, patchEpic } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 
-export function useCloseEpic(projectId: string) {
-  const qc = useQueryClient();
-
-  return useMutation({
-    mutationFn: (epicId: string) => closeEpic(projectId, epicId),
-    onSuccess: (_data, epicId) => {
-      qc.invalidateQueries({ queryKey: queryKeys.epics.list(projectId) });
-      qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
-    },
-  });
-}
-
-export function useReopenEpic(projectId: string) {
-  const qc = useQueryClient();
-
-  return useMutation({
-    mutationFn: (epicId: string) => patchEpic(projectId, epicId, { status: "planned" }),
-    onSuccess: (_data, epicId) => {
-      qc.invalidateQueries({ queryKey: queryKeys.epics.list(projectId) });
-      qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
-    },
-  });
-}
-
-/**
- * useApproveEpic — user approval of an in_review epic → completed.
- *
- * This is the user-driven path to the truly-done "completed" state (e.g. an
- * investigation epic with nothing to merge). For code work, the user merges
- * instead (Diff tab → Merge → merged). The backend returns 409 if a run is
- * active. Approving from in_review: PATCH /api/projects/{p}/epics/{id} { status: "completed" }.
- */
-export function useApproveEpic(projectId: string) {
+export function useCompleteEpic(projectId: string) {
   const qc = useQueryClient();
 
   return useMutation({
@@ -57,8 +29,20 @@ export function useApproveEpic(projectId: string) {
   });
 }
 
-/** Extract human-readable error message from a closeEpic ApiError. */
-export function extractCloseError(err: unknown, fallbackMsg: string): string {
+export function useReopenEpic(projectId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: (epicId: string) => patchEpic(projectId, epicId, { status: "open" }),
+    onSuccess: (_data, epicId) => {
+      qc.invalidateQueries({ queryKey: queryKeys.epics.list(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
+    },
+  });
+}
+
+/** Extract a human-readable error message from a completeEpic ApiError. */
+export function extractCompleteError(err: unknown, fallbackMsg: string): string {
   if (err instanceof ApiError && err.status === 409) {
     return fallbackMsg;
   }

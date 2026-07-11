@@ -82,8 +82,8 @@ class DummyRunner:
         first_repo_name: str = repos[0].name if repos else "unknown-repo"
 
         # Update state to running.
-        # NOTE: epic.yaml.status transitions (in_progress/completed/failed) are
-        # managed by supervisor.py, not here.  runner only owns state.yaml.
+        # NOTE: epic.yaml.status is user-owned (open ⇄ completed via the API)
+        # and is never written by runs.  runner only owns state.yaml.
         state = RunState(
             run_id=run_id,
             status="running",
@@ -254,8 +254,8 @@ class DummyRunner:
 
             await wait()
 
-            # Complete — update state.yaml only.
-            # epic.yaml.status → completed is handled by supervisor._run_with_semaphore.
+            # Complete — update state.yaml only (epic.yaml.status is
+            # user-owned and untouched by run completion).
             state.status = "completed"
             state.active_workers = []
             state.last_event_at = datetime.now(UTC)

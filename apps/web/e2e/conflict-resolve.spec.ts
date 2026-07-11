@@ -13,8 +13,9 @@
  *   6. Merge to default again → 200 + merge SHA (no conflict because already resolved)
  *   7. Verify via git that default(main) contains the resolved content (RESOLVED, no markers)
  *
- * Note: When all repos in a single epic are merged, the backend updates epic.status=merged (after git.py fix).
- *       This spec proves merge success via both "epic.status=merged" and the actual git content
+ * Note: When all repos in a single epic are merged, the backend records the merge
+ *       fact (epic.merged_at) — the epic itself stays open (1-bit lifecycle).
+ *       This spec proves merge success via both "merged_at is set" and the actual git content
  *       (resolved version on default, no conflict markers) — without relying on a self-PATCH.
  *
  * Note: The "Resolve with Agent" button has no data-testid, so it is clicked by the
@@ -35,8 +36,8 @@ test.describe
       epicBranch: "",
     };
 
-    // ---- Helper: wait for epic status via API polling ----
-    async function waitForEpicStatus(
+    // ---- Helper: wait for run/state status via API polling ----
+    async function waitForRunStatus(
       page: import("@playwright/test").Page,
       expectedStatus: string,
       timeoutMs = 120_000,
@@ -45,13 +46,31 @@ test.describe
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             return (await res.json()).status;
           },
           { timeout: timeoutMs, intervals: [500, 1000, 2000] },
         )
         .toBe(expectedStatus);
+    }
+
+    // ---- Helper: wait for the merge fact (epic.merged_at) via API polling ----
+    async function waitForMergedFact(
+      page: import("@playwright/test").Page,
+      timeoutMs = 120_000,
+    ): Promise<void> {
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(
+              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+            );
+            return Boolean((await res.json()).merged_at);
+          },
+          { timeout: timeoutMs, intervals: [500, 1000, 2000] },
+        )
+        .toBe(true);
     }
 
     // -----------------------------------------------------------------------
@@ -100,7 +119,7 @@ test.describe
       await expect(page).toHaveURL(/\/threads\//, { timeout: 15_000 });
 
       // Wait until completed (per_call[0]: writes conflict.txt with EPIC version)
-      await waitForEpicStatus(page, "in_review");
+      await waitForRunStatus(page, "completed");
       console.log("[conflict-resolve] Epic run completed");
 
       // Retrieve epic branch name (used to verify the resolve run)
@@ -287,10 +306,15 @@ test.describe
       await expect(confirmBtn).not.toBeVisible({ timeout: 30_000 });
       console.log("[conflict-resolve] Merge UI confirms success");
 
-      // When all repos in a single epic are merged, the backend updates epic.status to merged (actual behaviour).
-      await waitForEpicStatus(page, "merged");
+      // When all repos in a single epic are merged, the backend records the merge
+      // fact (merged_at) — the epic status itself stays open.
+      await waitForMergedFact(page);
+      const epicRes2 = await page.request.get(
+        `/api/projects/${state.projectId}/epics/${state.epicId}`,
+      );
+      expect((await epicRes2.json()).status, "merge does not close the epic").toBe("open");
       console.log(
-        "[conflict-resolve] epic.status = merged (backend updated on single-repo merge completion)",
+        "[conflict-resolve] epic.merged_at recorded (backend updated on single-repo merge completion)",
       );
 
       // Screenshot

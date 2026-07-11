@@ -36,24 +36,8 @@ import { useEpicRun } from "./epic-run-context";
 // ---- helpers ----
 
 function resolveEpicStatus(status: string | undefined): StatusValue {
-  switch (status) {
-    case "in_progress":
-      return "in_progress";
-    case "completed":
-      return "completed";
-    case "merged":
-      return "merged";
-    case "closed":
-      return "closed";
-    case "failed":
-      return "error";
-    case "planned":
-      return "planned";
-    case "blocked":
-      return "blocked";
-    default:
-      return "idle";
-  }
+  // Epic status is a single user-owned bit: open ⇄ completed.
+  return status === "completed" ? "completed" : "open";
 }
 
 /** Computes the URL for view-preserving navigation */
@@ -199,7 +183,7 @@ function EpicDropdown({
           e.id.toLowerCase().includes(filterValue.toLowerCase())
         : true,
     )
-    // Active epics first, terminal (closed/merged) at the bottom
+    // Open epics first, completed at the bottom
     .sort((a, b) => {
       const aT = isTerminalStatus(a.status) ? 1 : 0;
       const bT = isTerminalStatus(b.status) ? 1 : 0;
@@ -348,7 +332,11 @@ export function EpicSwitcher() {
 
   const { data: epicsData, isFetching } = useQuery({
     queryKey: queryKeys.epics.list(projectId),
-    queryFn: () => listEpics(projectId),
+    // includeCompleted=true: this query key is shared with the board, which
+    // fetches ALL epics — a completed-less fetch here would clobber the shared
+    // cache and hide completed rows from the board. Completed epics are sorted
+    // to the bottom below anyway.
+    queryFn: () => listEpics(projectId, true),
     enabled: open,
     staleTime: 30_000,
   });

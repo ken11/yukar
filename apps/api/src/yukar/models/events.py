@@ -30,7 +30,8 @@ class RunPreparingEvent(BaseEvent):
     "preparing / indexing" indicator while the run is not yet fully started.
 
     This event is intentionally lightweight: it does NOT update state.yaml
-    (orchestrator owns state.yaml; supervisor owns epic.yaml).  The frontend
+    (orchestrator owns state.yaml; epic.yaml's status is user-owned via
+    PATCH — runs never write it).  The frontend
     can use it as a transient "preparing" signal until ``RunStartedEvent``
     arrives from the orchestrator.
     """
@@ -266,16 +267,30 @@ class UserInputResolvedEvent(BaseEvent):
 
 
 class EpicStatusChangedEvent(BaseEvent):
-    """Emitted when an epic's status changes via a user/arbiter action.
+    """Emitted when the user flips the epic's 1-bit status (open ⇄ completed).
 
-    Distinct from automatic supervisor transitions (in_progress/completed/failed).
-    Fired for manual status changes — e.g. ``closed`` (user action), ``merged``
-    (arbiter action), and any other transition applied via ``PATCH /epics/{id}``.
-    Pass ``run_id=""`` when there is no active run (e.g. on close).
+    The only writer is ``PATCH /epics/{id}`` — the epic status is user-owned
+    and never transitions automatically.  Pass ``run_id=""`` (there is no
+    active run when the status is changed; a completed-switch is rejected
+    while a run is active).
     """
 
     type: Literal["epic_status_changed"] = "epic_status_changed"
     status: EpicStatus  # the new epic status
+
+
+class EpicMergedEvent(BaseEvent):
+    """Emitted once when the epic's merge fact is recorded (``merged_at`` set).
+
+    Fired by the shared helper when EVERY repo's epic branch has been merged
+    into its default branch (single-repo merge via ``POST /git/merge`` or a
+    batch arbiter merge).  This is a fact notification, not a lifecycle
+    transition: the epic stays open and the UI shows a "merged" badge.
+    Idempotent at the source — recorded (and published) at most once per epic.
+    """
+
+    type: Literal["epic_merged"] = "epic_merged"
+    merged_at: datetime
 
 
 class EpicMergeResult(BaseModel):
@@ -391,6 +406,7 @@ RunEvent = Annotated[
     | UserInputRequestedEvent
     | UserInputResolvedEvent
     | EpicStatusChangedEvent
+    | EpicMergedEvent
     | EpicMergeProgressEvent
     | UserMessageCommittedEvent
     | SensitiveFileWrittenEvent,

@@ -6,21 +6,16 @@ import { useT } from "@/lib/i18n/provider";
 
 export type StatusValue =
   | "running"
-  | "in_progress"
   | "preparing"
   | "idle"
   | "active"
   | "paused"
   | "awaiting"
   | "interrupted"
-  | "in_review"
+  | "open"
   | "completed"
   | "merged"
-  | "closed"
   | "error"
-  | "failed"
-  | "blocked"
-  | "planned"
   | "archived";
 
 interface StatusBadgeProps {
@@ -38,12 +33,6 @@ type BadgeConfig = {
 
 const BADGE_MAP: Record<StatusValue, BadgeConfig> = {
   running: {
-    icon: "radio_button_checked",
-    colorClass: "text-[var(--color-running)]",
-    labelKey: "epic.status.running",
-    running: true,
-  },
-  in_progress: {
     icon: "radio_button_checked",
     colorClass: "text-[var(--color-running)]",
     labelKey: "epic.status.running",
@@ -70,11 +59,6 @@ const BADGE_MAP: Record<StatusValue, BadgeConfig> = {
     colorClass: "text-outline",
     labelKey: "projects.status.archived",
   },
-  closed: {
-    icon: "lock",
-    colorClass: "text-outline",
-    labelKey: "epic.status.closed",
-  },
   paused: {
     icon: "pause",
     colorClass: "text-on-surface-variant",
@@ -90,10 +74,10 @@ const BADGE_MAP: Record<StatusValue, BadgeConfig> = {
     colorClass: "text-on-surface-variant",
     labelKey: "epic.status.interrupted",
   },
-  in_review: {
-    icon: "rate_review",
+  open: {
+    icon: "circle",
     colorClass: "text-on-surface-variant",
-    labelKey: "epic.status.in_review",
+    labelKey: "epic.status.open",
   },
   completed: {
     icon: "check",
@@ -101,6 +85,8 @@ const BADGE_MAP: Record<StatusValue, BadgeConfig> = {
     colorClass: "text-on-surface",
     labelKey: "epic.status.completed",
   },
+  // "merged" is a fact attribute (epic.merged_at), not an epic status — shown
+  // as an extra badge next to the open/completed status.
   merged: {
     icon: "check",
     filled: true,
@@ -111,21 +97,6 @@ const BADGE_MAP: Record<StatusValue, BadgeConfig> = {
     icon: "error",
     colorClass: "text-error",
     labelKey: "epic.status.error",
-  },
-  failed: {
-    icon: "error",
-    colorClass: "text-error",
-    labelKey: "epic.status.error",
-  },
-  blocked: {
-    icon: "block",
-    colorClass: "text-on-surface-variant",
-    labelKey: "epic.status.blocked",
-  },
-  planned: {
-    icon: "schedule",
-    colorClass: "text-on-surface-variant",
-    labelKey: "epic.status.planned",
   },
 };
 

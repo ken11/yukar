@@ -14,37 +14,31 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
 
   const [project, epics, locale] = await Promise.all([
     getProject(p).catch(() => null),
-    // include_closed=false (default) — server omits closed epics (merged/completed ARE returned).
-    // We pass false explicitly to document intent.
-    listEpics(p, false).catch(() => [] as Epic[]),
+    // include_completed=true — the overview also surfaces recently completed
+    // epics (the "Recent" section); the open/completed split is done here.
+    listEpics(p, true).catch(() => [] as Epic[]),
     getLocale(),
   ]);
 
   const t = getDictionary(locale);
 
-  // active = running (in_progress) + planned, sorted by updated_at descending
-  // terminal states (closed/merged/completed/failed) are excluded from "active" client-side.
   const byUpdatedDesc = (a: Epic, b: Epic) =>
     (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
 
-  // #5: use isTerminalStatus() uniformly to detect closed/merged
-  const activeEpics = epics.filter((e) => !isTerminalStatus(e.status));
-  const runningEpics = activeEpics.filter((e) => e.status === "in_progress").sort(byUpdatedDesc);
-  const plannedEpics = activeEpics.filter((e) => e.status === "planned").sort(byUpdatedDesc);
+  // The epic status is a single user-owned bit: open ⇄ completed.
+  // #5: use isTerminalStatus() uniformly to detect completed
+  const openEpics = epics.filter((e) => !isTerminalStatus(e.status)).sort(byUpdatedDesc);
 
-  // featured = most recent running epic, or null if none (planned-only case has no large block)
-  const featuredEpic = runningEpics[0] ?? null;
-  const inProgressEpic = featuredEpic; // alias for section heading logic
+  // featured = most recently updated open epic (shown as the large block)
+  const featuredEpic = openEpics[0] ?? null;
 
-  // active epics other than featured (remaining running + all planned)
-  const activeListEpics = [...runningEpics.slice(1), ...plannedEpics];
+  // open epics other than featured, shown as a list
+  const activeListEpics = openEpics.slice(1);
 
-  // Recent epics = non-active, non-closed (completed / failed / merged).
-  // merged epics ARE surfaced here so recently-merged work stays visible;
-  // closed epics have their own tab on the /epics board and stay hidden here.
-  const activeIds = new Set([...runningEpics.map((e) => e.id), ...plannedEpics.map((e) => e.id)]);
+  // Recent epics = completed work, newest first, max 5 — keeps recently
+  // finished (and possibly merged) work visible on the overview.
   const recentEpics = epics
-    .filter((e) => !activeIds.has(e.id) && e.status !== "closed")
+    .filter((e) => isTerminalStatus(e.status))
     .sort(byUpdatedDesc)
     .slice(0, 5);
 
@@ -126,9 +120,9 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
         />
       ) : (
         <div>
-          {/* In-progress section: large block + remaining active list when running exists.
-               When planned-only, shows planned as a list without the large block. */}
-          {(featuredEpic || plannedEpics.length > 0) && (
+          {/* Open-work section: the most recently updated open epic as a large
+               block, remaining open epics as a list. */}
+          {featuredEpic && (
             <section aria-label={t.overview.activeWork}>
               {/* Section label */}
               <div
@@ -139,28 +133,23 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
                   className="data uppercase"
                   style={{ letterSpacing: "0.08em", color: "var(--color-on-surface-variant)" }}
                 >
-                  {inProgressEpic
-                    ? t.overview.inProgress
-                    : plannedEpics.length > 0
-                      ? t.overview.planned
-                      : t.overview.latest}
+                  {t.overview.open}
                 </span>
               </div>
 
-              {/* featured large block (only when running exists) */}
-              {featuredEpic && (
-                <FeaturedEpicBlock
-                  epic={featuredEpic}
-                  projectId={p}
-                  isRunning={!!inProgressEpic}
-                  openLabel={t.overview.openEpic}
-                  tasksDone={tasksDone}
-                  tasksTotal={tasksTotal}
-                  diffAdded={diffAdded}
-                  diffRemoved={diffRemoved}
-                  dict={t}
-                />
-              )}
+              {/* featured large block — most recent open epic. Live "running"
+                  telemetry is not derivable from epic.status (1-bit) in RSC. */}
+              <FeaturedEpicBlock
+                epic={featuredEpic}
+                projectId={p}
+                isRunning={false}
+                openLabel={t.overview.openEpic}
+                tasksDone={tasksDone}
+                tasksTotal={tasksTotal}
+                diffAdded={diffAdded}
+                diffRemoved={diffRemoved}
+                dict={t}
+              />
 
               {/* Active epics other than featured (remaining running + all planned) shown as a list.
                    When there is no featured epic (planned only), activeListEpics holds all planned epics. */}
@@ -188,7 +177,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
           {/* void — separates the active section from recent */}
           {recentEpics.length > 0 && <div aria-hidden className="h-[var(--spacing-bay,96px)]" />}
 
-          {/* Recent epics — completed/failed/merged, newest first, max 5 */}
+          {/* Recent epics — completed, newest first, max 5 */}
           {recentEpics.length > 0 && (
             <section aria-label={t.overview.recentEpics}>
               <div className="mb-6 flex items-center justify-between">

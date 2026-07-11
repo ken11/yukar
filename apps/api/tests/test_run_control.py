@@ -344,15 +344,17 @@ class TestStartOrInject:
             review_context="",
         )
 
-    async def test_start_continuation_sets_epic_in_progress(self, tmp_path: Path) -> None:
-        """start_continuation should transition epic.yaml.status to in_progress."""
+    async def test_start_continuation_leaves_epic_status_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """start_continuation never writes epic.yaml.status (user-owned 1-bit)."""
         from yukar.models.epic import Epic
         from yukar.runs.supervisor import RunSupervisor
         from yukar.storage.epic_repo import get_epic, save_epic
 
         root = str(tmp_path / "ws")
         pid, eid = "proj", "EP-1"
-        epic = Epic(id=eid, slug="s", title="T", status="completed")
+        epic = Epic(id=eid, slug="s", title="T")
         await save_epic(root, pid, epic)
 
         sup = RunSupervisor()
@@ -369,13 +371,11 @@ class TestStartOrInject:
             patch.object(sup, "_make_continuation_runner", return_value=dummy),
         ):
             await sup.start_continuation(root, pid, eid, seed_prompt="fix this")
+            await sup._runs[(pid, eid)].task
 
-        # Ensure epic.yaml was touched — status should be in_progress at least
-        # briefly (dummy run completes instantly → completed).
         loaded = await get_epic(root, pid, eid)
         assert loaded is not None
-        # The dummy completes instantly so the supervisor transitions to completed.
-        assert loaded.status in ("in_progress", "completed")
+        assert loaded.status == "open"
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +543,9 @@ class TestStartRunFromTerminalState:
     async def test_start_run_when_not_running_is_allowed(
         self, app_client: Any, tmp_workspace: Path
     ) -> None:
-        """completed or interrupted epic → POST /run must return 202 (not 409)."""
+        """An open epic with no live run → POST /run must return 202 (not 409),
+        regardless of how the previous run ended (the run outcome never touches
+        the epic status)."""
         from yukar.models.epic import Epic
         from yukar.models.project import Project
         from yukar.storage.epic_repo import save_epic
@@ -555,7 +557,7 @@ class TestStartRunFromTerminalState:
         await save_epic(
             root,
             pid,
-            Epic(id=eid, slug="s2", title="T2", status="completed"),
+            Epic(id=eid, slug="s2", title="T2"),
         )
 
         resp = await app_client.post(f"/api/projects/{pid}/epics/{eid}/run")
@@ -575,7 +577,7 @@ class TestStartRunFromTerminalState:
         root = str(tmp_workspace)
         pid, eid = "p3", "EP-3"
         await save_project(root, Project(id=pid, name=pid))
-        await save_epic(root, pid, Epic(id=eid, slug="s3", title="T3", status="in_progress"))
+        await save_epic(root, pid, Epic(id=eid, slug="s3", title="T3"))
 
         # Simulate an active run in the supervisor.
         sup = get_supervisor()

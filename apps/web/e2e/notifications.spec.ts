@@ -96,14 +96,14 @@ test.describe
         .poll(
           async () => {
             const res = await page.request.get(
-              `/api/projects/${state.projectId}/epics/${state.epicId}`,
+              `/api/projects/${state.projectId}/epics/${state.epicId}/run/state`,
             );
             if (!res.ok()) return null;
             return (await res.json()).status;
           },
           { timeout: 90_000, intervals: [500, 1000, 2000] },
         )
-        .toBe("in_review");
+        .toBe("completed");
 
       // Wait for the run_completed SSE event to arrive and update the badge
       // The notification button must become visible with "(N unread)" in its aria-label

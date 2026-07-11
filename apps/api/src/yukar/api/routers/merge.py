@@ -69,9 +69,16 @@ async def start_merge(
     # Validate project exists.
     await get_project_or_404(root, project_id)
 
-    # Validate each epic exists.
+    # Validate each epic exists and is still open — a merge mutates the
+    # default branch, and completed epics are read-only until reopened
+    # (same rule as the single-repo POST /git/merge).
     for epic_id in body.epic_ids:
-        await get_epic_or_404(root, project_id, epic_id)
+        epic = await get_epic_or_404(root, project_id, epic_id)
+        if epic.status == "completed":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Epic {epic_id} is completed — reopen it before merging",
+            )
 
     if supervisor.is_arbiter_running(project_id):
         raise HTTPException(
