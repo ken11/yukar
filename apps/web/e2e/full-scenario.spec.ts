@@ -6,11 +6,15 @@
  * real Next.js UI, real SSE.
  *
  * Block 1 — Same-trial new session (also the basic-scenario regression):
- *   basic HITL (plan → user revises → re-plan → user approves → dispatch →
- *   evaluate → manager self-check → run completed; the epic stays open) → user
- *   merges (merge fact recorded, epic still open) → user starts a NEW session on
- *   the SAME trial (continue-on-branch) with an extra request → the new
- *   session's Manager re-runs the basic scenario on the same branch.
+ *   basic HITL (plan → user revises → re-plan → user approves via the explicit
+ *   approve-plan operation (P2: snapshot-hash bound; a chat reply alone does
+ *   not approve) → gated dispatch → evaluate → manager self-check → run
+ *   completed; the epic stays open) → user merges (merge fact recorded, epic
+ *   still open) → user starts a NEW session on the SAME trial
+ *   (continue-on-branch) with an extra request → the new session's Manager
+ *   re-runs the basic scenario on the same branch; its re-plan reproduces the
+ *   already-approved snapshot, so the recorded approval still matches and a
+ *   plain reply (not a re-approval) wakes it into the allowed dispatch.
  *
  * Block 2 — Reviewer:
  *   basic HITL → run completed → user invokes the Reviewer → the Reviewer reads
@@ -60,6 +64,12 @@ async function getTaskStatus(
   return (body.tasks ?? []).find((t: { id: string }) => t.id === taskId)?.status;
 }
 
+async function getPlanApproved(page: Page, projectId: string, epicId: string): Promise<boolean> {
+  const res = await page.request.get(`/api/projects/${projectId}/epics/${epicId}/tasks`);
+  const body = await res.json();
+  return Boolean(body.plan_approved);
+}
+
 async function createProjectAndEpic(
   page: Page,
   projectName: string,
@@ -107,15 +117,23 @@ async function replyOnThread(page: Page, replyText: string): Promise<void> {
 /**
  * Drive the Manager HITL dance from the plan question to run completion,
  * assuming the Manager has already started and the page is on its thread: it
- * presents a plan (Q_PLAN), the user requests a revision, it re-plans
- * (Q_REVISED), the user approves, and only then does the gated dispatch run
- * through to completion (run/state "completed" — the epic itself stays open;
- * finishing a run never transitions the 1-bit epic status).
+ * presents a plan (Q_PLAN), the user requests a revision (a plain reply — it
+ * does NOT approve), it re-plans (Q_REVISED), the user approves via the
+ * explicit approve-plan operation (P2: snapshot-hash bound), and only then
+ * does the gated dispatch run through to completion (run/state "completed" —
+ * the epic itself stays open; finishing a run never transitions the 1-bit
+ * epic status).
+ *
+ * `alreadyApproved` covers the continuation session: its re-plan reproduces a
+ * snapshot identical to the one the user already approved, so the recorded
+ * hash still matches — no approve button is offered and a plain reply wakes
+ * the agent into the (allowed) dispatch.
  */
 async function approvePlanToCompletion(
   page: Page,
   projectId: string,
   epicId: string,
+  opts: { alreadyApproved?: boolean } = {},
 ): Promise<void> {
   await expect(page.getByText(Q_PLAN)).toBeVisible({ timeout: 60_000 });
   // The approval gate: before approval no Worker runs — T1 stays "todo".
@@ -128,10 +146,37 @@ async function approvePlanToCompletion(
 
   await replyOnThread(page, "テストの観点も計画に含めてください。");
   await expect(page.getByText(Q_REVISED)).toBeVisible({ timeout: 60_000 });
+  // Park confirmed before waking: polling for "completed" below cannot
+  // false-positive on a stale state, and the approve banner (if any) has had
+  // its plan snapshot refreshed by the re-plan's task_update event.
+  await expect
+    .poll(() => getRunStatus(page, projectId, epicId), { timeout: 30_000, intervals: [500, 1000] })
+    .toBe("awaiting_input");
 
-  // The run is parked at awaiting_input here, so polling for "completed" below
-  // cannot false-positive on a stale state from a previous run.
-  await replyOnThread(page, "はい、その計画で承認します。進めてください。");
+  if (opts.alreadyApproved) {
+    // Snapshot identity: the re-plan reproduced the approved plan, so the
+    // stored approval still matches — no re-approval is asked of the user.
+    expect(
+      await getPlanApproved(page, projectId, epicId),
+      "identical snapshot stays approved",
+    ).toBe(true);
+    await expect(page.getByTestId("approve-plan-btn")).toHaveCount(0);
+    // A plain reply merely wakes the parked agent; the gate is already open.
+    await replyOnThread(page, "はい、その計画で進めてください。");
+  } else {
+    // A chat reply alone did NOT approve the plan (the revision reply above
+    // left it unapproved) — approval is the explicit operation.
+    expect(
+      await getPlanApproved(page, projectId, epicId),
+      "plan stays unapproved until the explicit operation",
+    ).toBe(false);
+    const approveBtn = page.getByTestId("approve-plan-btn");
+    await expect(approveBtn).toBeVisible({ timeout: 15_000 });
+    // One click records the approval AND auto-posts the "plan approved"
+    // message that wakes the parked agent into the now-allowed dispatch.
+    await approveBtn.click();
+  }
+
   await expect
     .poll(() => getRunStatus(page, projectId, epicId), {
       timeout: 90_000,
@@ -242,9 +287,11 @@ test.describe
       await page.waitForURL(new RegExp(`/threads/${s.contId}`), { timeout: 15_000 });
 
       // Post the additional request → the NEW session's Manager runs the basic
-      // scenario again on the same branch.
+      // scenario again on the same branch. Its re-plan reproduces the snapshot
+      // approved in the first session, so no re-approval is needed (P2:
+      // approval is bound to the plan snapshot, not to a run or a session).
       await replyOnThread(page, "util.py も追加してください。");
-      await approvePlanToCompletion(page, s.projectId, s.epicId);
+      await approvePlanToCompletion(page, s.projectId, s.epicId, { alreadyApproved: true });
 
       // The continuation ran on the SAME branch (the epic stayed open the whole
       // time); the active trial is now the continuation conversation.

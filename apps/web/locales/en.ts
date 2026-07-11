@@ -185,6 +185,14 @@ const en = {
     effortTooltip:
       "Manager(Opus) reasoning effort. Thinking is always adaptive. Changes take effect on the next Run.",
     effortUpdateFailed: "Failed to update effort",
+    approvePlan: "Approve plan",
+    approvingPlan: "Approving…",
+    planUnapprovedNote:
+      "The current plan is not approved. Approving it allows work to be dispatched",
+    planApprovedMessage: "I approved the plan. Please proceed.",
+    planStaleNotice: "The plan has changed. Review the updated plan before approving.",
+    planApproveFailed: "Failed to approve the plan",
+    sendMessageFailed: "Failed to send the message",
   },
   overview: {
     activeWork: "Open / Latest Work",
@@ -264,6 +272,8 @@ const en = {
       todo: "Todo",
     },
     noTasks: "No tasks yet.",
+    planApproved: "Plan approved",
+    planNotApproved: "Plan not approved",
   },
   projectDocs: {
     emptyMessage: "No documents found for this project.",

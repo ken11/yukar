@@ -56,10 +56,13 @@ logger = logging.getLogger(__name__)
 def _resolve_require_plan_approval() -> bool:
     """Whether the Manager needs the user's approval before dispatching Workers.
 
-    Enabled by default (the human review gate is a safety feature).  It can be
-    disabled by setting ``YUKAR_REQUIRE_PLAN_APPROVAL`` to ``0``/``false`` — an
-    ops/test escape hatch used by the fully-scripted E2E scenarios that pre-date
-    the gate, and by fully-autonomous deployments that opt out deliberately.
+    Enabled by default (the human review gate is a safety feature): dispatch is
+    rejected until the user's recorded approval (plan_approval.yaml) matches
+    the current task-plan snapshot hash.  It can be disabled by setting
+    ``YUKAR_REQUIRE_PLAN_APPROVAL`` to ``0``/``false`` — every plan is then
+    treated as approved.  This is an ops/test escape hatch used by the
+    fully-scripted E2E scenarios that pre-date the gate, and by
+    fully-autonomous deployments that opt out deliberately.
     """
     env = os.environ.get("YUKAR_REQUIRE_PLAN_APPROVAL")
     if env is not None:

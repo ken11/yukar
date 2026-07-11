@@ -15,7 +15,10 @@ export type Epic = components["schemas"]["Epic"];
 export type ThreadEntry = components["schemas"]["ThreadEntry"];
 export type Message = components["schemas"]["Message"];
 export type TasksFile = components["schemas"]["TasksFile"];
+export type TasksResponse = components["schemas"]["TasksResponse"];
 export type Task = components["schemas"]["Task"];
+export type PlanApproval = components["schemas"]["PlanApproval"];
+export type PlanApprovalRequest = components["schemas"]["PlanApprovalRequest"];
 export type DocResponse = components["schemas"]["DocResponse"];
 export type DiffResult = components["schemas"]["DiffResult"];
 export type Settings = components["schemas"]["Settings"];
@@ -310,8 +313,34 @@ export function postMessage(
 
 // ---- Tasks ----
 
-export function getTasks(projectId: string, epicId: string): Promise<TasksFile> {
+export function getTasks(projectId: string, epicId: string): Promise<TasksResponse> {
   return apiFetch(`/api/projects/${projectId}/epics/${epicId}/tasks`);
+}
+
+// ---- Plan approval ----
+
+/**
+ * Approve the current task-plan snapshot.  `tasksHash` must be the `plan_hash`
+ * the backend returned from GET /tasks — the client never computes hashes.
+ * The backend answers 409 when the plan changed after it was displayed
+ * (TOCTOU guard); on 409 refetch tasks and let the user re-review.
+ */
+export function approvePlan(
+  projectId: string,
+  epicId: string,
+  tasksHash: string,
+): Promise<PlanApproval> {
+  return apiFetch(`/api/projects/${projectId}/epics/${epicId}/plan/approval`, {
+    method: "POST",
+    body: { tasks_hash: tasksHash } satisfies PlanApprovalRequest,
+  });
+}
+
+/** Revoke the recorded plan approval (204, idempotent). */
+export function revokePlanApproval(projectId: string, epicId: string): Promise<void> {
+  return apiFetch(`/api/projects/${projectId}/epics/${epicId}/plan/approval`, {
+    method: "DELETE",
+  });
 }
 
 // ---- Docs ----

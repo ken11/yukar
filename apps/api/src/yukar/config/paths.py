@@ -136,6 +136,16 @@ def state_yaml(root: str, project_id: str, epic_id: str) -> Path:
     return epic_yukar_dir(root, project_id, epic_id) / "state.yaml"
 
 
+def plan_approval_yaml(root: str, project_id: str, epic_id: str) -> Path:
+    """Per-epic plan-approval record (lifecycle redesign P2).
+
+    Lives next to tasks.yaml / state.yaml but is run-independent: it records
+    the task-plan snapshot hash the user approved, and survives run stop /
+    error / restart.
+    """
+    return epic_yukar_dir(root, project_id, epic_id) / "plan_approval.yaml"
+
+
 def threads_yaml(root: str, project_id: str, epic_id: str) -> Path:
     return epic_dir(root, project_id, epic_id) / "threads.yaml"
 

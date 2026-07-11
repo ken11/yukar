@@ -14,6 +14,7 @@ import {
 import { useT } from "@/lib/i18n/provider";
 import { ManagerEffortControl } from "./manager-effort-control";
 import { MessageRow, roleIcon } from "./message-row";
+import { PlanApprovalBanner } from "./plan-approval-banner";
 
 // ---------------------------------------------------------------------------
 // Right pane: chat
@@ -249,6 +250,12 @@ export function ThreadChatInner({
               {t("conversation.awaitingBanner")}
             </p>
           </div>
+        )}
+
+        {/* Plan approval (P2) — explicit, snapshot-bound. Rendered next to the
+            awaiting banner; only the active trial can approve (composer owner). */}
+        {isActiveTrial && projectId && epicId && (
+          <PlanApprovalBanner projectId={projectId} epicId={epicId} onSendMessage={onSendMessage} />
         )}
 
         {/* Chat history */}

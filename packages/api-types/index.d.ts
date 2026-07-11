@@ -393,6 +393,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/epics/{epic_id}/plan/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Plan
+         * @description Record the user's approval of the current task-plan snapshot.
+         *
+         *     The submitted hash must match the hash of the plan as it exists NOW —
+         *     a mismatch means the plan changed after the client rendered it, and the
+         *     approval is refused with 409 so the user can review the updated plan.
+         */
+        post: operations["approve_plan_api_projects__project_id__epics__epic_id__plan_approval_post"];
+        /**
+         * Revoke Plan Approval
+         * @description Revoke the recorded plan approval.  Idempotent.
+         */
+        delete: operations["revoke_plan_approval_api_projects__project_id__epics__epic_id__plan_approval_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/docs": {
         parameters: {
             query?: never;
@@ -2296,6 +2324,31 @@ export interface components {
              */
             type: "pause_effective";
         };
+        /**
+         * PlanApproval
+         * @description The user's recorded approval of one task-plan snapshot.
+         *
+         *     Persisted per epic as ``plan_approval.yaml`` (run-independent).  A stale
+         *     record is harmless: if ``tasks_hash`` no longer matches the current plan,
+         *     the plan is simply treated as unapproved.
+         */
+        PlanApproval: {
+            /** Tasks Hash */
+            tasks_hash: string;
+            /**
+             * Approved At
+             * Format: date-time
+             */
+            approved_at: string;
+        };
+        /**
+         * PlanApprovalRequest
+         * @description POST /plan/approval body — the plan hash the user is approving.
+         */
+        PlanApprovalRequest: {
+            /** Tasks Hash */
+            tasks_hash: string;
+        };
         /** PostMessageRequest */
         PostMessageRequest: {
             /** Content */
@@ -2619,7 +2672,8 @@ export interface components {
          *     "preparing / indexing" indicator while the run is not yet fully started.
          *
          *     This event is intentionally lightweight: it does NOT update state.yaml
-         *     (orchestrator owns state.yaml; supervisor owns epic.yaml).  The frontend
+         *     (orchestrator owns state.yaml; epic.yaml's status is user-owned via
+         *     PATCH — runs never write it).  The frontend
          *     can use it as a transient "preparing" signal until ``RunStartedEvent``
          *     arrives from the orchestrator.
          */
@@ -2998,12 +3052,38 @@ export interface components {
              * @default
              */
             title: string;
+            /**
+             * Plan Changed
+             * @default false
+             */
+            plan_changed: boolean;
         };
         /** TasksFile */
         TasksFile: {
             /** Tasks */
             tasks?: components["schemas"]["Task"][];
             progress?: components["schemas"]["TaskProgress"];
+        };
+        /**
+         * TasksResponse
+         * @description GET /tasks response — the stored TasksFile plus plan-approval state.
+         *
+         *     ``plan_hash`` is computed by the backend only; clients echo it back to
+         *     POST /plan/approval and never compute hashes themselves.
+         */
+        TasksResponse: {
+            /** Tasks */
+            tasks?: components["schemas"]["Task"][];
+            progress?: components["schemas"]["TaskProgress"];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Approved Hash */
+            approved_hash?: string | null;
+            /**
+             * Plan Approved
+             * @default false
+             */
+            plan_approved: boolean;
         };
         /** ThreadEntry */
         ThreadEntry: {
@@ -4282,7 +4362,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TasksFile"];
+                    "application/json": components["schemas"]["TasksResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4320,6 +4400,72 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["TasksFile"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_plan_api_projects__project_id__epics__epic_id__plan_approval_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanApproval"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_plan_approval_api_projects__project_id__epics__epic_id__plan_approval_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

@@ -126,10 +126,10 @@ from yukar.models.events import (
 )
 from yukar.models.roles import AgentRole
 from yukar.models.run import RunState
-from yukar.models.task import Task, TaskProgress, TasksFile
+from yukar.models.task import Task, TaskProgress, TasksFile, compute_plan_hash
 from yukar.models.thread import ThreadEntry
 from yukar.runs.scheduler import WorkerScheduler
-from yukar.storage import state_repo, tasks_repo, threads_repo
+from yukar.storage import plan_approval_repo, state_repo, tasks_repo, threads_repo
 from yukar.storage.epic_repo import get_epic
 
 logger = logging.getLogger(__name__)
@@ -335,11 +335,16 @@ class EpicOrchestrator:
 
         # Plan-approval gate (prevents the Manager from dispatching Workers
         # before the user has approved the current task plan).
-        #   - dispatch is REJECTED by the host while the plan is not approved.
-        #   - task_update (a plan change) invalidates approval → must re-ask.
-        #   - a genuine user turn (ask_user reply / HITL / seed_prompt) grants it.
-        # A continuation run resumes an already-approved plan; a fresh run must
-        # earn approval via ask_user before its first dispatch.
+        #   - Approval is an EXPLICIT user operation (POST /plan/approval)
+        #     recorded in plan_approval.yaml as a hash of the plan snapshot;
+        #     a chat reply does NOT grant it.
+        #   - dispatch is REJECTED by the host while the stored hash does not
+        #     match the current plan.  There is no imperative invalidation:
+        #     changing the plan changes its hash, so the approval simply no
+        #     longer matches.
+        #   - The gate reads plan_approval.yaml from disk on every check so an
+        #     approval given while a run is live (or parked) takes effect on
+        #     the next dispatch without any in-memory hand-off.
         # Reviewer mode: a read-only, conversational agent that reviews the active
         # trial's branch and reports to the user.  It reuses this orchestrator's
         # conversation loop but with a read-only toolset and no task/dispatch/plan
@@ -351,7 +356,6 @@ class EpicOrchestrator:
         # A reviewer has no dispatch, so the plan-approval gate is irrelevant;
         # disable it so the loop never nudges toward plan approval / dispatch.
         self._require_plan_approval: bool = require_plan_approval and not _is_reviewer
-        self._plan_approved: bool = is_continuation or _is_reviewer
 
         # HITL: pending messages queued from threads router.
         # Maps thread_id → list of text strings.
@@ -664,19 +668,6 @@ class EpicOrchestrator:
         # Load existing tasks or start fresh.
         tasks_file = await tasks_repo.get_tasks(root, project_id, epic_id)
         self._tasks_holder = [tasks_file]
-
-        # Refine the plan-approval gate for a continuation now that tasks are
-        # known.  A continuation optimistically starts approved so an in-flight
-        # epic can resume dispatching without re-asking.  But if NO work has
-        # started yet (every task still todo/blocked — e.g. the Manager planned
-        # and asked the user, then the run was stopped before approval), the
-        # plan was never actually approved: require a fresh approval so a later
-        # unrelated resume message cannot auto-dispatch an unapproved plan.
-        if self._require_plan_approval and self._is_continuation:
-            work_started = any(
-                t.status in ("in_progress", "done") for t in tasks_file.tasks
-            )
-            self._plan_approved = work_started
 
         # FileSessionManager — orchestrator owns it exclusively (invariant §6.4).
         fsm = FileSessionManager(
@@ -1029,6 +1020,12 @@ class EpicOrchestrator:
             #   the loop.  FSM records it as a user message (host origin).
             tf = self._tasks_holder[0]
 
+            # Plan-approval state for this turn's prompt variants.  Read from
+            # disk every turn: approval is an explicit user operation (REST)
+            # that can land at any moment, including while this run is live.
+            # The dispatch gate re-reads it independently at dispatch time.
+            _plan_approved = await self._is_plan_approved()
+
             _human_authored = False  # whether this turn's prompt is human text
             if user_answer:
                 # Solicited reply (ask_user response): pass the user's text alone.
@@ -1076,15 +1073,18 @@ class EpicOrchestrator:
                         "`read_branch_diff` and `repo_search` to gather evidence, then "
                         "call `ask_user` to report your findings to the user."
                     )
-                elif self._require_plan_approval and not self._plan_approved:
-                    # Resuming a plan that was never approved (planned, then the
-                    # run ended before the user approved — no work has started).
+                elif self._require_plan_approval and not _plan_approved:
+                    # Resuming a plan that has no recorded approval (the user
+                    # never performed the Approve-plan operation, or the plan
+                    # changed after they did).
                     # Do NOT tell the Manager to dispatch: the gate would reject it.
                     prompt = (
-                        "The previous run ended before the plan was approved. "
-                        "Review the existing task state and session history, then call "
-                        "`ask_user` to present the plan and wait for the user's approval "
-                        "before dispatching."
+                        "The previous run ended and the current plan has not been "
+                        "approved by the user. Review the existing task state and "
+                        "session history, then call `ask_user` to present the plan. "
+                        "Approval is an explicit user operation (Approve plan) in the "
+                        "UI — a chat reply alone does not approve the plan. Do not "
+                        "dispatch until the user has approved."
                     )
                 else:
                     prompt = (
@@ -1093,17 +1093,19 @@ class EpicOrchestrator:
                         "tasks, replan if needed, or call `complete_epic` if all work "
                         "is done. Call `ask_user` if you need human input."
                     )
-            elif self._require_plan_approval and not self._plan_approved:
+            elif self._require_plan_approval and not _plan_approved:
                 # Stall notice, unapproved-plan variant: dispatch would be
                 # rejected by the host gate, so steer the Manager to present
                 # the plan via ask_user.
                 task_summary = _summarise_tasks(tf)
                 prompt = (
                     f"Current task state:\n{task_summary}\n\n"
-                    "The user has NOT approved this plan yet, so `dispatch` will be "
+                    "The user has NOT approved this plan, so `dispatch` will be "
                     "rejected. Call `ask_user` to present the current plan (and any "
-                    "changes you just made) and wait for the user's approval. "
-                    "Do NOT call `dispatch` until the user approves."
+                    "changes you just made) and wait. Approval is an explicit user "
+                    "operation (Approve plan) in the UI — a chat reply alone does "
+                    "not approve the plan. Do NOT call `dispatch` until the user "
+                    "has approved."
                 )
             elif self._agent_role == "reviewer":
                 # Stall notice, reviewer variant: the reviewer ended its turn
@@ -1142,12 +1144,9 @@ class EpicOrchestrator:
             # Set the hook flag so the FSM hook publishes only human-authored turns.
             _human_turn_flag[0] = _human_authored
 
-            # A genuine user turn (ask_user reply, unsolicited HITL, or a
-            # continuation seed_prompt) grants approval of the current plan.
-            # If the Manager then changes the plan via task_update this turn,
-            # the on_change hook re-invalidates it before dispatch is reached.
-            if _human_authored:
-                self._plan_approved = True
+            # NOTE: a human-authored turn does NOT grant plan approval.
+            # Approval is bound to the plan snapshot in plan_approval.yaml,
+            # written only by the user's explicit Approve-plan operation.
 
             # Emit turn-started before streaming so the UI shows "Manager is thinking".
             pub(
@@ -1333,25 +1332,33 @@ class EpicOrchestrator:
 
         return ask_user
 
-    def _invalidate_plan_approval(self) -> None:
-        """Mark the current task plan as no longer approved.
-
-        Called after any ``task_update`` so that a plan change forces the
-        Manager to re-present the plan via ``ask_user`` before it may dispatch.
-        A no-op when the approval gate is disabled.
-        """
-        if self._require_plan_approval:
-            self._plan_approved = False
-
     def _on_task_mutation(self) -> None:
         """React to a successful ``task_update`` mutation.
 
         Marks the turn as productive (a silent turn end after real work gets a
-        one-shot stall notice rather than an immediate park) and invalidates
-        plan approval so a changed plan must be re-confirmed before dispatch.
+        one-shot stall notice rather than an immediate park).  Plan approval
+        needs no explicit invalidation: the approval is bound to a plan-snapshot
+        hash, so a changed plan simply stops matching the recorded approval.
         """
         self._turn_effector_used = True
-        self._invalidate_plan_approval()
+
+    async def _is_plan_approved(self) -> bool:
+        """Whether the CURRENT task plan snapshot has a recorded user approval.
+
+        Reads ``plan_approval.yaml`` from disk on every call (no in-memory
+        cache) so an approval recorded via REST while this run is live — or
+        parked awaiting input — takes effect on the very next check.  With the
+        gate disabled (``require_plan_approval=False`` / reviewer role) every
+        plan counts as approved.
+        """
+        if not self._require_plan_approval:
+            return True
+        approval = await plan_approval_repo.get_plan_approval(
+            self._root, self._project_id, self._epic_id
+        )
+        if approval is None:
+            return False
+        return approval.tasks_hash == compute_plan_hash(self._tasks_holder[0].tasks)
 
     def _make_dispatch_tool(self) -> Any:
         """Return the ``dispatch`` Strands tool bound to this orchestrator."""
@@ -1371,9 +1378,10 @@ class EpicOrchestrator:
             to the *same* repo are serialised by the host scheduler.
 
             IMPORTANT: the host REJECTS this call until the user has approved the
-            current task plan.  Present the plan via ``ask_user`` and wait for the
-            user's reply first; any change to the plan (``task_update``) requires
-            a fresh approval before dispatching.
+            current task plan via the explicit Approve-plan operation in the UI.
+            A chat reply does NOT approve the plan.  Present the plan via
+            ``ask_user`` and wait; any change to the plan (``task_update``)
+            produces a new plan snapshot that needs a fresh approval.
 
             Args:
                 items: List of dispatch items.
@@ -1386,14 +1394,17 @@ class EpicOrchestrator:
             # productive so the turn-end handling sends a corrective notice
             # instead of parking the run.
             self._turn_effector_used = True
-            if self._require_plan_approval and not self._plan_approved:
-                # Host-enforced approval gate: refuse dispatch and tell the
-                # Manager to get the user's approval first.  Returned as a
+            if not await self._is_plan_approved():
+                # Host-enforced approval gate: the recorded approval (if any)
+                # does not match the current plan snapshot.  Returned as a
                 # per-item rejection so the Manager sees exactly what was blocked.
                 reason = (
                     "Dispatch blocked: the current task plan has not been approved by "
-                    "the user. Call `ask_user` to present the plan (and any changes you "
-                    "just made) and wait for the user's reply before dispatching."
+                    "the user. Approval is granted only through the user's explicit "
+                    "Approve-plan operation in the UI — a chat reply does NOT approve "
+                    "the plan, and dispatch stays rejected until the user performs it. "
+                    "Call `ask_user` to present the plan (and any changes you just "
+                    "made) and wait for the user's approval."
                 )
                 return [
                     {

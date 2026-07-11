@@ -50,9 +50,10 @@ def _make_task_update_tool(
     ``_tasks_holder`` is a one-element list so the closure can mutate it.
 
     ``on_change`` (optional) is invoked after every successful task mutation so
-    the orchestrator can react to a plan change — e.g. invalidate the
-    plan-approval gate so the Manager must re-confirm with the user before
-    dispatching.
+    the orchestrator can react to a plan change (e.g. mark the turn as having
+    used an effector tool).  Approval itself needs no invalidation hook: the
+    dispatch gate compares the CURRENT plan hash against the recorded approval
+    on every call, so a changed plan simply stops matching.
     """
     from strands import tool
 
@@ -120,10 +121,12 @@ def _make_task_update_tool(
         _tasks_holder[0] = tf
         # Persist.
         await tasks_repo.save_tasks(root, project_id, epic_id, tf)
-        # Notify the orchestrator that the plan changed (invalidates approval).
+        # Notify the orchestrator that the plan may have changed.
         if on_change is not None:
             on_change()
-        # Publish task_update event.
+        # Publish task_update event.  plan_changed=True: this tool can touch
+        # plan-defining fields, so clients must refetch the plan hash /
+        # approval state rather than patch the task row in place.
         event_bus.publish(
             project_id,
             epic_id,
@@ -134,6 +137,7 @@ def _make_task_update_tool(
                 task_id=task_id,
                 status=status,
                 title=title,
+                plan_changed=True,
             ),
         )
         return {"task_id": task_id, "status": status, "title": title}

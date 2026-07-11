@@ -1,25 +1,35 @@
 /**
- * Seed constants and fake script for the plan-approval-gate scenario (bug ⑤).
+ * Seed constants and fake script for the plan-approval-gate scenario (P2:
+ * snapshot-bound approval).
  *
- * This scenario proves the host-enforced approval gate: the Manager attempts to
- * `dispatch` BEFORE the user has approved the plan, and the host REJECTS it, so
- * no Worker runs and the task stays `todo`. Only after the user approves (reply
- * to `ask_user`) does the retried `dispatch` actually run the Worker.
+ * This scenario proves the host-enforced approval gate in its P2 form:
+ * approval is an EXPLICIT user operation (POST /plan/approval via the
+ * approve-plan-btn) bound to a hash of the task-plan snapshot — a chat reply
+ * alone never grants it, and any plan change produces a new snapshot whose
+ * hash no longer matches the recorded approval.
  *
  * Manager script layout (FakeModel cursor advances across turns):
- *   script[0]: task_update(T1)     — creates the plan (plan_approved=False)
- *   script[1]: dispatch(T1)        — PRE-approval → host rejects it (NO worker,
+ *   --- Turn 0 (run start) ---
+ *   script[0]: task_update(T1)     — creates the plan (hash H1, unapproved)
+ *   script[1]: dispatch(T1)        — PRE-approval → host REJECTS (no Worker,
  *                                    T1 stays "todo") — the gate in action
- *   script[2]: ask_user(...)       — present the plan → run enters awaiting_input
- *   script[3]: text (end_turn)     — stops the Strands loop so the orchestrator
- *                                    for-loop detects _awaiting_user and blocks
- *   --- turns executed after the user's reply (turn 1) ---
- *   script[4]: dispatch(T1)        — POST-approval → host allows → Worker+Evaluator
- *   script[5]: complete_epic
- *   script[6]: text "Epic complete."
+ *   script[2]: ask_user(Q1)        — present the plan → run parks awaiting_input
+ *   script[3]: text (end_turn)
+ *   --- Turn 1 (woken by the user's FIRST approval — recorded for hash H1) ---
+ *   script[4]: task_update(T1 v2)  — re-titles T1 → the plan snapshot changes
+ *                                    to hash H2; the recorded approval (H1) no
+ *                                    longer matches
+ *   script[5]: dispatch(T1)        — REJECTED again: approval is stale (H1≠H2)
+ *   script[6]: ask_user(Q2)        — present the revised plan → park again
+ *   script[7]: text (end_turn)
+ *   --- Turn 2 (woken by the user's SECOND approval — recorded for H2) ---
+ *   script[8]: dispatch(T1)        — approval matches → Worker+Evaluator run
+ *   script[9]: complete_epic
+ *   script[10]: text "Epic complete."
  *
- * Because the gate blocks script[1], T1 is still "todo" while awaiting_input;
- * after approval, script[4] runs the Worker and T1 reaches "done".
+ * The spec drives both approvals through the approve-plan-btn (which records
+ * the approval AND posts the i18n "plan approved" user message that wakes the
+ * parked agent) and proves T1 stays "todo" across BOTH rejected dispatches.
  */
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +48,11 @@ export const PLAN_GATE_SEED = {
 } as const;
 
 export const PLAN_GATE_QUESTION = "この計画で進めてよいですか？";
+export const PLAN_GATE_REVISED_QUESTION = "計画を更新しました。改めて承認をお願いできますか？";
+
+/** Titles before/after the turn-1 re-plan (the hash-changing task_update). */
+export const PLAN_GATE_TITLE_V1 = "Write hello.py";
+export const PLAN_GATE_TITLE_V2 = "Write hello.py (documented)";
 
 export const PLAN_GATE_FAKE_SCRIPT = JSON.stringify({
   manager: [
@@ -47,14 +62,14 @@ export const PLAN_GATE_FAKE_SCRIPT = JSON.stringify({
       tool_name: "task_update",
       tool_input: {
         task_id: "T1",
-        title: "Write hello.py",
+        title: PLAN_GATE_TITLE_V1,
         status: "todo",
         repo: "myrepo",
         contract: "Create hello.py that prints hello. Verify: file exists and prints 'hello'.",
       },
     },
-    // …then PREMATURELY try to dispatch before asking the user. The host gate
-    // rejects this: no Worker runs and T1 stays "todo".
+    // …then PREMATURELY try to dispatch before the user approved. The host
+    // gate rejects this: no Worker runs and T1 stays "todo".
     {
       type: "tool_use",
       tool_name: "dispatch",
@@ -68,7 +83,32 @@ export const PLAN_GATE_FAKE_SCRIPT = JSON.stringify({
     },
     // end_turn — stops the Strands loop; orchestrator blocks on awaiting_input.
     { type: "text", text: "ユーザーの承認をお待ちしています。" },
-    // ---- After the user's reply (turn 1): dispatch is now allowed ----
+    // ---- Turn 1 (after the user's FIRST approval, recorded for hash H1) ----
+    // Change the plan: the snapshot hash becomes H2, so the H1 approval is
+    // stale and the next dispatch must be rejected again.
+    {
+      type: "tool_use",
+      tool_name: "task_update",
+      tool_input: {
+        task_id: "T1",
+        title: PLAN_GATE_TITLE_V2,
+        status: "todo",
+        repo: "myrepo",
+        contract: "Create hello.py that prints hello. Verify: file exists and prints 'hello'.",
+      },
+    },
+    {
+      type: "tool_use",
+      tool_name: "dispatch",
+      tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
+    },
+    {
+      type: "tool_use",
+      tool_name: "ask_user",
+      tool_input: { question: PLAN_GATE_REVISED_QUESTION },
+    },
+    { type: "text", text: "更新した計画への再承認をお待ちしています。" },
+    // ---- Turn 2 (after the user's SECOND approval, recorded for H2) ----
     {
       type: "tool_use",
       tool_name: "dispatch",

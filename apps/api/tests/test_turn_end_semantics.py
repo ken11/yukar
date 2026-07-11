@@ -227,7 +227,25 @@ class TestConversationalPark:
                 "A conversational park must not fabricate a pending question"
             )
 
-            # The user resumes; the manager dispatches and completes.
+            # The user approves the plan (explicit operation recorded on disk —
+            # what POST /plan/approval does; a chat reply alone would leave
+            # dispatch gate-rejected), then resumes; the manager dispatches
+            # and completes.
+            from datetime import UTC, datetime
+
+            from yukar.models.task import PlanApproval, compute_plan_hash
+            from yukar.storage import plan_approval_repo, tasks_repo
+
+            tasks_file = await tasks_repo.get_tasks(root, project_id, epic_id)
+            await plan_approval_repo.save_plan_approval(
+                root,
+                project_id,
+                epic_id,
+                PlanApproval(
+                    tasks_hash=compute_plan_hash(tasks_file.tasks),
+                    approved_at=datetime.now(UTC),
+                ),
+            )
             orch.inject_message("manager", "great — go ahead")
             await asyncio.wait_for(run_task, timeout=30.0)
 

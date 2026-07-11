@@ -902,6 +902,73 @@ describe("useRunActivity — SSE cache patch (task_update)", () => {
     const t2 = updated?.tasks.find((t) => t.id === "T2");
     expect(t2?.status).toBe("in_progress");
   });
+
+  it("invalidates the tasks cache when task_update carries an unknown task id (new plan item)", () => {
+    qc.setQueryData(queryKeys.tasks.get(PROJECT_ID, EPIC_ID), {
+      tasks: [{ id: "T1", title: "Task one", status: "todo" }],
+      progress: { done: 0, total: 1 },
+    });
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    renderHook(() => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }), { wrapper });
+
+    const es = MockEventSource.instances[0];
+    es.emit(
+      "task_update",
+      JSON.stringify({
+        type: "task_update",
+        project_id: PROJECT_ID,
+        epic_id: EPIC_ID,
+        run_id: "run-1",
+        task_id: "T9",
+        status: "todo",
+        title: "Newly registered task",
+      }),
+    );
+
+    // An in-place patch cannot add a task (and plan_hash / plan_approved would
+    // go stale), so the whole tasks query is refetched instead.
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.tasks.get(PROJECT_ID, EPIC_ID),
+    });
+    const cached = qc.getQueryData<{ tasks: { id: string }[] }>(
+      queryKeys.tasks.get(PROJECT_ID, EPIC_ID),
+    );
+    // The cached list itself is untouched (no phantom half-patched entry).
+    expect(cached?.tasks.map((t) => t.id)).toEqual(["T1"]);
+  });
+
+  it("invalidates the tasks cache when task_update carries plan_changed (Manager tool)", () => {
+    // The Manager's task_update tool can change plan-defining fields the event
+    // does NOT carry (contract/repo/depends_on/agent) — even with an unchanged
+    // title the plan hash may differ, so plan_changed=true forces a refetch.
+    qc.setQueryData(queryKeys.tasks.get(PROJECT_ID, EPIC_ID), {
+      tasks: [{ id: "T1", title: "Task one", status: "todo" }],
+      progress: { done: 0, total: 1 },
+    });
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    renderHook(() => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }), { wrapper });
+
+    const es = MockEventSource.instances[0];
+    es.emit(
+      "task_update",
+      JSON.stringify({
+        type: "task_update",
+        project_id: PROJECT_ID,
+        epic_id: EPIC_ID,
+        run_id: "run-1",
+        task_id: "T1",
+        status: "todo",
+        title: "Task one",
+        plan_changed: true,
+      }),
+    );
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.tasks.get(PROJECT_ID, EPIC_ID),
+    });
+  });
 });
 
 describe("useRunActivity — M5: run_paused / run_resumed cache patch", () => {

@@ -134,6 +134,23 @@ export function applyRunCachePatch(
     case "task_update": {
       // narrowing: event is TaskUpdateEvent
       const key = queryKeys.tasks.get(projectId, epicId);
+      const prevTasks = qc.getQueryData<TasksFile>(key);
+      const cachedTask = (prevTasks?.tasks ?? []).find((t) => t.id === event.task_id);
+      if (prevTasks && (event.plan_changed || !cachedTask)) {
+        // The plan SNAPSHOT may have changed — the Manager's task_update tool
+        // (plan_changed=true) can touch any plan-defining field (title/repo/
+        // depends_on/contract/agent), most of which this event does not carry,
+        // and an unknown task id means a new plan item either way. An in-place
+        // patch cannot represent that (the backend-computed plan_hash /
+        // plan_approved in the GET /tasks response changed with the snapshot),
+        // so refetch instead. This is what makes the plan-approval button
+        // appear live — with the CURRENT hash — while the manager is still
+        // parked in the same run. Status-only dispatch-progress updates
+        // (plan_changed=false) keep the cheap in-place patch: status is
+        // excluded from the plan hash.
+        qc.invalidateQueries({ queryKey: key });
+        break;
+      }
       qc.setQueryData<TasksFile>(key, (prev) => {
         if (!prev) return prev;
         return {

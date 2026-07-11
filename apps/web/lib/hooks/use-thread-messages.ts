@@ -2,10 +2,12 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
+import { toast } from "sonner";
 import type { Message } from "@/lib/api/endpoints";
-import { getThreadMessages, postMessage } from "@/lib/api/endpoints";
+import { extractDetail, getThreadMessages, postMessage } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { strandsMessagesToThreadMessageLikes } from "@/lib/assistant-ui/runtime";
+import { useT } from "@/lib/i18n/provider";
 
 interface UseThreadMessagesOptions {
   projectId: string;
@@ -31,6 +33,7 @@ export function useThreadMessages({
   initialMessages,
 }: UseThreadMessagesOptions): UseThreadMessagesResult {
   const qc = useQueryClient();
+  const t = useT();
 
   const { data: rawMessages = initialMessages } = useQuery({
     queryKey: queryKeys.threads.messages(projectId, epicId, threadId),
@@ -64,6 +67,15 @@ export function useThreadMessages({
           return [...prev, newMessage];
         },
       );
+    },
+    onError: (err) => {
+      // A failed send must never be silent: the composer AND programmatic
+      // senders (e.g. the plan-approval banner's wake message) route through
+      // here, and a swallowed 409 (reviewer run active, budget reached, …)
+      // leaves the user believing the agent was notified when it was not.
+      toast.error(t("conversation.sendMessageFailed"), {
+        description: extractDetail(err) ?? (err instanceof Error ? err.message : String(err)),
+      });
     },
   });
 

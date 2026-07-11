@@ -73,6 +73,12 @@ class TaskUpdateEvent(BaseEvent):
     task_id: str
     status: str
     title: str = ""
+    # True when the update came from the Manager's task_update tool — i.e. it
+    # may have changed PLAN-DEFINING fields (title/repo/depends_on/contract/
+    # agent), so the plan hash and approval state must be refetched.  Dispatch
+    # progress (status-only) updates leave this False and stay cheap to patch
+    # in place on the client.
+    plan_changed: bool = False
 
 
 class WorkerStartedEvent(BaseEvent):

@@ -475,6 +475,16 @@ async def create_thread(
         # Add to threads.yaml index
         await threads_repo.add_thread(root, project_id, epic_id, entry)
 
+        # A NEW trial (fresh branch) is a fresh attempt: revoke any recorded
+        # plan approval so a regenerated-but-identical plan cannot silently
+        # inherit the previous trial's approval — the user approves each
+        # trial's plan explicitly.  A same-branch continuation keeps it: the
+        # trial (and its approved plan) continues, only the conversation is new.
+        if body.role == "manager" and not body.same_branch:
+            from yukar.storage import plan_approval_repo
+
+            await plan_approval_repo.delete_plan_approval(root, project_id, epic_id)
+
         # For manager trials: update epic.active_thread_id AND epic.branch (active trial's branch),
         # then persist.
         if body.role == "manager":

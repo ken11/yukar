@@ -3,18 +3,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEpicRun } from "@/components/chrome/epic-run-context";
 import { RunCostBadge } from "@/components/features/usage/run-cost-badge";
-import type { RunState, Task, TasksFile } from "@/lib/api/endpoints";
+import type { RunState, Task, TasksResponse } from "@/lib/api/endpoints";
 import { getRunState, getTasks } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
+import { useT } from "@/lib/i18n/provider";
 import { TaskList } from "./task-list";
 
 interface TasksPageClientProps {
   projectId: string;
   epicId: string;
-  initialTasksFile: TasksFile;
+  initialTasksFile: TasksResponse;
 }
 
 export function TasksPageClient({ projectId, epicId, initialTasksFile }: TasksPageClientProps) {
+  const t = useT();
   const { data: tasksFile = initialTasksFile } = useQuery({
     queryKey: queryKeys.tasks.get(projectId, epicId),
     queryFn: () => getTasks(projectId, epicId),
@@ -45,6 +47,30 @@ export function TasksPageClient({ projectId, epicId, initialTasksFile }: TasksPa
           <p className="text-body-sm text-on-surface-variant">
             {done}/{total} completed
           </p>
+          {/* Plan-approval state (P2) — a datum, not a card. Approval binds to the
+              current plan snapshot: any plan change reverts this to unapproved. */}
+          {tasks.length > 0 && (
+            <span
+              data-testid="plan-approval-status"
+              className="flex items-center gap-1.5 font-mono text-[11px]"
+              style={{
+                color: tasksFile.plan_approved
+                  ? "var(--color-light)"
+                  : "var(--color-on-surface-variant)",
+              }}
+            >
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{
+                  backgroundColor: tasksFile.plan_approved
+                    ? "var(--color-light)"
+                    : "var(--color-outline)",
+                }}
+                aria-hidden
+              />
+              {tasksFile.plan_approved ? t("tasks.planApproved") : t("tasks.planNotApproved")}
+            </span>
+          )}
           {runState?.run_id && (
             <RunCostBadge
               projectId={projectId}

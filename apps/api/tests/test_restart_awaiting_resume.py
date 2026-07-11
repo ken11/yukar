@@ -156,7 +156,26 @@ async def test_awaiting_input_survives_restart_and_resumes_on_reply(tmp_path: Pa
         "pending_question must survive restart"
     )
 
-    # --- Phase 3: user replies -> continuation orchestrator resumes ---
+    # --- Phase 3: user approves the plan and replies -> continuation resumes ---
+    # Plan approval is an explicit user operation recorded on disk (what
+    # POST /plan/approval does); the reply alone would leave the continuation's
+    # dispatch host-rejected.  Record it before seeding the reply.
+    from datetime import UTC, datetime
+
+    from yukar.models.task import PlanApproval, compute_plan_hash
+    from yukar.storage import plan_approval_repo, tasks_repo
+
+    tasks_file = await tasks_repo.get_tasks(root, project_id, epic_id)
+    await plan_approval_repo.save_plan_approval(
+        root,
+        project_id,
+        epic_id,
+        PlanApproval(
+            tasks_hash=compute_plan_hash(tasks_file.tasks),
+            approved_at=datetime.now(UTC),
+        ),
+    )
+
     # orch1's teardown published a None sentinel that closed the first
     # subscriber, so subscribe a fresh collector for the continuation run.
     collector.cancel()

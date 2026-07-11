@@ -475,14 +475,17 @@ class TestAskUserGateE2E:
     async def test_ask_user_blocks_dispatch_until_approved(
         self, git_repo: Path, tmp_path: Path
     ) -> None:
-        """Manager calls ask_user on Turn 0, then dispatch after approval.
+        """A chat reply does NOT approve the plan; the recorded approval does.
 
         Verifies:
-        1. Run enters awaiting_input status.
-        2. UserInputRequestedEvent is published.
-        3. No workers are started before approval.
-        4. After inject_message, workers run and run completes.
+        1. Run enters awaiting_input status and UserInputRequestedEvent is published.
+        2. A user reply WITHOUT the Approve-plan operation leaves dispatch
+           host-rejected (no workers start).
+        3. After the approval is recorded in plan_approval.yaml (the explicit
+           user operation), the live run's next dispatch goes through — the
+           gate reads the approval from disk without any restart.
         """
+        from datetime import UTC, datetime
         from unittest.mock import patch
 
         from yukar.agents.orchestrator import EpicOrchestrator
@@ -490,7 +493,8 @@ class TestAskUserGateE2E:
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
         from yukar.models.events import UserInputRequestedEvent, WorkerStartedEvent
-        from yukar.storage import state_repo
+        from yukar.models.task import PlanApproval, compute_plan_hash
+        from yukar.storage import plan_approval_repo, state_repo, tasks_repo
 
         root = str(tmp_path / "ws")
         project_id = "proj"
@@ -500,7 +504,9 @@ class TestAskUserGateE2E:
         await _bootstrap(root, project_id, epic_id, git_repo)
 
         # Manager: Turn 0 — plan tasks, call ask_user, stop.
-        # Turn 1 (after user approval) — dispatch, complete_epic.
+        # Turn 1 (user replied but did NOT approve) — dispatch is gate-rejected,
+        # so the Manager re-asks for the approval operation.
+        # Turn 2 (approval recorded + reply) — dispatch runs, complete_epic.
         manager_script = [
             # Turn 0: plan
             ToolUseTurn(
@@ -517,7 +523,17 @@ class TestAskUserGateE2E:
                 tool_input={"question": "Plan: T1=Write hello.py. Any questions before I proceed?"},
             ),
             TextTurn("Waiting for user approval."),
-            # Turn 1: after approval
+            # Turn 1: the reply alone must not open the gate.
+            ToolUseTurn(
+                tool_name="dispatch",
+                tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
+            ),
+            ToolUseTurn(
+                tool_name="ask_user",
+                tool_input={"question": "Dispatch was rejected — please approve the plan."},
+            ),
+            TextTurn("Waiting for the approval operation."),
+            # Turn 2: after the recorded approval
             ToolUseTurn(
                 tool_name="dispatch",
                 tool_input={"items": [{"task_id": "T1", "repo": git_repo.name}]},
@@ -549,15 +565,20 @@ class TestAskUserGateE2E:
 
         events_received: list[Any] = []
         worker_started_before_approval: list[Any] = []
-        approval_sent = asyncio.Event()
+        first_question = asyncio.Event()
+        second_question = asyncio.Event()
+        approval_recorded = asyncio.Event()
 
         async def _collect() -> None:
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
-                # Track workers started before user approval.
                 if isinstance(ev, UserInputRequestedEvent):
-                    approval_sent.set()
-                if isinstance(ev, WorkerStartedEvent) and not approval_sent.is_set():
+                    if not first_question.is_set():
+                        first_question.set()
+                    else:
+                        second_question.set()
+                # Track workers started before the approval was recorded.
+                if isinstance(ev, WorkerStartedEvent) and not approval_recorded.is_set():
                     worker_started_before_approval.append(ev)
 
         collector = asyncio.create_task(_collect())
@@ -573,18 +594,41 @@ class TestAskUserGateE2E:
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
             run_task = asyncio.create_task(orch.start(root, project_id, epic_id, run_id))
 
-            # Wait for the UserInputRequestedEvent before injecting approval.
-            await asyncio.wait_for(approval_sent.wait(), timeout=10.0)
+            # Wait for the plan question.
+            await asyncio.wait_for(first_question.wait(), timeout=10.0)
 
-            # Verify status is awaiting_input before approval.
+            # Verify status is awaiting_input before the reply.
             state = await state_repo.get_state(root, project_id, epic_id)
             assert state is not None, "state.yaml should exist"
             assert state.status == "awaiting_input", (
                 f"Expected awaiting_input before approval, got {state.status!r}"
             )
 
-            # Inject the user's approval.
+            # Reply WITHOUT performing the approval operation.  The Manager's
+            # dispatch this turn must be host-rejected (no workers).
             orch.inject_message("manager", "Looks good, proceed!")
+
+            # The Manager hits the gate and asks again.
+            await asyncio.wait_for(second_question.wait(), timeout=10.0)
+            assert worker_started_before_approval == [], (
+                "A chat reply alone must not open the dispatch gate"
+            )
+
+            # Now perform the explicit Approve-plan operation: record the
+            # approval of the current plan snapshot (what POST /plan/approval
+            # does), then reply.  The live run's gate reads it from disk.
+            tasks_file = await tasks_repo.get_tasks(root, project_id, epic_id)
+            await plan_approval_repo.save_plan_approval(
+                root,
+                project_id,
+                epic_id,
+                PlanApproval(
+                    tasks_hash=compute_plan_hash(tasks_file.tasks),
+                    approved_at=datetime.now(UTC),
+                ),
+            )
+            approval_recorded.set()
+            orch.inject_message("manager", "I approved the plan in the UI — go ahead.")
 
             # Wait for the run to complete.
             await asyncio.wait_for(run_task, timeout=30.0)
@@ -593,14 +637,14 @@ class TestAskUserGateE2E:
 
         event_types = [getattr(ev, "type", None) for ev in events_received]
 
-        # UserInputRequestedEvent should be on the bus.
+        # Both questions should be on the bus.
         uir_events = [e for e in events_received if isinstance(e, UserInputRequestedEvent)]
-        assert len(uir_events) >= 1, "Expected UserInputRequestedEvent on the bus"
+        assert len(uir_events) >= 2, "Expected two UserInputRequestedEvents on the bus"
         assert uir_events[0].question == "Plan: T1=Write hello.py. Any questions before I proceed?"
 
-        # No workers should have started before approval.
+        # No workers should have started before the approval was recorded.
         assert worker_started_before_approval == [], (
-            f"Workers started before user approval: {worker_started_before_approval}"
+            f"Workers started before the recorded approval: {worker_started_before_approval}"
         )
 
         # Run should complete successfully.
@@ -1186,50 +1230,72 @@ class TestSingleWriterUserMessages:
 
 
 # ---------------------------------------------------------------------------
-# Plan-approval gate: dispatch is host-rejected until the user approves the plan
+# Plan-approval gate: dispatch is host-rejected until the recorded approval
+# (plan_approval.yaml) matches the current task-plan snapshot hash
 # ---------------------------------------------------------------------------
 
 
 class TestPlanApprovalGate:
-    """The host refuses `dispatch` until the current task plan is approved.
+    """The host refuses `dispatch` until the user's recorded approval matches
+    the current plan snapshot.
 
-    A task_update (plan change) invalidates approval; a genuine user turn grants
-    it.  The gate is disabled via ``require_plan_approval=False`` for the scripted
-    orchestration tests that pre-date it.
+    Approval is an explicit user operation persisted in plan_approval.yaml
+    (run-independent); a chat reply never grants it.  A plan change needs no
+    imperative invalidation — the new plan simply stops matching the recorded
+    hash.  The gate is disabled via ``require_plan_approval=False`` for the
+    scripted orchestration tests that pre-date it.
     """
 
-    def _orch(self, *, require: bool = True, is_continuation: bool = False) -> Any:
+    def _orch(self, tmp_path: Path, *, require: bool = True) -> Any:
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
+        from yukar.models.task import Task, TasksFile
 
-        return EpicOrchestrator(
+        orch = EpicOrchestrator(
             llm_settings=LLMSettings(provider="fake"),
             git_author_name="Test",
             git_author_email="test@example.com",
-            is_continuation=is_continuation,
             require_plan_approval=require,
         )
+        # Point the orchestrator at a real workspace: the gate reads
+        # plan_approval.yaml from disk on every check.
+        orch._root = str(tmp_path / "ws")
+        orch._project_id = "proj"
+        orch._epic_id = "EP-1"
+        orch._tasks_holder = [
+            TasksFile(tasks=[Task(id="T1", title="Write hello.py", contract="hello")])
+        ]
+        return orch
 
-    async def test_fresh_run_starts_unapproved(self) -> None:
-        orch = self._orch()
-        assert orch._plan_approved is False
+    async def _record_approval_of_current_plan(self, orch: Any) -> None:
+        """Simulate the user's explicit Approve-plan operation (POST /plan/approval)."""
+        from datetime import UTC, datetime
 
-    async def test_continuation_starts_approved(self) -> None:
-        orch = self._orch(is_continuation=True)
-        assert orch._plan_approved is True
+        from yukar.models.task import PlanApproval, compute_plan_hash
+        from yukar.storage import plan_approval_repo
 
-    async def test_dispatch_rejected_when_not_approved(self) -> None:
-        orch = self._orch()
-        assert orch._plan_approved is False
+        approval = PlanApproval(
+            tasks_hash=compute_plan_hash(orch._tasks_holder[0].tasks),
+            approved_at=datetime.now(UTC),
+        )
+        await plan_approval_repo.save_plan_approval(
+            orch._root, orch._project_id, orch._epic_id, approval
+        )
+
+    async def test_dispatch_rejected_without_recorded_approval(self, tmp_path: Path) -> None:
+        orch = self._orch(tmp_path)
+        assert await orch._is_plan_approved() is False
         dispatch = orch._make_dispatch_tool()
         result = await dispatch(items=[{"task_id": "T1"}, {"task_id": "T2"}])
         assert [r["task_id"] for r in result] == ["T1", "T2"]
         assert all(r["accepted"] is False and r["status"] == "rejected" for r in result)
         assert "approved" in result[0]["reason"].lower()
+        assert "approve" in result[0]["reason"].lower()
 
-    async def test_dispatch_allowed_when_approved(self) -> None:
-        orch = self._orch()
-        orch._plan_approved = True
+    async def test_dispatch_allowed_after_approval_recorded(self, tmp_path: Path) -> None:
+        orch = self._orch(tmp_path)
+        await self._record_approval_of_current_plan(orch)
+        assert await orch._is_plan_approved() is True
 
         captured: dict[str, Any] = {}
 
@@ -1243,17 +1309,51 @@ class TestPlanApprovalGate:
         assert captured["items"] == [{"task_id": "T1"}]
         assert result[0]["accepted"] is True
 
-    async def test_task_update_invalidates_approval(self) -> None:
-        orch = self._orch()
-        orch._plan_approved = True
-        orch._invalidate_plan_approval()
-        assert orch._plan_approved is False
+    async def test_plan_change_after_approval_rejects_dispatch_again(
+        self, tmp_path: Path
+    ) -> None:
+        """task_update-style plan change → hash mismatch → gate closes again."""
+        from yukar.models.task import Task, TasksFile
 
-    async def test_gate_disabled_never_blocks(self) -> None:
-        orch = self._orch(require=False)
-        orch._plan_approved = False
-        # Invalidation is a no-op while the gate is off.
-        orch._invalidate_plan_approval()
+        orch = self._orch(tmp_path)
+        await self._record_approval_of_current_plan(orch)
+        assert await orch._is_plan_approved() is True
+
+        # The Manager changes the plan (adds a task).  No invalidation call
+        # exists any more — the snapshot hash simply no longer matches.
+        orch._tasks_holder[0] = TasksFile(
+            tasks=[
+                *orch._tasks_holder[0].tasks,
+                Task(id="T2", title="New work", contract="more"),
+            ]
+        )
+        assert await orch._is_plan_approved() is False
+
+        dispatch = orch._make_dispatch_tool()
+        result = await dispatch(items=[{"task_id": "T2"}])
+        assert result[0]["accepted"] is False
+        assert result[0]["status"] == "rejected"
+
+    async def test_status_change_does_not_strip_approval(self, tmp_path: Path) -> None:
+        """Dispatch flipping a task's status must NOT close the gate."""
+        orch = self._orch(tmp_path)
+        await self._record_approval_of_current_plan(orch)
+        orch._tasks_holder[0].tasks[0].status = "in_progress"
+        assert await orch._is_plan_approved() is True
+
+    async def test_approval_is_run_independent(self, tmp_path: Path) -> None:
+        """A fresh orchestrator instance (new run) sees the approval on disk —
+        this replaces the old continuation work_started heuristic."""
+        orch1 = self._orch(tmp_path)
+        await self._record_approval_of_current_plan(orch1)
+
+        orch2 = self._orch(tmp_path)  # same workspace, fresh instance
+        assert await orch2._is_plan_approved() is True
+
+    async def test_gate_disabled_never_blocks(self, tmp_path: Path) -> None:
+        orch = self._orch(tmp_path, require=False)
+        # No approval file exists, and none is needed.
+        assert await orch._is_plan_approved() is True
 
         async def fake_run_dispatch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [{"task_id": "T1", "accepted": True, "status": "done"}]

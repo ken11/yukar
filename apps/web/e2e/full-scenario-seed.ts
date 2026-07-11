@@ -10,11 +10,21 @@
  *   1. User requests an Epic → run starts.
  *   2. Manager plans (task_update) and asks the user to confirm (ask_user) →
  *      run parks at awaiting_input.  [Manager script turns 0]
- *   3. User asks for a revision → Manager re-plans and re-asks.  [turn 1]
- *   4. User approves → Manager dispatches the Worker (the approval gate lets it
- *      through only now), the Evaluator accepts, the Manager self-checks the
- *      branch diff, then completes → run/state becomes completed (the epic
- *      stays open — only the user flips its status).  [turn 2]
+ *   3. User asks for a revision (a plain chat reply — it does NOT approve) →
+ *      Manager re-plans and re-asks.  [turn 1]
+ *   4. User approves via the EXPLICIT approve-plan operation (approve-plan-btn
+ *      → POST /plan/approval, snapshot-hash bound, P2) which also auto-posts
+ *      the "plan approved" message that wakes the agent → Manager dispatches
+ *      the Worker (the approval gate lets it through only now), the Evaluator
+ *      accepts, the Manager self-checks the branch diff, then completes →
+ *      run/state becomes completed (the epic stays open — only the user flips
+ *      its status).  [turn 2]
+ *
+ * Continuation nuance: the continuation session replays this script from the
+ * top, and its turn-1 re-plan reproduces a plan snapshot IDENTICAL to the one
+ * approved in the first session — the recorded approval hash still matches, so
+ * no re-approval is needed and a plain reply wakes the agent into the gated
+ * dispatch (the spec asserts this snapshot-identity property explicitly).
  *
  * The Manager script is a FLAT list; the FakeModel cursor advances across turns.
  * A `text` turn ends the Strands loop, so the orchestrator's turn-loop observes

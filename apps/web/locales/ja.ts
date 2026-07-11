@@ -178,6 +178,14 @@ const ja = {
     effortTooltip:
       "Manager(Opus) の推論の深さ。thinking は adaptive 固定。変更は次の Run から反映。",
     effortUpdateFailed: "effort の更新に失敗しました",
+    approvePlan: "プランを承認",
+    approvingPlan: "承認中…",
+    planUnapprovedNote:
+      "現在のプランは未承認です。承認すると作業の実行（dispatch）が可能になります",
+    planApprovedMessage: "プランを承認しました。進めてください。",
+    planStaleNotice: "プランが更新されています。最新のプランを確認してから承認してください。",
+    planApproveFailed: "プランの承認に失敗しました",
+    sendMessageFailed: "メッセージの送信に失敗しました",
   },
   overview: {
     activeWork: "オープン / 最新の作業",
@@ -255,6 +263,8 @@ const ja = {
       todo: "未着手",
     },
     noTasks: "まだタスクがありません。",
+    planApproved: "プラン承認済み",
+    planNotApproved: "プラン未承認",
   },
   projectDocs: {
     emptyMessage: "このプロジェクトにはドキュメントがありません。",
