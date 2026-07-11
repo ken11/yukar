@@ -24,15 +24,15 @@ export function handleLifecycle(
     // For a new run, the INIT from threads.yaml has not yet arrived and the Manager node does not exist,
     // so if not created here, subsequent MANAGER_TURN_STARTED / TOKEN would become no-ops
     // (`if (!tree.manager) return state`) and the tree would remain empty.
-    // The Manager's thread_id is variable with multi-trial support. Use state.managerThreadId
-    // (REST-restored from RunState.manager_thread) when confirmed; otherwise inherit the existing node's threadId.
+    // The Manager's thread_id is variable with multi-trial support. Use state.activeTrialId
+    // (REST-restored from epic.active_thread_id) when confirmed; otherwise inherit the existing node's threadId.
     // If an existing node is present, preserve status/streaming and update only threadId to the active trial's real id.
     case "RUN_STARTED": {
       const tree = state.treeState;
-      // Real id of the active trial: use managerThreadId if confirmed by REST.
+      // Real id of the active trial: use activeTrialId if confirmed by REST.
       // If unconfirmed (null) but an existing node is present, inherit the existing threadId.
-      // If neither is available, use the temporary placeholder "manager"; it will be overwritten by a subsequent SET_MANAGER_THREAD_ID.
-      const resolvedThreadId = state.managerThreadId ?? tree.manager?.threadId ?? "manager";
+      // If neither is available, use the temporary placeholder "manager"; it will be overwritten by a subsequent SET_ACTIVE_TRIAL_ID.
+      const resolvedThreadId = state.activeTrialId ?? tree.manager?.threadId ?? "manager";
       const manager: ManagerNodeState = tree.manager
         ? { ...tree.manager, threadId: resolvedThreadId }
         : {
@@ -110,10 +110,19 @@ export function handleLifecycle(
       if (state.runStatus === "completed" || state.runStatus === "error") {
         return state;
       }
+      // The marker's threadId is the run's OWN conversation (SSE event.thread_id
+      // is exact — a reviewer run parks on the reviewer thread). Also track it
+      // as currentRun: keep the known role when the thread matches, otherwise
+      // the role is unknown until the REST refresh (SET_CURRENT_RUN) lands.
+      const currentRun = {
+        threadId: action.threadId,
+        role: state.currentRun?.threadId === action.threadId ? state.currentRun.role : null,
+      };
       return {
         ...state,
         runStatus: "waiting",
         awaitingInput: { threadId: action.threadId },
+        currentRun,
       };
     }
 

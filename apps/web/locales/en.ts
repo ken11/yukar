@@ -154,6 +154,7 @@ const en = {
     readonlyManagerHint: "Manager thread",
     readonlyManagerSuffix: "to send a message.",
     awaitingBanner: "Your turn — reply and the agent continues",
+    awaitingBannerReviewer: "The Reviewer has reported — reply to continue",
     runFailedTitle: "Run failed",
     running: "Running",
     waiting: "Waiting for response…",
@@ -524,6 +525,7 @@ const en = {
   epicShell: {
     runFailed: "▲ Run failed",
     awaitingInput: "Your turn — reply and the agent continues",
+    awaitingInputReviewer: "The Reviewer has reported — open the conversation to review it",
   },
   usage: {
     heading: "Usage",

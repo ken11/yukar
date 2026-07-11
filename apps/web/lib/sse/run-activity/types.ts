@@ -97,6 +97,18 @@ export interface ThreadLiveState {
   isRunning: boolean;
 }
 
+/**
+ * The conversation run currently riding on this epic (P4 attribution split).
+ * `threadId` is the conversation the run is bound to (SSE event.thread_id /
+ * REST RunState.manager_thread) and `role` says WHICH conversation agent it is
+ * (REST RunState.role). `role: null` = not yet known (an SSE your-turn signal
+ * arrived for a new thread before the REST refresh) — render neutral wording.
+ */
+export interface CurrentRun {
+  threadId: string;
+  role: "manager" | "reviewer" | null;
+}
+
 export interface RunActivityState {
   /** Overall run status */
   runStatus: RunActivityStatus;
@@ -109,6 +121,8 @@ export interface RunActivityState {
    * (your turn) on this thread. null = no parked conversation (never ran, or
    * a turn is executing). The question itself is NOT carried here — it is the
    * agent's final message in the thread (ask_user was removed in P3).
+   * The threadId is the run's OWN conversation (a reviewer run parks on the
+   * reviewer thread) — never the active trial fallback (P4 attribution fix).
    */
   awaitingInput: { threadId: string } | null;
   /** Agent tree */
@@ -116,9 +130,18 @@ export interface RunActivityState {
   /** Live buffers per thread. key=threadId */
   liveBuffers: Record<string, ThreadLiveState>;
   /**
-   * thread_id of the active manager thread.
-   * Set when restored from REST via RunState.manager_thread.
-   * null = not yet confirmed (operates with "manager" fallback).
+   * thread_id of the ACTIVE MANAGER TRIAL — composer rights, tree scoping and
+   * topbar/controls links. Sourced from epic.active_thread_id only (P4 split:
+   * RunState.manager_thread is no longer a fallback here — during a reviewer
+   * run it points at the reviewer thread and would misattribute the trial).
+   * null = not yet confirmed (consumers fall back to "manager").
    */
-  managerThreadId: string | null;
+  activeTrialId: string | null;
+  /**
+   * The conversation run this epic's state.yaml / SSE events refer to —
+   * "your turn" banner attribution and role wording. Independent from
+   * activeTrialId: a reviewer run rides the reviewer thread while the active
+   * trial keeps the composer. null = no run known yet.
+   */
+  currentRun: CurrentRun | null;
 }

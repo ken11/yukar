@@ -178,8 +178,8 @@ function ThreadRow({
       // If the currently viewed thread was just archived, navigate away immediately to
       // prevent a flash where the stale prop incorrectly sets isActiveTrial=true and shows the composer.
       if (thread.id === currentThreadId) {
-        // Destination: managerThreadId (≠ self) → first non-archived manager → otherwise router.refresh only
-        const mgrId = activityState.managerThreadId;
+        // Destination: activeTrialId (≠ self) → first non-archived manager → otherwise router.refresh only
+        const mgrId = activityState.activeTrialId;
         const destination =
           mgrId && mgrId !== thread.id
             ? mgrId

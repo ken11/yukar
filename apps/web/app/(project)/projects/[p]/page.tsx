@@ -3,9 +3,9 @@ import { NewEpicModal } from "@/components/features/epics/new-epic-modal";
 import { Icon } from "@/components/icon";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
-import type { DiffSummary, Epic, TasksFile } from "@/lib/api/endpoints";
+import type { DiffSummary, EpicWithRunSummary, TasksFile } from "@/lib/api/endpoints";
 import { getGitDiffSummary, getProject, getTasks, listEpics } from "@/lib/api/endpoints";
-import { isTerminalStatus } from "@/lib/epic-utils";
+import { hasYourTurn, isTerminalStatus } from "@/lib/epic-utils";
 import { type Dict, getDictionary } from "@/lib/i18n/dictionary";
 import { getLocale } from "@/lib/i18n/locale";
 
@@ -16,13 +16,13 @@ export default async function ProjectPage({ params }: { params: Promise<{ p: str
     getProject(p).catch(() => null),
     // include_completed=true — the overview also surfaces recently completed
     // epics (the "Recent" section); the open/completed split is done here.
-    listEpics(p, true).catch(() => [] as Epic[]),
+    listEpics(p, true).catch(() => [] as EpicWithRunSummary[]),
     getLocale(),
   ]);
 
   const t = getDictionary(locale);
 
-  const byUpdatedDesc = (a: Epic, b: Epic) =>
+  const byUpdatedDesc = (a: EpicWithRunSummary, b: EpicWithRunSummary) =>
     (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
 
   // The epic status is a single user-owned bit: open ⇄ completed.
@@ -236,7 +236,7 @@ function FeaturedEpicBlock({
   diffRemoved,
   dict,
 }: {
-  epic: Epic;
+  epic: EpicWithRunSummary;
   projectId: string;
   isRunning: boolean;
   openLabel: string;
@@ -294,6 +294,13 @@ function FeaturedEpicBlock({
 
       {/* status + CTA */}
       <div className="mt-8 flex items-center gap-4">
+        {/* your turn (P4): the conversation run parked in "waiting" — from
+            run_summary embedded in the epic list (static RSC render) */}
+        {hasYourTurn(epic) && (
+          <span data-testid={`your-turn-${epic.id}`} className="contents">
+            <StatusBadge status="awaiting" />
+          </span>
+        )}
         <StatusBadge status={isRunning ? "running" : epic.status} />
         <Link
           href={href}
@@ -395,7 +402,7 @@ function EpicStructureRow({
   openLabel,
   openAriaTemplate,
 }: {
-  epic: Epic;
+  epic: EpicWithRunSummary;
   projectId: string;
   openLabel: string;
   openAriaTemplate: string;
@@ -421,7 +428,12 @@ function EpicStructureRow({
         {epic.title}
       </span>
 
-      {/* StatusBadge */}
+      {/* your turn (P4) + StatusBadge */}
+      {hasYourTurn(epic) && (
+        <span data-testid={`your-turn-${epic.id}`} className="contents">
+          <StatusBadge status="awaiting" />
+        </span>
+      )}
       <StatusBadge status={epic.status} />
 
       {/* open link — icon only on mobile */}

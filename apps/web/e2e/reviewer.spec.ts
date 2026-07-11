@@ -8,12 +8,20 @@
  *      run parks in "waiting" — a conversation never completes)
  *   2. "Ask Reviewer" works while the manager run is parked in waiting (the
  *      parked run is shelved, not a 409) → creates a reviewer thread
- *      (role=reviewer) and navigates to it; the composer is shown (repliable)
+ *      (role=reviewer) and navigates to it; the composer is shown (repliable).
+ *      P4 live attribution (same SPA session, no reload): the report streams
+ *      into the REVIEWER thread, the your-turn banner appears there with
+ *      Reviewer wording, and an SPA transition to the Trial thread shows NO
+ *      misattributed banner (the pre-P4 bug).
  *   3. The reviewer runs read-only: it inspects read_branch_diff, reports in
  *      plain BODY TEXT and parks at "waiting", WITHOUT changing epic.status or
- *      epic.active_thread_id (the manager trial stays the active trial)
+ *      epic.active_thread_id (the manager trial stays the active trial).
+ *      REST-restore attribution: a fresh load of the reviewer thread shows the
+ *      Reviewer-worded banner (RunState.role).
  *   4. The reviewer thread is listed in the sidebar; the manager thread keeps
  *      its composer (a reviewer run must not hijack the active-trial pointer)
+ *      and shows NO your-turn banner on a fresh load (reload misattribution
+ *      regression guard)
  *   5. The user can reply to the reviewer (post_message routes in reviewer mode)
  *   6. A reviewer parked in waiting does NOT block manager operations
  *      (new-trial creation succeeds — shelving semantics)
@@ -24,6 +32,13 @@ import { SEED } from "./seed";
 import { getRunState, waitForWorkDone } from "./wait-helpers";
 
 const SHOTS = "playwright-report";
+
+// Your-turn banner wordings (ja locale — same approach as ask-user.spec).
+// Thread-level (thread-chat-inner) and epic-level (epic-shell) neutral texts
+// are identical strings; the Reviewer variants differ per surface.
+const NEUTRAL_TURN_BANNER = "あなたの番です — 返信するとエージェントが続けます";
+const REVIEWER_TURN_BANNER = "Reviewer の報告があります — 返信すると続けます";
+const REVIEWER_SHELL_BANNER = "Reviewer の報告があります — 会話を開いて確認してください";
 
 test.describe
   .serial("reviewer fake smoke", () => {
@@ -103,6 +118,55 @@ test.describe
         page.getByTestId("thread-composer"),
         "Reviewer thread shows a reply composer",
       ).toBeVisible({ timeout: 20_000 });
+
+      // ---- P4 live attribution (same SPA session — NO reload from here) ----
+
+      // The reviewer's report streams into ITS OWN thread live (SSE events
+      // carry the reviewer thread_id; pre-P4 this required a fresh load).
+      await expect(
+        page.getByText("Reviewed the branch").first(),
+        "Reviewer report streams live into the reviewer thread (no reload)",
+      ).toBeVisible({ timeout: 60_000 });
+
+      // The turn end parks the run in "waiting" → the your-turn banner appears
+      // on the REVIEWER thread and names the Reviewer (RunState.role via the
+      // REST role refresh triggered by the your-turn signal).
+      await expect(
+        page.getByText(REVIEWER_TURN_BANNER),
+        "Thread-level banner names the Reviewer",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByText(REVIEWER_SHELL_BANNER),
+        "Epic-level banner names the Reviewer",
+      ).toBeVisible({ timeout: 15_000 });
+
+      // SPA transition to the Trial thread (sidebar link — still no reload):
+      // the banner must NOT follow. The parked marker belongs to the reviewer
+      // conversation; showing it on the Trial thread was the pre-P4
+      // misattribution bug (managerThreadId doubling as run attribution).
+      const threadsNav = page.locator('nav[aria-label="Threads"]');
+      await expect(threadsNav).toBeVisible({ timeout: 10_000 });
+      // .first(): the sidebar has two links to the trial (the thread row and
+      // the agent-state tree row) — either performs the same SPA navigation.
+      await threadsNav.locator(`a[href$="/threads/${state.managerThreadId}"]`).first().click();
+      await page.waitForURL(new RegExp(`/threads/${state.managerThreadId}`), {
+        timeout: 15_000,
+      });
+      await expect(
+        page.getByTestId("thread-composer"),
+        "Trial thread keeps its composer during the parked reviewer run",
+      ).toBeVisible({ timeout: 20_000 });
+      await expect(
+        page.getByText(NEUTRAL_TURN_BANNER),
+        "No neutral your-turn banner is misattributed to the Trial thread",
+      ).toHaveCount(0);
+      await expect(
+        page.getByText(REVIEWER_TURN_BANNER),
+        "No reviewer reply banner on the Trial thread",
+      ).toHaveCount(0);
+      // The epic-level notification stays visible — it points at the reviewer
+      // conversation (correct attribution, not suppression).
+      await expect(page.getByText(REVIEWER_SHELL_BANNER)).toBeVisible();
     });
 
     test("Reviewer runs read-only: reports in body text, parks in waiting, epic untouched", async ({
@@ -153,7 +217,10 @@ test.describe
         "The reviewer's verdict is persisted as a plain assistant message",
       ).toContain("Reviewed the branch");
 
-      // The report body is visible in the conversation UI.
+      // The report body is visible in the conversation UI on a FRESH load —
+      // this exercises the REST-restore path (thread history + GET /run/state
+      // with manager_thread + role), as opposed to the live SSE path already
+      // asserted in the previous test.
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.reviewerId}`,
       );
@@ -161,6 +228,17 @@ test.describe
         page.getByTestId("agent-message").filter({ hasText: "Reviewed the branch" }).first(),
         "The reviewer's report text renders as an agent bubble",
       ).toBeVisible({ timeout: 20_000 });
+
+      // REST-restore attribution (P4): the reloaded reviewer thread shows the
+      // your-turn banner with Reviewer wording (RunState.role — no SSE replay).
+      await expect(
+        page.getByText(REVIEWER_TURN_BANNER),
+        "Fresh load restores the Reviewer-worded banner from REST",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByText(REVIEWER_SHELL_BANNER),
+        "Fresh load restores the epic-level Reviewer banner from REST",
+      ).toBeVisible({ timeout: 15_000 });
 
       await page.screenshot({ path: `${SHOTS}/reviewer-awaiting.png`, fullPage: true });
     });
@@ -189,6 +267,24 @@ test.describe
         page.getByTestId("thread-composer"),
         "Manager thread keeps its composer after a reviewer run",
       ).toBeVisible({ timeout: 20_000 });
+
+      // Reload-misattribution regression guard (the original P4 bug): a fresh
+      // load of the TRIAL thread while the reviewer run is parked must NOT
+      // show a your-turn banner on the trial — the parked marker belongs to
+      // the reviewer conversation (REST restore uses RunState.manager_thread,
+      // never the active-trial fallback).
+      await expect(
+        page.getByText(REVIEWER_SHELL_BANNER),
+        "Epic-level banner still names the Reviewer on the trial page",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByText(NEUTRAL_TURN_BANNER),
+        "No neutral your-turn banner on a fresh load of the Trial thread",
+      ).toHaveCount(0);
+      await expect(
+        page.getByText(REVIEWER_TURN_BANNER),
+        "No reviewer reply banner on a fresh load of the Trial thread",
+      ).toHaveCount(0);
     });
 
     test("User can reply to the reviewer (reviewer-mode routing)", async ({ page }) => {

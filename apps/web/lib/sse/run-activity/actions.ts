@@ -57,5 +57,10 @@ export type RunActivityAction =
   | { type: "CLEAR_LIVE_BUFFER"; threadId: string }
   // Immediate visibility of injected utterances (PR-C)
   | { type: "USER_MESSAGE_COMMITTED"; event: UserMessageCommittedEvent }
-  // Sets the active manager thread id (from RunState.manager_thread)
-  | { type: "SET_MANAGER_THREAD_ID"; threadId: string | null };
+  // Sets the active manager trial id (from epic.active_thread_id) — composer
+  // rights + tree scoping + links. P4 split: never sourced from
+  // RunState.manager_thread (that is the run's own thread, see SET_CURRENT_RUN).
+  | { type: "SET_ACTIVE_TRIAL_ID"; threadId: string | null }
+  // Sets the conversation run the epic's state refers to (REST RunState
+  // manager_thread + role) — "your turn" attribution and role wording.
+  | { type: "SET_CURRENT_RUN"; threadId: string; role: "manager" | "reviewer" | null };

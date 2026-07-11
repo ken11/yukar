@@ -30,6 +30,12 @@ import { getRunState, waitForRunWaiting, waitForWorkDone } from "./wait-helpers"
 
 const SHOTS = "playwright-report/full-scenario";
 
+// Your-turn banner wordings (ja locale). The neutral thread/epic texts are the
+// same string; the Reviewer variants (P4 role attribution) differ per surface.
+const NEUTRAL_TURN_BANNER = "あなたの番です — 返信するとエージェントが続けます";
+const REVIEWER_TURN_BANNER = "Reviewer の報告があります — 返信すると続けます";
+const REVIEWER_SHELL_BANNER = "Reviewer の報告があります — 会話を開いて確認してください";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -335,11 +341,14 @@ test.describe
       await page.waitForURL(new RegExp(`/threads/${s.reviewerId}`), { timeout: 15_000 });
 
       // The Reviewer reports to the user in body text → its turn end parks the
-      // run in "waiting", with the reviewer thread driving the run. Gate on
-      // the REST run state first: the SPA mount can fetch the thread before
-      // the (index-refresh-delayed) reviewer run writes its first message, and
-      // live SSE attribution of a reviewer run is the known P4 work — so
-      // assert the rendered report on a fresh load below, like reviewer.spec.
+      // run in "waiting", with the reviewer thread driving the run.
+      // P4 root-fixed the live attribution (activeTrialId vs currentRun), so
+      // the SPA session we arrived on shows the report streaming in live —
+      // NO reload (this assertion was downgraded to a fresh load under P3).
+      await expect(
+        page.getByText(Q_REVIEW),
+        "Reviewer report streams live into the reviewer thread (no reload)",
+      ).toBeVisible({ timeout: 60_000 });
       await expect
         .poll(
           async () => {
@@ -349,8 +358,17 @@ test.describe
           { timeout: 60_000, intervals: [500, 1000] },
         )
         .toBe(`waiting:${s.reviewerId}`);
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await expect(page.getByText(Q_REVIEW)).toBeVisible({ timeout: 60_000 });
+
+      // The your-turn banner appears on the reviewer thread and names the
+      // Reviewer (RunState.role), both at thread level and epic level.
+      await expect(
+        page.getByText(REVIEWER_TURN_BANNER),
+        "Thread-level banner names the Reviewer",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByText(REVIEWER_SHELL_BANNER),
+        "Epic-level banner names the Reviewer",
+      ).toBeVisible({ timeout: 15_000 });
 
       // It read the branch first-hand: fs_read on the manager trial's worktree
       // returned hello.py ("greet"), and it did NOT touch the epic lifecycle.
@@ -386,6 +404,23 @@ test.describe
         page.getByTestId("thread-composer"),
         "Manager thread stays writable for a fix instruction",
       ).toBeVisible({ timeout: 20_000 });
+
+      // Reload-misattribution regression guard (P4): the reviewer run is
+      // parked in waiting, so a fresh load of the TRIAL thread must attribute
+      // "your turn" to the reviewer conversation (epic-level Reviewer wording)
+      // and show NO banner on the trial thread itself.
+      await expect(
+        page.getByText(REVIEWER_SHELL_BANNER),
+        "Epic-level banner names the Reviewer on the trial page",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByText(NEUTRAL_TURN_BANNER),
+        "No neutral your-turn banner misattributed to the Trial thread",
+      ).toHaveCount(0);
+      await expect(
+        page.getByText(REVIEWER_TURN_BANNER),
+        "No reviewer reply banner on the Trial thread",
+      ).toHaveCount(0);
 
       // Path "no issue": the user merges.
       await mergeEpic(page, s.projectId, s.epicId);

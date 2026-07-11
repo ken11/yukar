@@ -246,9 +246,13 @@ async def project_events_sse(
 ) -> StreamingResponse:
     """SSE stream of lifecycle events for all epics in a project.
 
-    Delivers only lifecycle events (run_started, run_completed, run_failed,
-    run_paused, run_resumed).  High-frequency events (token, tool_call, etc.)
-    are excluded — this stream is intended for notification purposes.
+    Delivers only lifecycle events: run_started / run_completed / run_failed /
+    run_stopped / run_paused / run_resumed, the "your turn" signals
+    user_input_requested / user_input_resolved (a conversation run parked in
+    ``waiting`` / left it — used for live board badges), epic_status_changed,
+    epic_merged and merge-progress events.  High-frequency events (token,
+    tool_call, etc.) are excluded — this stream is intended for notification
+    purposes.
 
     Each event payload already includes ``project_id`` and ``epic_id`` from
     ``BaseEvent``, so clients can identify which epic each notification

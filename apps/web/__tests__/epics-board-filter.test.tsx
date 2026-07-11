@@ -8,12 +8,13 @@
  * - multi-select checkbox only shows for mergeable epics (open + branch + not merged)
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EpicsBoardClient } from "@/components/features/epics/epics-board-client";
-import type { Epic } from "@/lib/api/endpoints";
+import type { EpicWithRunSummary } from "@/lib/api/endpoints";
 import { I18nProvider } from "@/lib/i18n/provider";
+import { ProjectEventStreamProvider } from "@/lib/sse/project-event-stream-context";
 import ja from "@/locales/ja";
 
 // Mock Next.js router (required by NewEpicModal)
@@ -36,11 +37,47 @@ vi.mock("@/lib/api/endpoints", async (importOriginal) => {
   };
 });
 
+// Minimal EventSource mock so ProjectEventStreamProvider (the board's SSE
+// source for live your-turn badges) can mount, and tests can emit events.
+class MockEventSource {
+  url: string;
+  onerror: ((ev: Event) => void) | null = null;
+  private listeners: Map<string, EventListener[]> = new Map();
+  static instances: MockEventSource[] = [];
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, handler: EventListener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type)?.push(handler);
+  }
+
+  removeEventListener() {}
+  close() {}
+
+  emit(type: string, data: string) {
+    const ev = { type, data } as MessageEvent;
+    for (const h of this.listeners.get(type) ?? []) h(ev);
+  }
+}
+
+beforeEach(() => {
+  MockEventSource.instances = [];
+  vi.stubGlobal("EventSource", MockEventSource);
+});
+
 const makeEpic = (
   id: string,
-  status: Epic["status"],
-  opts: { branch?: string; mergedAt?: string } = {},
-): Epic => ({
+  status: EpicWithRunSummary["status"],
+  opts: {
+    branch?: string;
+    mergedAt?: string;
+    runSummary?: EpicWithRunSummary["run_summary"];
+  } = {},
+): EpicWithRunSummary => ({
   id,
   slug: id.toLowerCase(),
   title: `Epic ${id}`,
@@ -50,9 +87,10 @@ const makeEpic = (
   branch: opts.branch ?? "",
   merged_at: opts.mergedAt ?? null,
   manager_effort: "high",
+  run_summary: opts.runSummary ?? null,
 });
 
-const initialEpics: Epic[] = [
+const initialEpics: EpicWithRunSummary[] = [
   // open, with branch → mergeable
   makeEpic("EP-1", "open", { branch: "branch-ep1" }),
   // open, no branch → not mergeable
@@ -67,12 +105,14 @@ const initialEpics: Epic[] = [
   makeEpic("EP-6", "open", { branch: "branch-ep6" }),
 ];
 
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function wrapper(qc?: QueryClient) {
+  const client = qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <I18nProvider dict={ja} locale="ja">
-        <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+        <QueryClientProvider client={client}>
+          <ProjectEventStreamProvider projectId="proj1">{children}</ProjectEventStreamProvider>
+        </QueryClientProvider>
       </I18nProvider>
     );
   };
@@ -205,5 +245,153 @@ describe("EpicsBoardClient filters (1-bit lifecycle)", () => {
     // Both selected — toolbar shows 2 selected
     const toolbar = screen.getByTestId("merge-toolbar");
     expect(toolbar).toHaveTextContent("2 selected");
+  });
+});
+
+// ============================================================
+// P4: "your turn" badge on the board — run_summary + live SSE update
+// ============================================================
+
+describe("EpicsBoardClient your-turn badge (P4)", () => {
+  it("shows the badge when run_summary is waiting with a real run_id", () => {
+    const epics = [
+      makeEpic("EP-10", "open", {
+        runSummary: {
+          status: "waiting",
+          run_id: "run-1",
+          thread_id: "trial-1",
+          role: "manager",
+        },
+      }),
+    ];
+    render(<EpicsBoardClient projectId="proj1" initialEpics={epics} />, { wrapper: wrapper() });
+    expect(screen.getByTestId("your-turn-EP-10")).toBeInTheDocument();
+  });
+
+  it("no badge for a never-run epic (run_summary null) or a synthesised empty run_id", () => {
+    const epics = [
+      makeEpic("EP-11", "open"),
+      makeEpic("EP-12", "open", {
+        runSummary: { status: "waiting", run_id: "", thread_id: null, role: "manager" },
+      }),
+    ];
+    render(<EpicsBoardClient projectId="proj1" initialEpics={epics} />, { wrapper: wrapper() });
+    expect(screen.queryByTestId("your-turn-EP-11")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("your-turn-EP-12")).not.toBeInTheDocument();
+  });
+
+  it("no badge on a completed epic — locked history is not an inbox item", () => {
+    // After P3 every conversation run settles in waiting, so without the
+    // open-status condition every epic that ever ran would keep the badge
+    // forever after being completed.
+    const epics = [
+      makeEpic("EP-15", "completed", {
+        runSummary: {
+          status: "waiting",
+          run_id: "run-1",
+          thread_id: "trial-1",
+          role: "manager",
+        },
+      }),
+    ];
+    render(<EpicsBoardClient projectId="proj1" initialEpics={epics} />, { wrapper: wrapper() });
+    expect(screen.queryByTestId("your-turn-EP-15")).not.toBeInTheDocument();
+  });
+
+  it("no badge while the run is executing (run_summary running)", () => {
+    const epics = [
+      makeEpic("EP-13", "open", {
+        runSummary: {
+          status: "running",
+          run_id: "run-1",
+          thread_id: "trial-1",
+          role: "manager",
+        },
+      }),
+    ];
+    render(<EpicsBoardClient projectId="proj1" initialEpics={epics} />, { wrapper: wrapper() });
+    expect(screen.queryByTestId("your-turn-EP-13")).not.toBeInTheDocument();
+  });
+
+  it("project SSE user_input_requested adds the badge live; user_input_resolved removes it", async () => {
+    const epics = [
+      makeEpic("EP-14", "open", {
+        runSummary: {
+          status: "running",
+          run_id: "run-1",
+          thread_id: "trial-1",
+          role: "manager",
+        },
+      }),
+    ];
+    render(<EpicsBoardClient projectId="proj1" initialEpics={epics} />, { wrapper: wrapper() });
+    expect(screen.queryByTestId("your-turn-EP-14")).not.toBeInTheDocument();
+
+    const es = MockEventSource.instances.find((i) => i.url.endsWith("/events"));
+    expect(es).toBeTruthy();
+
+    // The run parked → the board badge appears without a refetch.
+    await act(async () => {
+      es?.emit(
+        "user_input_requested",
+        JSON.stringify({
+          type: "user_input_requested",
+          project_id: "proj1",
+          epic_id: "EP-14",
+          run_id: "run-1",
+          thread_id: "trial-1",
+          question: "",
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(screen.getByTestId("your-turn-EP-14")).toBeInTheDocument();
+
+    // The user's reply woke the run → the badge disappears.
+    await act(async () => {
+      es?.emit(
+        "user_input_resolved",
+        JSON.stringify({
+          type: "user_input_resolved",
+          project_id: "proj1",
+          epic_id: "EP-14",
+          run_id: "run-1",
+          thread_id: "trial-1",
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(screen.queryByTestId("your-turn-EP-14")).not.toBeInTheDocument();
+  });
+
+  it("a your-turn signal for a different epic does not touch other rows", async () => {
+    const epics = [
+      makeEpic("EP-15", "open", {
+        runSummary: {
+          status: "running",
+          run_id: "run-1",
+          thread_id: "trial-1",
+          role: "manager",
+        },
+      }),
+    ];
+    render(<EpicsBoardClient projectId="proj1" initialEpics={epics} />, { wrapper: wrapper() });
+
+    const es = MockEventSource.instances.find((i) => i.url.endsWith("/events"));
+    await act(async () => {
+      es?.emit(
+        "user_input_requested",
+        JSON.stringify({
+          type: "user_input_requested",
+          project_id: "proj1",
+          epic_id: "EP-99",
+          run_id: "run-9",
+          thread_id: "trial-9",
+          question: "",
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(screen.queryByTestId("your-turn-EP-15")).not.toBeInTheDocument();
   });
 });

@@ -166,21 +166,21 @@ describe("M4: createThread — body changes depending on title", () => {
 // Verifies computeIsActiveTrial in lib/thread-utils.ts.
 // thread-page-client.tsx imports this function, so there is no duplication with tests.
 //
-// The only path to display the composer is activityState.managerThreadId
+// The only path to display the composer is activityState.activeTrialId
 //   (activeThreadId → SET_MANAGER_THREAD_ID).
 // Excluding archived from applyTreeInit / INIT is a fix for tree display nodes
 //   and is unrelated to the composer.
 // useRunActivity's initialThreads is an RSC initial prop, not a live subscription.
 //
 // Cases:
-//   1. Viewing thread matches managerThreadId + not archived → show composer (true)
-//   2. Even a completed (resolved) thread matches managerThreadId → show composer (true)
-//   3. Manager thread that does not match managerThreadId (old trial) → read-only (false)
+//   1. Viewing thread matches activeTrialId + not archived → show composer (true)
+//   2. Even a completed (resolved) thread matches activeTrialId → show composer (true)
+//   3. Manager thread that does not match activeTrialId (old trial) → read-only (false)
 //   4. Archived thread → read-only (false)
 // ============================================================
 
 describe("M5: isActiveTrial — composer gate derivation logic", () => {
-  it("active trial: threadId matches managerThreadId + not archived → true (composer shown)", () => {
+  it("active trial: threadId matches activeTrialId + not archived → true (composer shown)", () => {
     expect(computeIsActiveTrial("th-active", "th-active", false)).toBe(true);
   });
 
@@ -189,7 +189,7 @@ describe("M5: isActiveTrial — composer gate derivation logic", () => {
     expect(computeIsActiveTrial("th-resolved", "th-resolved", false)).toBe(true);
   });
 
-  it("old trial: manager thread where threadId does not match managerThreadId → false (read-only)", () => {
+  it("old trial: manager thread where threadId does not match activeTrialId → false (read-only)", () => {
     expect(computeIsActiveTrial("th-old-trial", "th-new-trial", false)).toBe(false);
   });
 
@@ -197,7 +197,7 @@ describe("M5: isActiveTrial — composer gate derivation logic", () => {
     expect(computeIsActiveTrial("th-archived", "th-archived", true)).toBe(false);
   });
 
-  it("→ true when matching the managerThreadId fallback 'manager'", () => {
+  it("→ true when matching the activeTrialId fallback 'manager'", () => {
     expect(computeIsActiveTrial("manager", "manager", false)).toBe(true);
   });
 });

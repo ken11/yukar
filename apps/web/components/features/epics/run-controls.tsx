@@ -153,8 +153,8 @@ export function RunControlsBar({
     </>
   );
 
-  // Navigation target for the active manager thread; use managerThreadId when it is known.
-  const managerThreadId = activityState.managerThreadId ?? "manager";
+  // Navigation target for the active manager trial; use activeTrialId when it is known.
+  const managerThreadId = activityState.activeTrialId ?? "manager";
 
   const runMutation = useMutation({
     mutationFn: () => startRun(projectId, epicId),

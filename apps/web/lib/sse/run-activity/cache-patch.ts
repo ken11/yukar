@@ -206,7 +206,26 @@ export function applyRunCachePatch(
       // narrowing: event is UserInputRequestedEvent — the run parked in
       // "waiting". pending_question no longer exists (the question is the
       // agent's final thread message).
-      patchRunStatus(qc, projectId, epicId, "waiting");
+      //
+      // Patch the run IDENTITY fields too, not just the status: the runState
+      // cache is otherwise "mount-time snapshot + status patches", so
+      // run_id / manager_thread freeze at mount and a later re-dispatch from
+      // this cache (dispatchForRunStatus on epic/trial change) would attribute
+      // the parked marker to a long-gone run — reviving the pre-P4
+      // misattribution. role is unknown here; the coalesced parked-thread
+      // sync (use-run-activity) refreshes it from REST, and the parked
+      // thread's messages are merged there as well (no invalidation — see
+      // use-thread-messages' no-invalidate contract).
+      qc.setQueryData<RunState>(queryKeys.runState.get(projectId, epicId), (prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "waiting",
+              run_id: event.run_id ?? prev.run_id,
+              manager_thread: event.thread_id || prev.manager_thread,
+            }
+          : prev,
+      );
       break;
     case "user_input_resolved":
       // narrowing: event is UserInputResolvedEvent

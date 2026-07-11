@@ -147,6 +147,7 @@ const ja = {
     readonlyManagerHint: "Manager スレッド",
     readonlyManagerSuffix: "を使用してください。",
     awaitingBanner: "あなたの番です — 返信するとエージェントが続けます",
+    awaitingBannerReviewer: "Reviewer の報告があります — 返信すると続けます",
     runFailedTitle: "実行が失敗しました",
     running: "実行中",
     waiting: "応答待ち…",
@@ -513,6 +514,7 @@ const ja = {
   epicShell: {
     runFailed: "▲ 実行が失敗しました",
     awaitingInput: "あなたの番です — 返信するとエージェントが続けます",
+    awaitingInputReviewer: "Reviewer の報告があります — 会話を開いて確認してください",
   },
   usage: {
     heading: "使用状況",

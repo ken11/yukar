@@ -70,7 +70,7 @@ export function scopeTreeToManager(
  * then scopes the worker/evaluator tree to the active trial.
  * Called from the INIT action.
  *
- * @param activeManagerId Authoritative active trial id (state.managerThreadId,
+ * @param activeManagerId Authoritative active trial id (state.activeTrialId,
  *   sourced from epic.active_thread_id). When null, the active trial is derived
  *   from the first non-archived manager in `threads`; if there is none either,
  *   the tree has no active trial and worker/evaluator nodes are cleared.
@@ -86,7 +86,7 @@ export function applyTreeInit(
   const taskToWorker: Record<string, string> = { ...tree.taskToWorker };
 
   // Track the first non-archived manager so it can serve as the scoping anchor
-  // when the authoritative active id is not yet known (managerThreadId null).
+  // when the authoritative active id is not yet known (activeTrialId null).
   let resolvedManagerId: string | null = null;
 
   for (const t of threads) {
@@ -188,7 +188,7 @@ export function handleTree(
     case "INIT": {
       // Pass the authoritative active trial id so the tree is scoped to it
       // (archived/inactive trials' workers + evaluators are pruned).
-      const treeState = applyTreeInit(state.treeState, action.threads, state.managerThreadId);
+      const treeState = applyTreeInit(state.treeState, action.threads, state.activeTrialId);
       return { ...state, treeState };
     }
 
@@ -260,7 +260,7 @@ export function handleTree(
             status: "pending",
             isStreaming: false,
             // Delegation only happens for the active trial.
-            parentManagerId: state.managerThreadId,
+            parentManagerId: state.activeTrialId,
           };
           newTaskToWorker[item.task_id] = pendingId;
         }
@@ -305,7 +305,7 @@ export function handleTree(
         status: "running",
         isStreaming: true,
         // A started worker belongs to the active trial.
-        parentManagerId: state.managerThreadId ?? prevPending?.parentManagerId ?? null,
+        parentManagerId: state.activeTrialId ?? prevPending?.parentManagerId ?? null,
       };
 
       if (taskId) {

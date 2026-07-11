@@ -43,9 +43,9 @@ export function ThreadPageClient({
   // Read from EpicShell's single SSE subscription via context (double EventSource is forbidden)
   const { activityState, clearLiveBuffer } = useEpicRun();
 
-  // RunState.manager_thread is used as activityState.managerThreadId.
-  // Updated via SSE but also works with the "manager" fallback during REST restoration.
-  const managerThreadId = activityState.managerThreadId ?? "manager";
+  // activeTrialId (epic.active_thread_id) owns the composer; "manager" is the
+  // legacy fallback while the id is unconfirmed.
+  const activeTrialId = activityState.activeTrialId ?? "manager";
 
   // Get the live buffer for thread_id
   const liveState = selectThreadLiveState(activityState, threadId);
@@ -55,14 +55,13 @@ export function ThreadPageClient({
   const runFailed = activityState.runStatus === "error";
   const runError = activityState.runError;
 
-  // Your turn (P3): the run actually parked in "waiting" (awaitingInput is the
-  // parked marker — a never-run epic is waiting too but has no marker).
-  // Thread attribution: the marker's threadId (SSE event.thread_id is exact) or
-  // the manager trial fallback (precise role attribution is P4). Worker /
-  // evaluator threads never match, so no banner there.
+  // Your turn (P4 attribution split): the banner belongs to the run's OWN
+  // conversation — exactly the parked marker's threadId (SSE event.thread_id /
+  // REST RunState.manager_thread). No active-trial fallback: during a reviewer
+  // run the marker sits on the reviewer thread and the Trial thread must NOT
+  // show the banner (this was the misattribution bug).
   const parked = activityState.awaitingInput;
-  const isAwaitingInput =
-    parked != null && (threadId === parked.threadId || threadId === managerThreadId);
+  const isAwaitingInput = parked != null && threadId === parked.threadId;
 
   // Bug4: Clear the live buffer when the authoritative REST data arrives
   const prevMsgCountRef = useRef(messages.length);
@@ -77,11 +76,11 @@ export function ThreadPageClient({
   // Archived threads do not show the composer.
   const isArchived = thread?.status === "archived";
   // Only the active trial shows the composer.
-  // "Active trial" = viewing the thread pointed to by managerThreadId and not archived.
-  // Even role=manager threads that do not match managerThreadId are read-only.
-  // The sole path for showing the composer is activityState.managerThreadId (activeThreadId → SET_MANAGER_THREAD_ID).
+  // "Active trial" = viewing the thread pointed to by activeTrialId and not archived.
+  // Even role=manager threads that do not match activeTrialId are read-only.
+  // The sole path for showing the composer is activityState.activeTrialId (activeThreadId → SET_ACTIVE_TRIAL_ID).
   // applyTreeInit's archived exclusion is a fix for tree display nodes and is unrelated to the composer.
-  const isActiveTrial = computeIsActiveTrial(threadId, managerThreadId, isArchived);
+  const isActiveTrial = computeIsActiveTrial(threadId, activeTrialId, isArchived);
 
   // Mobile: open/close state of the thread list panel
   const [mobileListOpen, setMobileListOpen] = useState(false);

@@ -38,7 +38,8 @@ function renderChat(props: Partial<Parameters<typeof ThreadChatInner>[0]> = {}) 
       pausePending: false,
       runError: null,
       awaitingInput: { threadId: "manager" },
-      managerThreadId: "manager",
+      activeTrialId: "manager",
+      currentRun: { threadId: "manager", role: "manager" as const },
       treeState: { manager: null, workers: {}, evaluators: {}, taskToWorker: {} },
       liveBuffers: {},
     },
@@ -95,6 +96,22 @@ describe("your-turn banner (P3)", () => {
     renderChat({ isAwaitingInput: true, runFailed: true, runError: "boom" });
     expect(screen.queryByText(ja.conversation.awaitingBanner)).toBeNull();
     expect(screen.getByText(`▲ ${ja.conversation.runFailedTitle}`)).toBeTruthy();
+  });
+
+  it("shows the Reviewer wording when the parked run rides a reviewer thread (P4)", () => {
+    const reviewerThread: ThreadEntry = {
+      id: "rev-1",
+      title: "Reviewer",
+      role: "reviewer",
+      status: "active",
+      task: null,
+      repo: null,
+      parent_thread_id: null,
+    };
+    renderChat({ thread: reviewerThread, isAwaitingInput: true });
+    // Role-aware wording: the banner names the Reviewer, not the neutral text.
+    expect(screen.getByText(ja.conversation.awaitingBannerReviewer)).toBeTruthy();
+    expect(screen.queryByText(ja.conversation.awaitingBanner)).toBeNull();
   });
 
   it("renders persisted messages as-is — no synthetic '__awaiting__' bubble", () => {

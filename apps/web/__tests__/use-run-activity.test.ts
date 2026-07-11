@@ -102,7 +102,8 @@ function applyActions(actions: RunActivityAction[]): RunActivityState {
     awaitingInput: null,
     treeState: { manager: null, workers: {}, evaluators: {}, taskToWorker: {} },
     liveBuffers: {},
-    managerThreadId: null,
+    activeTrialId: null,
+    currentRun: null,
   };
   return actions.reduce(runActivityReducer, initialState);
 }
@@ -111,6 +112,7 @@ function makeRunState(overrides: Partial<RunState> = {}): RunState {
   return {
     run_id: "run-1",
     status: "running",
+    role: "manager",
     active_workers: [],
     ...overrides,
   };
@@ -1636,6 +1638,29 @@ describe("applyRunCachePatch — user_input_requested: runState becomes waiting"
     expect(getRunStateCache()?.status).toBe("waiting");
   });
 
+  it("user_input_requested refreshes the run identity fields, not just status", () => {
+    // The runState cache is otherwise "mount snapshot + status patches" — a
+    // frozen run_id/manager_thread re-dispatched later (dispatchForRunStatus
+    // on trial change) would attribute the parked marker to a long-gone run.
+    seedRunState(
+      makeRunState({ status: "running", run_id: "run-old", manager_thread: "trial-old" }),
+    );
+
+    const event: UserInputRequestedEvent = {
+      ...BASE_EVENT,
+      type: "user_input_requested",
+      run_id: "run-new",
+      thread_id: "rev-1",
+      question: "",
+    };
+    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
+
+    const cached = getRunStateCache();
+    expect(cached?.status).toBe("waiting");
+    expect(cached?.run_id).toBe("run-new");
+    expect(cached?.manager_thread).toBe("rev-1");
+  });
+
   it("user_input_requested is a no-op when runState cache is empty", () => {
     const event: UserInputRequestedEvent = {
       ...BASE_EVENT,
@@ -2475,39 +2500,39 @@ describe("Reload scenario — the parked marker is restored from REST waiting st
 // ============================================================
 
 describe("M1: Multi-trial — manager node threadId is unified to the real id", () => {
-  it("SET_MANAGER_THREAD_ID updates treeState.manager.threadId to the real id", () => {
+  it("SET_ACTIVE_TRIAL_ID updates treeState.manager.threadId to the real id", () => {
     const threads = [makeThreadEntry({ id: "trial-1", role: "manager" })];
     let state = applyActions([{ type: "INIT", threads }]);
     expect(state.treeState.manager?.threadId).toBe("trial-1");
 
     // Restore from RunState.manager_thread via REST
     state = runActivityReducer(state, {
-      type: "SET_MANAGER_THREAD_ID",
+      type: "SET_ACTIVE_TRIAL_ID",
       threadId: "trial-2",
     });
 
-    expect(state.managerThreadId).toBe("trial-2");
+    expect(state.activeTrialId).toBe("trial-2");
     // Tree node is also synced
     expect(state.treeState.manager?.threadId).toBe("trial-2");
   });
 
-  it("SET_MANAGER_THREAD_ID when manager is null does not change treeState", () => {
+  it("SET_ACTIVE_TRIAL_ID when manager is null does not change treeState", () => {
     let state = applyActions([]);
     expect(state.treeState.manager).toBeNull();
 
     state = runActivityReducer(state, {
-      type: "SET_MANAGER_THREAD_ID",
+      type: "SET_ACTIVE_TRIAL_ID",
       threadId: "trial-1",
     });
 
-    expect(state.managerThreadId).toBe("trial-1");
+    expect(state.activeTrialId).toBe("trial-1");
     expect(state.treeState.manager).toBeNull(); // remains null
   });
 
   it("RUN_STARTED creates the manager node preferring managerThreadId (real id)", () => {
     // Receive RUN_STARTED with managerThreadId already restored from REST
-    let state = applyActions([{ type: "SET_MANAGER_THREAD_ID", threadId: "trial-3" }]);
-    expect(state.managerThreadId).toBe("trial-3");
+    let state = applyActions([{ type: "SET_ACTIVE_TRIAL_ID", threadId: "trial-3" }]);
+    expect(state.activeTrialId).toBe("trial-3");
 
     state = runActivityReducer(state, { type: "RUN_STARTED" });
 
@@ -2519,7 +2544,7 @@ describe("M1: Multi-trial — manager node threadId is unified to the real id", 
     const threads = [makeThreadEntry({ id: "trial-1", role: "manager" })];
     let state = applyActions([
       { type: "INIT", threads },
-      { type: "SET_MANAGER_THREAD_ID", threadId: "trial-2" },
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: "trial-2" },
     ]);
     expect(state.treeState.manager?.threadId).toBe("trial-2"); // already synced after SET
 
@@ -2594,7 +2619,8 @@ describe("M1: Multi-trial — manager node threadId is unified to the real id", 
 });
 
 // ============================================================
-// 35. managerThreadId resolution order — epic.active_thread_id takes priority; stale RunState must not overwrite
+// 35. activeTrialId resolution (P4 split) — epic.active_thread_id is the sole authority;
+//     RunState.manager_thread never feeds the trial (it is the run's own thread → currentRun)
 //
 // Regression verification for the fix:
 //   Immediately after creating a new trial, epic.active_thread_id = new trial, but
@@ -2602,7 +2628,7 @@ describe("M1: Multi-trial — manager node threadId is unified to the real id", 
 //   If activeThreadId is not prioritized, the composer disappears.
 // ============================================================
 
-describe("35: managerThreadId resolution order — activeThreadId (epic.active_thread_id) takes top priority", () => {
+describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id) takes top priority", () => {
   it("when activeThreadId is specified, it is not overwritten by stale RunState.manager_thread", async () => {
     // RunState.manager_thread = stale id from an old trial
     vi.stubGlobal(
@@ -2631,10 +2657,10 @@ describe("35: managerThreadId resolution order — activeThreadId (epic.active_t
     });
 
     // activeThreadId (th-new-active) takes priority and is not overwritten by stale th-old-stale
-    expect(result.current.state.managerThreadId).toBe("th-new-active");
+    expect(result.current.state.activeTrialId).toBe("th-new-active");
   });
 
-  it("when activeThreadId is not specified, RunState.manager_thread is used (normal behavior during a run)", async () => {
+  it("when activeThreadId is not specified, manager_thread feeds currentRun — NOT activeTrialId (P4 split)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -2658,8 +2684,14 @@ describe("35: managerThreadId resolution order — activeThreadId (epic.active_t
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
-    // No activeThreadId, so RunState.manager_thread is used
-    expect(result.current.state.managerThreadId).toBe("th-current-run");
+    // P4: RunState.manager_thread is the RUN's own thread. It is captured as
+    // currentRun (banner attribution) and never becomes the active trial
+    // (during a reviewer run it would point at the reviewer thread).
+    expect(result.current.state.activeTrialId).toBeNull();
+    expect(result.current.state.currentRun).toEqual({
+      threadId: "th-current-run",
+      role: "manager",
+    });
   });
 
   it("when activeThreadId is specified, it is not overwritten by initialRunState's manager_thread either", () => {
@@ -2681,7 +2713,7 @@ describe("35: managerThreadId resolution order — activeThreadId (epic.active_t
     );
 
     // Immediately after mount (sync): activeThreadId takes priority over initialRunState
-    expect(result.current.state.managerThreadId).toBe("th-new-active");
+    expect(result.current.state.activeTrialId).toBe("th-new-active");
   });
 
   it("when activeThreadId=null, falls back to the non-archived manager from initialThreads", () => {
@@ -2704,7 +2736,7 @@ describe("35: managerThreadId resolution order — activeThreadId (epic.active_t
 
     // RunState.manager_thread is null, activeThreadId is null
     // → resolved (non-archived) manager from initialThreads is used as fallback
-    expect(result.current.state.managerThreadId).toBe("th-resolved-mgr");
+    expect(result.current.state.activeTrialId).toBe("th-resolved-mgr");
   });
 });
 
@@ -2776,10 +2808,10 @@ describe("36: applyTreeInit — archived managers are excluded from manager node
     expect(state.treeState.manager?.threadId).toBe("trial-2");
   });
 
-  it("INIT after SET_MANAGER_THREAD_ID does not overwrite managerThreadId with archived manager", () => {
+  it("INIT after SET_ACTIVE_TRIAL_ID does not overwrite managerThreadId with archived manager", () => {
     // epic.active_thread_id = trial-2 is already confirmed
-    let state = applyActions([{ type: "SET_MANAGER_THREAD_ID", threadId: "trial-2" }]);
-    expect(state.managerThreadId).toBe("trial-2");
+    let state = applyActions([{ type: "SET_ACTIVE_TRIAL_ID", threadId: "trial-2" }]);
+    expect(state.activeTrialId).toBe("trial-2");
 
     // INIT lists old trial (archived) at the end
     const threads: ThreadEntry[] = [
@@ -2788,8 +2820,8 @@ describe("36: applyTreeInit — archived managers are excluded from manager node
     ];
     state = runActivityReducer(state, { type: "INIT", threads });
 
-    // managerThreadId remains trial-2 as set by SET_MANAGER_THREAD_ID
-    expect(state.managerThreadId).toBe("trial-2");
+    // managerThreadId remains trial-2 as set by SET_ACTIVE_TRIAL_ID
+    expect(state.activeTrialId).toBe("trial-2");
     // treeState.manager is also not overwritten by archived trial-1
     expect(state.treeState.manager?.threadId).toBe("trial-2");
   });
@@ -2805,8 +2837,8 @@ describe("36: applyTreeInit — archived managers are excluded from manager node
 describe("37: active manager can be resolved from INIT (live threads) even with a stale activeThreadId prop", () => {
   it("after a stale activeThreadId (old trial id) is passed, INIT (with new thread) syncs manager to new id", () => {
     // EpicShell's activeThreadId is stale = still the old trial's id
-    let state = applyActions([{ type: "SET_MANAGER_THREAD_ID", threadId: "th-old" }]);
-    expect(state.managerThreadId).toBe("th-old");
+    let state = applyActions([{ type: "SET_ACTIVE_TRIAL_ID", threadId: "th-old" }]);
+    expect(state.activeTrialId).toBe("th-old");
 
     // Latest thread list returned by live query after threads.list invalidate
     // old trial = archived, new trial = active
@@ -2831,7 +2863,7 @@ describe("37: active manager can be resolved from INIT (live threads) even with 
     const state = applyActions([{ type: "INIT", threads: liveThreads }]);
 
     // If manager node is "th-new", comparison with currently displayed thread "th-new" is true
-    const managerThreadId = state.treeState.manager?.threadId ?? state.managerThreadId;
+    const managerThreadId = state.treeState.manager?.threadId ?? state.activeTrialId;
     expect(managerThreadId).toBe("th-new");
     // If currently displaying old trial "th-old", result is false (no composer = correct)
     expect(managerThreadId === "th-old").toBe(false);
@@ -2920,7 +2952,7 @@ describe("Agent-state tree scoping to active trial", () => {
       makeThreadEntry({ id: "mgr-B", role: "manager", status: "active" }),
     ];
     const state = applyActions([
-      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-B" },
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: "mgr-B" },
       { type: "INIT", threads },
     ]);
     expect(state.treeState.workers["w-A"]).toBeUndefined();
@@ -2943,7 +2975,7 @@ describe("Agent-state tree scoping to active trial", () => {
       }),
     ];
     const state = applyActions([
-      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-B" },
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: "mgr-B" },
       { type: "INIT", threads },
     ]);
     expect(state.treeState.workers["w-B"]).toBeDefined();
@@ -2965,14 +2997,14 @@ describe("Agent-state tree scoping to active trial", () => {
       }),
     ];
     const state = applyActions([
-      { type: "SET_MANAGER_THREAD_ID", threadId: null },
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: null },
       { type: "INIT", threads },
     ]);
     expect(Object.keys(state.treeState.workers)).toHaveLength(0);
     expect(Object.keys(state.treeState.evaluators)).toHaveLength(0);
   });
 
-  it("prunes a previous trial's live worker when SET_MANAGER_THREAD_ID switches trials", () => {
+  it("prunes a previous trial's live worker when SET_ACTIVE_TRIAL_ID switches trials", () => {
     // Trial A is active and has a live (delegated) worker, then the user switches to trial B.
     const delegation: DelegationEvent = {
       ...BASE_EVENT,
@@ -2980,7 +3012,7 @@ describe("Agent-state tree scoping to active trial", () => {
       items: [{ task_id: "T1", repo: "r", title: "task one" }],
     } as DelegationEvent;
     const state = applyActions([
-      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-A" },
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: "mgr-A" },
       // INIT creates the manager node so DELEGATION (which no-ops without one) applies.
       { type: "INIT", threads: [makeThreadEntry({ id: "mgr-A", role: "manager" })] },
       { type: "DELEGATION", event: delegation },
@@ -2990,16 +3022,16 @@ describe("Agent-state tree scoping to active trial", () => {
 
     // Switch active trial to B — A's worker must be pruned.
     const after = runActivityReducer(state, {
-      type: "SET_MANAGER_THREAD_ID",
+      type: "SET_ACTIVE_TRIAL_ID",
       threadId: "mgr-B",
     });
     expect(after.treeState.workers["pending-T1"]).toBeUndefined();
     expect(Object.keys(after.treeState.workers)).toHaveLength(0);
   });
 
-  it("clears the tree on SET_MANAGER_THREAD_ID(null) with no following INIT", () => {
+  it("clears the tree on SET_ACTIVE_TRIAL_ID(null) with no following INIT", () => {
     // Trial A is active with a live worker, then it is archived mid-session:
-    // active_thread_id → null arrives via SET_MANAGER_THREAD_ID(null) with no
+    // active_thread_id → null arrives via SET_ACTIVE_TRIAL_ID(null) with no
     // INIT to reconcile. The lingering worker must be cleared immediately.
     const delegation: DelegationEvent = {
       ...BASE_EVENT,
@@ -3007,17 +3039,118 @@ describe("Agent-state tree scoping to active trial", () => {
       items: [{ task_id: "T1", repo: "r", title: "task one" }],
     } as DelegationEvent;
     const state = applyActions([
-      { type: "SET_MANAGER_THREAD_ID", threadId: "mgr-A" },
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: "mgr-A" },
       { type: "INIT", threads: [makeThreadEntry({ id: "mgr-A", role: "manager" })] },
       { type: "DELEGATION", event: delegation },
     ]);
     expect(state.treeState.workers["pending-T1"]).toBeDefined();
 
     const after = runActivityReducer(state, {
-      type: "SET_MANAGER_THREAD_ID",
+      type: "SET_ACTIVE_TRIAL_ID",
       threadId: null,
     });
     expect(Object.keys(after.treeState.workers)).toHaveLength(0);
     expect(Object.keys(after.treeState.evaluators)).toHaveLength(0);
+  });
+});
+
+// ============================================================
+// P4: attribution split — activeTrialId (composer) vs currentRun (your-turn banner)
+// ============================================================
+
+describe("P4: reviewer run attribution — marker on the reviewer thread, composer on the trial", () => {
+  it("REST restore of a parked reviewer run: marker + currentRun on the reviewer thread, activeTrialId on the trial", () => {
+    const initialRunState: RunState = makeRunState({
+      status: "waiting",
+      manager_thread: "rev-1",
+      role: "reviewer",
+    });
+
+    const { result } = renderHook(
+      () =>
+        useRunActivity({
+          projectId: PROJECT_ID,
+          epicId: EPIC_ID,
+          initialRunState,
+          activeThreadId: "trial-1",
+        }),
+      { wrapper },
+    );
+
+    // Composer stays on the manager trial; the your-turn marker belongs to the
+    // reviewer conversation the run actually rides on (the misattribution bug).
+    expect(result.current.state.activeTrialId).toBe("trial-1");
+    expect(result.current.state.awaitingInput).toEqual({ threadId: "rev-1" });
+    expect(result.current.state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
+  });
+
+  it("reducer: USER_INPUT_REQUESTED does NOT attribute the marker to the trial thread", () => {
+    let state = applyActions([{ type: "SET_ACTIVE_TRIAL_ID", threadId: "trial-1" }]);
+    state = runActivityReducer(state, { type: "USER_INPUT_REQUESTED", threadId: "rev-1" });
+    expect(state.awaitingInput).toEqual({ threadId: "rev-1" });
+    expect(state.activeTrialId).toBe("trial-1");
+  });
+
+  it("reducer: USER_INPUT_REQUESTED keeps the known role when the thread matches", () => {
+    let state = applyActions([{ type: "SET_CURRENT_RUN", threadId: "rev-1", role: "reviewer" }]);
+    state = runActivityReducer(state, { type: "USER_INPUT_REQUESTED", threadId: "rev-1" });
+    expect(state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
+  });
+
+  it("reducer: USER_INPUT_REQUESTED resets the role when the thread changed (unknown until the REST refresh)", () => {
+    let state = applyActions([{ type: "SET_CURRENT_RUN", threadId: "trial-1", role: "manager" }]);
+    state = runActivityReducer(state, { type: "USER_INPUT_REQUESTED", threadId: "rev-1" });
+    expect(state.currentRun).toEqual({ threadId: "rev-1", role: null });
+  });
+
+  it("reducer: SET_CURRENT_RUN is attribution only — runStatus and the marker are untouched", () => {
+    let state = applyActions([{ type: "RUN_STARTED" }]);
+    state = runActivityReducer(state, {
+      type: "SET_CURRENT_RUN",
+      threadId: "rev-1",
+      role: "reviewer",
+    });
+    expect(state.runStatus).toBe("running");
+    expect(state.awaitingInput).toBeNull();
+    expect(state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
+  });
+
+  it("SSE user_input_requested triggers a role refresh from REST (reviewer wording without reload)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            makeRunState({ status: "waiting", manager_thread: "rev-1", role: "reviewer" }),
+          ),
+      }),
+    );
+
+    const { result } = renderHook(
+      () => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID, activeThreadId: "trial-1" }),
+      { wrapper },
+    );
+
+    const es = MockEventSource.instances[0];
+    await act(async () => {
+      es.emit(
+        "user_input_requested",
+        JSON.stringify({
+          type: "user_input_requested",
+          project_id: PROJECT_ID,
+          epic_id: EPIC_ID,
+          run_id: "run-1",
+          thread_id: "rev-1",
+          question: "",
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    expect(result.current.state.awaitingInput).toEqual({ threadId: "rev-1" });
+    expect(result.current.state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
+    // The composer never migrates to the reviewer thread.
+    expect(result.current.state.activeTrialId).toBe("trial-1");
   });
 });

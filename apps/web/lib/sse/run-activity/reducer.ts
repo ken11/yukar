@@ -36,7 +36,8 @@ export const initialState: RunActivityState = {
   awaitingInput: null,
   treeState: initialTreeState,
   liveBuffers: {},
-  managerThreadId: null,
+  activeTrialId: null,
+  currentRun: null,
 };
 
 // ---- Main Reducer ----
@@ -49,11 +50,11 @@ export function runActivityReducer(
     return { ...initialState };
   }
 
-  if (action.type === "SET_MANAGER_THREAD_ID") {
-    // Update managerThreadId (REST authoritative data) while also syncing the tree's manager node threadId.
-    // Live buffer key migration is not performed (SET_MANAGER_THREAD_ID arrives between turns, so
+  if (action.type === "SET_ACTIVE_TRIAL_ID") {
+    // Update activeTrialId (epic.active_thread_id, REST authoritative) while also syncing the tree's manager node threadId.
+    // Live buffer key migration is not performed (SET_ACTIVE_TRIAL_ID arrives between turns, so
     // even if an existing buffer remains, MANAGER_TURN_STARTED after the threadId change will overwrite with the new id — no issue).
-    const newManagerThreadId = action.threadId;
+    const newActiveTrialId = action.threadId;
     // Sync the manager node id (when switching to a known trial) and scope the
     // worker/evaluator tree to the active trial, so a previous trial's agents
     // don't bleed into this one. When the id is null there is NO active trial,
@@ -61,14 +62,21 @@ export function runActivityReducer(
     // trial mid-session (active_thread_id → null) where no INIT follows to
     // reconcile against the thread list.
     const synced =
-      state.treeState.manager && newManagerThreadId
+      state.treeState.manager && newActiveTrialId
         ? {
             ...state.treeState,
-            manager: { ...state.treeState.manager, threadId: newManagerThreadId },
+            manager: { ...state.treeState.manager, threadId: newActiveTrialId },
           }
         : state.treeState;
-    const treeState = scopeTreeToManager(synced, newManagerThreadId);
-    return { ...state, managerThreadId: newManagerThreadId, treeState };
+    const treeState = scopeTreeToManager(synced, newActiveTrialId);
+    return { ...state, activeTrialId: newActiveTrialId, treeState };
+  }
+
+  if (action.type === "SET_CURRENT_RUN") {
+    // Attribution only (banner thread + role wording) — never touches
+    // runStatus or the parked marker, so a late REST refresh cannot fake
+    // execution state.
+    return { ...state, currentRun: { threadId: action.threadId, role: action.role } };
   }
 
   const lifecycleResult = handleLifecycle(state, action);

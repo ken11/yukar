@@ -39,6 +39,15 @@ export function useThreadMessages({
     queryKey: queryKeys.threads.messages(projectId, epicId, threadId),
     queryFn: () => getThreadMessages(projectId, epicId, threadId),
     initialData: initialMessages,
+    // The RSC snapshot is captured at navigation time and can predate messages
+    // an in-flight run writes moments later (e.g. an SPA transition onto a
+    // fresh reviewer thread whose run reports seconds after). The turn-end SSE
+    // invalidation (manager_message) no-ops while this query is not in the
+    // cache yet, so a "fresh" initialData would pin the stale empty snapshot
+    // for the global staleTime. Mark the initialData as already stale: the
+    // mount revalidates once, then the SSE invalidation path owns freshness
+    // (P4 — reviewer-thread live report after an SPA transition).
+    initialDataUpdatedAt: 0,
   });
 
   const messages = strandsMessagesToThreadMessageLikes(rawMessages);

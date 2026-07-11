@@ -48,7 +48,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Epics */
+        /**
+         * List Epics
+         * @description List epics with a per-epic run digest (``run_summary``).
+         *
+         *     ``run_summary`` is derived from each epic's state.yaml (read concurrently);
+         *     it is ``null`` for epics that have never run or whose state.yaml cannot be
+         *     read.  The epic storage model itself is unchanged.
+         */
         get: operations["list_epics_api_projects__project_id__epics_get"];
         put?: never;
         /** Create Epic */
@@ -199,9 +206,13 @@ export interface paths {
          * Project Events Sse
          * @description SSE stream of lifecycle events for all epics in a project.
          *
-         *     Delivers only lifecycle events (run_started, run_completed, run_failed,
-         *     run_paused, run_resumed).  High-frequency events (token, tool_call, etc.)
-         *     are excluded — this stream is intended for notification purposes.
+         *     Delivers only lifecycle events: run_started / run_completed / run_failed /
+         *     run_stopped / run_paused / run_resumed, the "your turn" signals
+         *     user_input_requested / user_input_resolved (a conversation run parked in
+         *     ``waiting`` / left it — used for live board badges), epic_status_changed,
+         *     epic_merged and merge-progress events.  High-frequency events (token,
+         *     tool_call, etc.) are excluded — this stream is intended for notification
+         *     purposes.
          *
          *     Each event payload already includes ``project_id`` and ``epic_id`` from
          *     ``BaseEvent``, so clients can identify which epic each notification
@@ -1856,6 +1867,66 @@ export interface components {
             /** Runs */
             runs?: components["schemas"]["RunUsageBreakdown"][];
         };
+        /**
+         * EpicWithRunSummary
+         * @description Epic + run digest for the list endpoint.
+         *
+         *     The storage model (``Epic`` / epic.yaml) is unchanged — ``run_summary`` is
+         *     derived from state.yaml at read time and never persisted.  ``None`` means
+         *     the epic has no state.yaml yet (never run) or it could not be read.
+         */
+        EpicWithRunSummary: {
+            /** Id */
+            id: string;
+            /** Slug */
+            slug: string;
+            /** Title */
+            title: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Acceptance Criteria
+             * @default
+             */
+            acceptance_criteria: string;
+            /**
+             * Status
+             * @default open
+             * @enum {string}
+             */
+            status: "open" | "completed";
+            /**
+             * Branch
+             * @default
+             */
+            branch: string;
+            /** Touched Repos */
+            touched_repos?: string[];
+            /** Merged At */
+            merged_at?: string | null;
+            /**
+             * Manager Effort
+             * @default high
+             * @enum {string}
+             */
+            manager_effort: "high" | "xhigh" | "max";
+            /** Active Thread Id */
+            active_thread_id?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at?: string;
+            run_summary?: components["schemas"]["RunSummary"] | null;
+        };
         /** EvalResultEvent */
         EvalResultEvent: {
             /** Project Id */
@@ -2756,6 +2827,12 @@ export interface components {
              * @enum {string}
              */
             status: "running" | "paused" | "waiting" | "error" | "completed";
+            /**
+             * Role
+             * @default manager
+             * @enum {string}
+             */
+            role: "manager" | "reviewer";
             /** Manager Thread */
             manager_thread?: string | null;
             /** Active Workers */
@@ -2789,6 +2866,33 @@ export interface components {
              * @constant
              */
             type: "run_stopped";
+        };
+        /**
+         * RunSummary
+         * @description Digest of an epic's state.yaml, embedded in the epic-list response (P4).
+         *
+         *     Lets the board render "your turn" markers (``status == "waiting"`` with a
+         *     non-empty ``run_id``) without N+1 ``GET /run/state`` calls.  Pure current
+         *     state — there is no read/unread persistence.
+         */
+        RunSummary: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "paused" | "waiting" | "error" | "completed";
+            /** Run Id */
+            run_id: string;
+            /** Thread Id */
+            thread_id?: string | null;
+            /**
+             * Role
+             * @default manager
+             * @enum {string}
+             */
+            role: "manager" | "reviewer";
+            /** Last Event At */
+            last_event_at?: string | null;
         };
         /**
          * RunUsageBreakdown
@@ -3830,7 +3934,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Epic"][];
+                    "application/json": components["schemas"]["EpicWithRunSummary"][];
                 };
             };
             /** @description Validation Error */

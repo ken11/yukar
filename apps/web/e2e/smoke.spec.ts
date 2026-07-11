@@ -119,6 +119,53 @@ test.describe
       await expect(panel.locator("text=util.py")).toBeVisible({ timeout: 10_000 });
     });
 
+    test("P4 board: your-turn badge — static on load AND live via the project SSE", async ({
+      page,
+    }) => {
+      // ---- Static: run_summary embedded in GET /epics ----
+      // The setup run parked in "waiting" (work done), so a fresh board load
+      // shows the your-turn badge on this epic's row without any SSE event.
+      await page.goto(`/projects/${state.projectId}/epics`);
+      await expect(
+        page.getByTestId(`your-turn-${state.epicId}`),
+        "Parked run (waiting + run_id) surfaces as a your-turn badge on load",
+      ).toBeVisible({ timeout: 15_000 });
+
+      // ---- Live: project SSE your-turn signal patches the open board ----
+      // Create a second epic via the API, load the board (row present, no
+      // badge — never ran), then start its run via the API and watch the badge
+      // appear WITHOUT any reload when the run parks in "waiting"
+      // (user_input_requested via the project-scope SSE).
+      const createRes = await page.request.post(`/api/projects/${state.projectId}/epics`, {
+        data: {
+          title: "Board badge epic",
+          description: "Create hello.py and util.py.",
+          acceptance_criteria: "hello.py exists and prints 'hello'",
+        },
+      });
+      expect(createRes.status(), "second epic created (201)").toBe(201);
+      const epic2: { id: string } = await createRes.json();
+
+      await page.goto(`/projects/${state.projectId}/epics`);
+      await expect(page.getByTestId(`epic-card-${epic2.id}`)).toBeVisible({ timeout: 15_000 });
+      const liveBadge = page.getByTestId(`your-turn-${epic2.id}`);
+      await expect(liveBadge, "a never-run epic carries no your-turn badge").toHaveCount(0);
+
+      const runRes = await page.request.post(
+        `/api/projects/${state.projectId}/epics/${epic2.id}/run`,
+      );
+      expect(runRes.ok(), `run start should succeed: ${runRes.status()}`).toBeTruthy();
+
+      // No reload, no navigation: the deterministic fake run finishes its work
+      // and parks — the badge must appear on the still-open board page purely
+      // via the project SSE cache patch.
+      await expect(
+        liveBadge,
+        "your-turn badge appears live when the run parks in waiting",
+      ).toBeVisible({ timeout: 90_000 });
+      await page.screenshot({ path: `${SHOTS}/smoke-p4-board-your-turn.png`, fullPage: true });
+    });
+
     test("#1: completing the epic flips the controls to Reopen", async ({ page }) => {
       await page.goto(`/projects/${state.projectId}/epics/${state.epicId}/threads/manager`);
       const completeBtn = page.getByTestId("complete-epic-btn");

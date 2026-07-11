@@ -21,11 +21,11 @@ export function EpicTabBar() {
 
   const base = `/projects/${projectId}/epics/${epicId}`;
 
-  // Resolve the active manager thread id (activityState.managerThreadId takes priority).
+  // Resolve the active trial id (activityState.activeTrialId takes priority).
   // Passing an empty array as the second argument to resolveActiveManagerThreadId is intentional:
   // threads are not fetched here — fall back only on epic.active_thread_id.
   // If threads are needed, add a useQuery at the call site.
-  const managerThreadId = activityState.managerThreadId ?? resolveActiveManagerThreadId(epic, []);
+  const managerThreadId = activityState.activeTrialId ?? resolveActiveManagerThreadId(epic, []);
 
   // Tasks badge: done/total
   const { data: tasksFile } = useQuery({

@@ -396,10 +396,14 @@ class EpicOrchestrator:
         def pub(event: object) -> None:
             event_bus.publish(project_id, epic_id, event)
 
-        # Update state.yaml → running.
+        # Update state.yaml → running.  ``role`` records which conversation
+        # agent this run belongs to (P4) — fresh AND continuation runs both
+        # pass through here, so the role survives every later save of this
+        # same state object (park / stop / error).
         state = RunState(
             run_id=run_id,
             status="running",
+            role="reviewer" if self._agent_role == "reviewer" else "manager",
             manager_thread=self._manager_thread_id,
             started_at=datetime.now(UTC),
         )

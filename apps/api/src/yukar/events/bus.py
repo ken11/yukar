@@ -366,9 +366,12 @@ async def subscribe_project(
 ) -> AsyncGenerator[asyncio.Queue[Any]]:
     """Context manager for a project-level lifecycle event queue.
 
-    Only lifecycle events (run_started, run_completed, run_failed,
-    run_paused, run_resumed) are delivered here — high-frequency events
-    (token, tool_call, etc.) are excluded.
+    Only lifecycle events (``_LIFECYCLE_TYPES``: run_started / run_completed /
+    run_failed / run_stopped / run_paused / run_resumed, the "your turn"
+    signals user_input_requested / user_input_resolved, epic_status_changed,
+    epic_merged, merge progress, sensitive-file writes) are delivered here —
+    high-frequency events (token, tool_call, etc.) are excluded.  The
+    your-turn signals let the epic board update its waiting badges live (P4).
 
     No replay buffer for project-level subscriptions: the project stream is
     used for notifications, not for state reconstruction.

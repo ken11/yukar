@@ -46,7 +46,7 @@ export function ThreadChatInner({
   isAwaitingInput?: boolean;
   onSendMessage: (content: string) => void;
   isSending: boolean;
-  /** True for the active trial (non-archived thread matching managerThreadId) — shows the composer */
+  /** True for the active trial (non-archived thread matching activeTrialId) — shows the composer */
   isActiveTrial: boolean;
   /** True for an archived thread — hides the composer */
   isArchived?: boolean;
@@ -226,7 +226,9 @@ export function ThreadChatInner({
           </div>
         )}
 
-        {/* Your-turn banner — neutral annotation (the run parked; reply to continue) */}
+        {/* Your-turn banner — the run parked on THIS thread (reply to continue).
+            Role-aware wording (P4): the banner only shows on the run's own
+            conversation, so thread.role IS the waiting agent's role. */}
         {!runFailed && isAwaitingInput && (
           <div
             className="shrink-0 flex items-center gap-2 px-6 py-2"
@@ -242,7 +244,9 @@ export function ThreadChatInner({
               aria-hidden
             />
             <p className="font-mono text-[11px]" style={{ color: "var(--color-light)" }}>
-              {t("conversation.awaitingBanner")}
+              {threadRole === "reviewer"
+                ? t("conversation.awaitingBannerReviewer")
+                : t("conversation.awaitingBanner")}
             </p>
           </div>
         )}

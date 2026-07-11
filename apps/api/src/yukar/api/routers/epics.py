@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from datetime import UTC, datetime
 from typing import Literal
@@ -14,7 +16,10 @@ from yukar.deps import SupervisorDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
 from yukar.models.epic import Epic
 from yukar.models.events import EpicStatusChangedEvent
-from yukar.storage import epic_repo, project_repo
+from yukar.models.run import RunStatus
+from yukar.storage import epic_repo, project_repo, state_repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects/{project_id}/epics", tags=["epics"])
 
@@ -47,22 +52,90 @@ class PatchEpicRequest(BaseModel):
     manager_effort: Literal["high", "xhigh", "max"] | None = None
 
 
+class RunSummary(BaseModel):
+    """Digest of an epic's state.yaml, embedded in the epic-list response (P4).
+
+    Lets the board render "your turn" markers (``status == "waiting"`` with a
+    non-empty ``run_id``) without N+1 ``GET /run/state`` calls.  Pure current
+    state — there is no read/unread persistence.
+    """
+
+    status: RunStatus
+    run_id: str
+    # The conversation thread the run rides on (RunState.manager_thread).
+    thread_id: str | None = None
+    # Which conversation agent the user would be replying to.
+    role: Literal["manager", "reviewer"] = "manager"
+    last_event_at: datetime | None = None
+
+
+class EpicWithRunSummary(Epic):
+    """Epic + run digest for the list endpoint.
+
+    The storage model (``Epic`` / epic.yaml) is unchanged — ``run_summary`` is
+    derived from state.yaml at read time and never persisted.  ``None`` means
+    the epic has no state.yaml yet (never run) or it could not be read.
+    """
+
+    run_summary: RunSummary | None = None
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=list[Epic])
+async def _load_run_summary(root: str, project_id: str, epic_id: str) -> RunSummary | None:
+    """Read one epic's state.yaml into a RunSummary; degrade to None on failure.
+
+    A corrupt state.yaml must not kill the whole epic list (log-and-degrade —
+    the same lesson as the EP-6 disappearance bug): the epic is still listed,
+    just without a run digest.
+    """
+    try:
+        state = await state_repo.get_state(root, project_id, epic_id)
+    except Exception:
+        logger.warning(
+            "Unreadable state.yaml for epic %s/%s — listing it without a run summary",
+            project_id,
+            epic_id,
+            exc_info=True,
+        )
+        return None
+    if state is None:
+        return None
+    return RunSummary(
+        status=state.status,
+        run_id=state.run_id,
+        thread_id=state.manager_thread,
+        role=state.role,
+        last_event_at=state.last_event_at,
+    )
+
+
+@router.get("", response_model=list[EpicWithRunSummary])
 async def list_epics(
     project_id: str,
     root: WorkspaceRootDep,
     include_completed: bool = False,
-) -> list[Epic]:
+) -> list[EpicWithRunSummary]:
+    """List epics with a per-epic run digest (``run_summary``).
+
+    ``run_summary`` is derived from each epic's state.yaml (read concurrently);
+    it is ``null`` for epics that have never run or whose state.yaml cannot be
+    read.  The epic storage model itself is unchanged.
+    """
     await get_project_or_404(root, project_id)
     epics = await epic_repo.list_epics(root, project_id)
     if not include_completed:
         epics = [e for e in epics if e.status != "completed"]
-    return epics
+    summaries = await asyncio.gather(
+        *(_load_run_summary(root, project_id, e.id) for e in epics)
+    )
+    return [
+        EpicWithRunSummary(**epic.model_dump(), run_summary=summary)
+        for epic, summary in zip(epics, summaries, strict=True)
+    ]
 
 
 @router.post("", response_model=Epic, status_code=201)

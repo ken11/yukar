@@ -12,6 +12,10 @@ export { ApiError } from "./client";
 
 export type Project = components["schemas"]["Project"];
 export type Epic = components["schemas"]["Epic"];
+// Epic + run digest (P4): the list endpoint embeds a per-epic state.yaml
+// summary so boards can show "your turn" without N+1 run/state calls.
+export type EpicWithRunSummary = components["schemas"]["EpicWithRunSummary"];
+export type RunSummary = components["schemas"]["RunSummary"];
 export type ThreadEntry = components["schemas"]["ThreadEntry"];
 export type Message = components["schemas"]["Message"];
 export type TasksFile = components["schemas"]["TasksFile"];
@@ -169,7 +173,10 @@ export function deleteProject(projectId: string): Promise<void> {
 
 // ---- Epics ----
 
-export function listEpics(projectId: string, includeCompleted = false): Promise<Epic[]> {
+export function listEpics(
+  projectId: string,
+  includeCompleted = false,
+): Promise<EpicWithRunSummary[]> {
   const q = includeCompleted ? "?include_completed=true" : "";
   return apiFetch(`/api/projects/${projectId}/epics${q}`);
 }

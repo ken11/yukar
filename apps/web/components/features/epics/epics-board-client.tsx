@@ -2,15 +2,17 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/icon";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
-import type { Epic } from "@/lib/api/endpoints";
+import type { EpicWithRunSummary } from "@/lib/api/endpoints";
 import { ApiError, listEpics, startMerge } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
+import { hasYourTurn } from "@/lib/epic-utils";
 import { useT } from "@/lib/i18n/provider";
+import { useProjectEventStream } from "@/lib/sse/project-event-stream-context";
 import { MergeProgressPanel } from "./merge-progress-panel";
 import { NewEpicModal } from "./new-epic-modal";
 import { useCompleteEpic, useReopenEpic } from "./use-close-epic";
@@ -25,11 +27,11 @@ type FilterValue = "all" | "open" | "completed" | "merged";
 
 interface EpicsBoardClientProps {
   projectId: string;
-  initialEpics: Epic[];
+  initialEpics: EpicWithRunSummary[];
 }
 
 /** epics that are "mergeable" = open, have a branch, and no recorded merge fact */
-function isMergeable(e: Epic): boolean {
+function isMergeable(e: EpicWithRunSummary): boolean {
   return !!e.branch && e.status === "open" && !e.merged_at;
 }
 
@@ -50,6 +52,43 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
     initialData: initialEpics,
     staleTime: 30_000,
   });
+
+  // Live "your turn" badges (P4): the project SSE streams the your-turn
+  // signals (user_input_requested = a conversation run parked in "waiting",
+  // user_input_resolved = the reply woke it). Patch the run_summary of the
+  // affected epic in the list cache — badge only, no unread persistence.
+  const { subscribe } = useProjectEventStream();
+  useEffect(() => {
+    return subscribe(({ data }) => {
+      if (data.type !== "user_input_requested" && data.type !== "user_input_resolved") return;
+      qc.setQueryData<EpicWithRunSummary[]>(queryKeys.epics.list(projectId), (prev) => {
+        if (!prev) return prev;
+        return prev.map((e) => {
+          if (e.id !== data.epic_id) return e;
+          if (data.type === "user_input_requested") {
+            // The run parked — it is the user's turn on this epic.
+            // NOTE: role / last_event_at are carried over from the previous
+            // summary (the event carries neither) and may be stale until the
+            // next REST refetch — acceptable while the board renders neither.
+            return {
+              ...e,
+              run_summary: {
+                role: "manager",
+                ...(e.run_summary ?? {}),
+                status: "waiting",
+                run_id: data.run_id,
+                thread_id: data.thread_id,
+              },
+            };
+          }
+          // user_input_resolved: only a waiting summary reverts to running —
+          // a delayed resolved must not fake execution after stop/error.
+          if (e.run_summary?.status !== "waiting") return e;
+          return { ...e, run_summary: { ...e.run_summary, status: "running" } };
+        });
+      });
+    });
+  }, [subscribe, qc, projectId]);
 
   const [filter, setFilter] = useState<FilterValue>("all");
   /** selection: ordered list of epic ids (order = merge order) */
@@ -225,7 +264,7 @@ function EpicBoardRow({
   isSelected,
   onToggleSelect,
 }: {
-  epic: Epic;
+  epic: EpicWithRunSummary;
   projectId: string;
   isSelected: boolean;
   onToggleSelect?: (epicId: string) => void;
@@ -235,6 +274,7 @@ function EpicBoardRow({
   const href = `/projects/${projectId}/epics/${epic.id}/threads/${managerSeg}`;
   const isCompleted = epic.status === "completed";
   const isMerged = !!epic.merged_at;
+  const isYourTurn = hasYourTurn(epic);
 
   const completeMutation = useCompleteEpic(projectId);
   const reopenMutation = useReopenEpic(projectId);
@@ -295,8 +335,15 @@ function EpicBoardRow({
       </Link>
 
       {/* StatusBadge — pushed right on mobile (title is on its own line).
-          The merged badge is a fact attribute shown alongside the status. */}
+          The merged badge is a fact attribute shown alongside the status;
+          "your turn" (P4) is current run state from run_summary, live-updated
+          via the project SSE your-turn signals. */}
       <span className="ml-auto flex items-center gap-2 md:ml-0">
+        {isYourTurn && (
+          <span data-testid={`your-turn-${epic.id}`} className="contents">
+            <StatusBadge status="awaiting" />
+          </span>
+        )}
         {isMerged && <StatusBadge status="merged" />}
         <StatusBadge status={epic.status} />
       </span>
