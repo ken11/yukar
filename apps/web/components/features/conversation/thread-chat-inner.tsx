@@ -27,7 +27,7 @@ export function ThreadChatInner({
   isRunning,
   runFailed,
   runError,
-  isAwaitingInput,
+  isYourTurn,
   onSendMessage,
   isSending,
   isActiveTrial,
@@ -43,7 +43,7 @@ export function ThreadChatInner({
   runFailed: boolean;
   runError: string | null;
   /** True when the run parked in "waiting" on this thread — your turn (shows the banner). */
-  isAwaitingInput?: boolean;
+  isYourTurn?: boolean;
   onSendMessage: (content: string) => void;
   isSending: boolean;
   /** True for the active trial (non-archived thread matching activeTrialId) — shows the composer */
@@ -119,10 +119,10 @@ export function ThreadChatInner({
 
   // Focus the composer when it becomes the user's turn.
   useEffect(() => {
-    if (isAwaitingInput) {
+    if (isYourTurn) {
       composerRef.current?.focus();
     }
-  }, [isAwaitingInput]);
+  }, [isYourTurn]);
 
   // Auto-grow the composer with its content (capped by max-h; CSS min-height wins on desktop).
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-measures on every input; `value` is the trigger, not a read dependency
@@ -229,7 +229,7 @@ export function ThreadChatInner({
         {/* Your-turn banner — the run parked on THIS thread (reply to continue).
             Role-aware wording (P4): the banner only shows on the run's own
             conversation, so thread.role IS the waiting agent's role. */}
-        {!runFailed && isAwaitingInput && (
+        {!runFailed && isYourTurn && (
           <div
             className="shrink-0 flex items-center gap-2 px-6 py-2"
             role="status"

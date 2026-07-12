@@ -36,12 +36,12 @@ from yukar.models.events import (
     TokenUsageEvent,
     ToolCallEvent,
     ToolResultEvent,
-    UserInputRequestedEvent,
-    UserInputResolvedEvent,
     UserMessageCommittedEvent,
     WorkerCompletedEvent,
     WorkerFailedEvent,
     WorkerStartedEvent,
+    YourTurnEndedEvent,
+    YourTurnEvent,
 )
 
 router = APIRouter(prefix="/api/_schema", tags=["schema"])
@@ -74,9 +74,9 @@ class RunEventSchema(BaseModel):
     delegation: DelegationEvent | None = None
     evaluator_started: EvaluatorStartedEvent | None = None
     pause_effective: PauseEffectiveEvent | None = None
-    # HITL approval gate
-    user_input_requested: UserInputRequestedEvent | None = None
-    user_input_resolved: UserInputResolvedEvent | None = None
+    # "Your turn" signals (a conversation run parked in / left ``waiting``)
+    your_turn: YourTurnEvent | None = None
+    your_turn_ended: YourTurnEndedEvent | None = None
     # Epic lifecycle (user status toggle / merge fact)
     epic_status_changed: EpicStatusChangedEvent | None = None
     epic_merged: EpicMergedEvent | None = None

@@ -84,15 +84,15 @@ export function toRunActivityAction(event: RunEvent): RunActivityAction | null {
       // narrowing: event is ToolResultEvent — thread_id is required(string)
       return { type: "TOOL_RESULT", threadId: event.thread_id, event };
     }
-    case "user_input_requested": {
-      // narrowing: event is UserInputRequestedEvent — the run parked in
-      // "waiting" (your turn). question is always empty in P3 (the question is
-      // the agent's final thread message) and is intentionally dropped here.
-      return { type: "USER_INPUT_REQUESTED", threadId: event.thread_id };
+    case "your_turn": {
+      // narrowing: event is YourTurnEvent — the run parked in "waiting"
+      // (your turn). The event carries no text: the agent's question or
+      // report is its final message in the thread.
+      return { type: "YOUR_TURN", threadId: event.thread_id };
     }
-    case "user_input_resolved": {
-      // narrowing: event is UserInputResolvedEvent
-      return { type: "USER_INPUT_RESOLVED", threadId: event.thread_id };
+    case "your_turn_ended": {
+      // narrowing: event is YourTurnEndedEvent
+      return { type: "YOUR_TURN_ENDED", threadId: event.thread_id };
     }
     case "user_message_committed": {
       // narrowing: event is UserMessageCommittedEvent
@@ -202,14 +202,13 @@ export function applyRunCachePatch(
       patchRunStatus(qc, projectId, epicId, "running");
       qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
       break;
-    case "user_input_requested":
-      // narrowing: event is UserInputRequestedEvent — the run parked in
-      // "waiting". pending_question no longer exists (the question is the
-      // agent's final thread message).
+    case "your_turn":
+      // narrowing: event is YourTurnEvent — the run parked in "waiting" (the
+      // agent's question or report is its final thread message).
       //
       // Patch the run IDENTITY fields too, not just the status: the runState
       // cache is otherwise "mount-time snapshot + status patches", so
-      // run_id / manager_thread freeze at mount and a later re-dispatch from
+      // run_id / thread_id freeze at mount and a later re-dispatch from
       // this cache (dispatchForRunStatus on epic/trial change) would attribute
       // the parked marker to a long-gone run — reviving the pre-P4
       // misattribution. role is unknown here; the coalesced parked-thread
@@ -222,16 +221,16 @@ export function applyRunCachePatch(
               ...prev,
               status: "waiting",
               run_id: event.run_id ?? prev.run_id,
-              manager_thread: event.thread_id || prev.manager_thread,
+              thread_id: event.thread_id || prev.thread_id,
             }
           : prev,
       );
       break;
-    case "user_input_resolved":
-      // narrowing: event is UserInputResolvedEvent
-      // Symmetric with reducer USER_INPUT_RESOLVED: revert to running only when waiting.
-      // Guard to prevent erroneously reverting to running when a delayed resolved arrives
-      // after a terminal state (completed/failed/error).
+    case "your_turn_ended":
+      // narrowing: event is YourTurnEndedEvent
+      // Symmetric with reducer YOUR_TURN_ENDED: revert to running only when waiting.
+      // Guard to prevent erroneously reverting to running when a delayed your_turn_ended
+      // arrives after a terminal state (completed/failed/error).
       qc.setQueryData<RunState>(queryKeys.runState.get(projectId, epicId), (prev) =>
         prev && prev.status === "waiting" ? { ...prev, status: "running" } : prev,
       );

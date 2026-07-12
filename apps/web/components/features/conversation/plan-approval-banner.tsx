@@ -11,7 +11,7 @@ import { useT } from "@/lib/i18n/provider";
  * Plan-approval control (lifecycle redesign P2).
  *
  * Approval is an explicit user operation bound to a task-plan snapshot hash —
- * a chat reply no longer grants it.  Shown near the awaiting-input banner while
+ * a chat reply no longer grants it.  Shown near the your-turn banner while
  * the active trial is displayed and the current plan is unapproved.  The click
  * records the approval (POST /plan/approval with the backend-computed hash we
  * merely echo) and then posts a short i18n user message through the existing

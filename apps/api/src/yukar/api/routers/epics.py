@@ -62,7 +62,7 @@ class RunSummary(BaseModel):
 
     status: RunStatus
     run_id: str
-    # The conversation thread the run rides on (RunState.manager_thread).
+    # The conversation thread the run rides on (RunState.thread_id).
     thread_id: str | None = None
     # Which conversation agent the user would be replying to.
     role: Literal["manager", "reviewer"] = "manager"
@@ -107,7 +107,7 @@ async def _load_run_summary(root: str, project_id: str, epic_id: str) -> RunSumm
     return RunSummary(
         status=state.status,
         run_id=state.run_id,
-        thread_id=state.manager_thread,
+        thread_id=state.thread_id,
         role=state.role,
         last_event_at=state.last_event_at,
     )

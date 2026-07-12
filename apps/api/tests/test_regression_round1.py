@@ -376,7 +376,7 @@ class TestEpicStatusUntouchedByRuns:
         """POST /run leaves the epic status open before, during, and after the turn.
 
         P3: a conversation run never completes — the scripted turn ends by
-        parking in ``waiting`` (user_input_requested), which is the new
+        parking in ``waiting`` (your_turn), which is the new
         "the run's turn is over" signal.
         """
         from yukar.events.bus import subscribe
@@ -397,7 +397,7 @@ class TestEpicStatusUntouchedByRuns:
                         event = await asyncio.wait_for(q.get(), timeout=10.0)
                         if event is None:
                             break
-                        if hasattr(event, "type") and event.type == "user_input_requested":
+                        if hasattr(event, "type") and event.type == "your_turn":
                             parked.set()
                     except TimeoutError:
                         break

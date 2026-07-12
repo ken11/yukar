@@ -83,7 +83,7 @@ export function EpicShell({
     //   1. epic.active_thread_id (liveActiveThreadId) — live-fetched via useQuery, highest priority
     //   2. First thread in initialThreads where role=manager && status!=="archived" (RSC prop, not live cache)
     //   3. "manager" (legacy compatibility fallback, applied by consumers)
-    // RunState.manager_thread is the RUN's own thread and feeds currentRun
+    // RunState.thread_id is the RUN's own thread and feeds currentRun
     // (your-turn banner attribution), never the composer.
     // The only update path for composer display: liveActiveThreadId → activeThreadId → SET_ACTIVE_TRIAL_ID.
     // The archived exclusion in INIT / applyTreeInit is a fix for tree display nodes and is separate from the composer.
@@ -185,11 +185,11 @@ export function EpicShell({
         )}
 
         {/* your turn: cyan dot + concise text (datum language). Shown only when a
-            run actually parked (awaitingInput marker) — a never-run epic is
+            run actually parked (yourTurn marker) — a never-run epic is
             "waiting" too but carries no marker, so no banner. Role-aware (P4):
             currentRun.role says WHICH agent is waiting (Reviewer report vs the
             neutral manager wording). */}
-        {!runFailed && activityState.awaitingInput != null && (
+        {!runFailed && activityState.yourTurn != null && (
           <div
             className="shrink-0 flex items-center gap-2 px-6 py-2"
             style={{
@@ -206,7 +206,7 @@ export function EpicShell({
                   a late role-refresh response describing an older (reviewer)
                   run must not label a newer manager park. */}
               {activityState.currentRun?.role === "reviewer" &&
-              activityState.currentRun.threadId === activityState.awaitingInput?.threadId
+              activityState.currentRun.threadId === activityState.yourTurn?.threadId
                 ? t("epicShell.awaitingInputReviewer")
                 : t("epicShell.awaitingInput")}
             </p>

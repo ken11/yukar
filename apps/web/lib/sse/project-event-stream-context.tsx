@@ -17,8 +17,8 @@ import type {
   EpicStatusChangedEvent,
   ProjectLifecycleEvent,
   SensitiveFileWrittenEvent,
-  UserInputRequestedEvent,
-  UserInputResolvedEvent,
+  YourTurnEndedEvent,
+  YourTurnEvent,
 } from "@/lib/api/endpoints";
 import type { SseMessage } from "./use-event-stream";
 import { useEventStream } from "./use-event-stream";
@@ -27,7 +27,7 @@ import { useEventStream } from "./use-event-stream";
 
 /**
  * Union of all event types that can arrive via the project-level SSE.
- * user_input_requested / user_input_resolved are the "your turn" signals (P4):
+ * your_turn / your_turn_ended are the "your turn" signals (P4):
  * a conversation run parked in "waiting" / left it — used for live board badges.
  */
 export type ProjectStreamEvent =
@@ -36,8 +36,8 @@ export type ProjectStreamEvent =
   | EpicStatusChangedEvent
   | EpicMergedEvent
   | SensitiveFileWrittenEvent
-  | UserInputRequestedEvent
-  | UserInputResolvedEvent;
+  | YourTurnEvent
+  | YourTurnEndedEvent;
 
 /** Guard: checks whether SSE data has the shape of a ProjectStreamEvent */
 function isProjectStreamEvent(data: unknown): data is ProjectStreamEvent {

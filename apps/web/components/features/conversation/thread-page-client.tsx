@@ -57,11 +57,11 @@ export function ThreadPageClient({
 
   // Your turn (P4 attribution split): the banner belongs to the run's OWN
   // conversation — exactly the parked marker's threadId (SSE event.thread_id /
-  // REST RunState.manager_thread). No active-trial fallback: during a reviewer
+  // REST RunState.thread_id). No active-trial fallback: during a reviewer
   // run the marker sits on the reviewer thread and the Trial thread must NOT
   // show the banner (this was the misattribution bug).
-  const parked = activityState.awaitingInput;
-  const isAwaitingInput = parked != null && threadId === parked.threadId;
+  const parked = activityState.yourTurn;
+  const isYourTurn = parked != null && threadId === parked.threadId;
 
   // Bug4: Clear the live buffer when the authoritative REST data arrives
   const prevMsgCountRef = useRef(messages.length);
@@ -155,7 +155,7 @@ export function ThreadPageClient({
           isRunning={isRunning}
           runFailed={runFailed}
           runError={runError}
-          isAwaitingInput={isAwaitingInput}
+          isYourTurn={isYourTurn}
           onSendMessage={sendMessage}
           isSending={isSending}
           isActiveTrial={isActiveTrial}

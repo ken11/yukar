@@ -135,7 +135,7 @@ test.describe
       // Create a second epic via the API, load the board (row present, no
       // badge — never ran), then start its run via the API and watch the badge
       // appear WITHOUT any reload when the run parks in "waiting"
-      // (user_input_requested via the project-scope SSE).
+      // (your_turn via the project-scope SSE).
       const createRes = await page.request.post(`/api/projects/${state.projectId}/epics`, {
         data: {
           title: "Board badge epic",

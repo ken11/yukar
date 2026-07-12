@@ -81,8 +81,8 @@ export type ManagerMessageEvent = components["schemas"]["ManagerMessageEvent"];
 export type DelegationEvent = components["schemas"]["DelegationEvent"];
 export type EvaluatorStartedEvent = components["schemas"]["EvaluatorStartedEvent"];
 export type PauseEffectiveEvent = components["schemas"]["PauseEffectiveEvent"];
-export type UserInputRequestedEvent = components["schemas"]["UserInputRequestedEvent"];
-export type UserInputResolvedEvent = components["schemas"]["UserInputResolvedEvent"];
+export type YourTurnEvent = components["schemas"]["YourTurnEvent"];
+export type YourTurnEndedEvent = components["schemas"]["YourTurnEndedEvent"];
 export type UserMessageCommittedEvent = components["schemas"]["UserMessageCommittedEvent"];
 export type WorkerFailedEvent = components["schemas"]["WorkerFailedEvent"];
 export type SensitiveFileWrittenEvent = components["schemas"]["SensitiveFileWrittenEvent"];
@@ -109,8 +109,8 @@ export type RunEvent =
   | DelegationEvent
   | EvaluatorStartedEvent
   | PauseEffectiveEvent
-  | UserInputRequestedEvent
-  | UserInputResolvedEvent
+  | YourTurnEvent
+  | YourTurnEndedEvent
   | UserMessageCommittedEvent
   | SensitiveFileWrittenEvent
   | EpicMergedEvent;

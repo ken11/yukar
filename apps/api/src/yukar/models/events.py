@@ -44,10 +44,10 @@ class RunStartedEvent(BaseEvent):
 
 
 class RunCompletedEvent(BaseEvent):
-    """Terminal event for JOB runs only (resolve / arbiter / dummy).
+    """Terminal event for JOB runs only (resolve / arbiter).
 
     Conversation runs (Manager / Reviewer) never emit this: a conversation has
-    no end — its turns park in ``waiting`` instead (``UserInputRequestedEvent``).
+    no end — its turns park in ``waiting`` instead (``YourTurnEvent``).
     """
 
     type: Literal["run_completed"] = "run_completed"
@@ -245,32 +245,31 @@ class PauseEffectiveEvent(BaseEvent):
     type: Literal["pause_effective"] = "pause_effective"
 
 
-class UserInputRequestedEvent(BaseEvent):
+class YourTurnEvent(BaseEvent):
     """Emitted when a conversation run parks in ``waiting`` — it is the user's turn.
 
-    Every ended agent turn publishes this (the agent's question or report is
-    its final message in the thread, so ``question`` is always empty for new
-    events; the field survives for legacy replay compatibility until the P5
-    event rename).  ``thread_id`` is the conversation the run is bound to.
+    Every ended agent turn publishes this.  The agent's question or report is
+    its final message in the thread (the event carries no text — it is a pure
+    "your turn" signal).  ``thread_id`` is the conversation the run is bound to.
     """
 
-    type: Literal["user_input_requested"] = "user_input_requested"
+    type: Literal["your_turn"] = "your_turn"
     thread_id: str
-    question: str
 
 
-class UserInputResolvedEvent(BaseEvent):
+class YourTurnEndedEvent(BaseEvent):
     """Emitted when a waiting run receives the user's reply and leaves ``waiting``.
 
-    Paired with ``UserInputRequestedEvent`` — publish this immediately after the run
+    Paired with ``YourTurnEvent`` — publish this immediately after the run
     transitions back to ``running``.  Because both events land in the replay buffer,
-    a subscriber that reconnects mid-run will receive request→resolved in order,
-    so the final replayed state is ``running`` rather than the stale ``waiting``.
+    a subscriber that reconnects mid-run will receive your_turn→your_turn_ended in
+    order, so the final replayed state is ``running`` rather than the stale
+    ``waiting``.
 
     ``thread_id`` is the conversation the run is bound to.
     """
 
-    type: Literal["user_input_resolved"] = "user_input_resolved"
+    type: Literal["your_turn_ended"] = "your_turn_ended"
     thread_id: str
 
 
@@ -416,8 +415,8 @@ RunEvent = Annotated[
     | DelegationEvent
     | EvaluatorStartedEvent
     | PauseEffectiveEvent
-    | UserInputRequestedEvent
-    | UserInputResolvedEvent
+    | YourTurnEvent
+    | YourTurnEndedEvent
     | EpicStatusChangedEvent
     | EpicMergedEvent
     | EpicMergeProgressEvent

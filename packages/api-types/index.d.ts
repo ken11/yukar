@@ -208,7 +208,7 @@ export interface paths {
          *
          *     Delivers only lifecycle events: run_started / run_completed / run_failed /
          *     run_stopped / run_paused / run_resumed, the "your turn" signals
-         *     user_input_requested / user_input_resolved (a conversation run parked in
+         *     your_turn / your_turn_ended (a conversation run parked in
          *     ``waiting`` / left it — used for live board badges), epic_status_changed,
          *     epic_merged and merge-progress events.  High-frequency events (token,
          *     tool_call, etc.) are excluded — this stream is intended for notification
@@ -2639,10 +2639,10 @@ export interface components {
         };
         /**
          * RunCompletedEvent
-         * @description Terminal event for JOB runs only (resolve / arbiter / dummy).
+         * @description Terminal event for JOB runs only (resolve / arbiter).
          *
          *     Conversation runs (Manager / Reviewer) never emit this: a conversation has
-         *     no end — its turns park in ``waiting`` instead (``UserInputRequestedEvent``).
+         *     no end — its turns park in ``waiting`` instead (``YourTurnEvent``).
          */
         RunCompletedEvent: {
             /** Project Id */
@@ -2691,8 +2691,8 @@ export interface components {
             delegation?: components["schemas"]["DelegationEvent"] | null;
             evaluator_started?: components["schemas"]["EvaluatorStartedEvent"] | null;
             pause_effective?: components["schemas"]["PauseEffectiveEvent"] | null;
-            user_input_requested?: components["schemas"]["UserInputRequestedEvent"] | null;
-            user_input_resolved?: components["schemas"]["UserInputResolvedEvent"] | null;
+            your_turn?: components["schemas"]["YourTurnEvent"] | null;
+            your_turn_ended?: components["schemas"]["YourTurnEndedEvent"] | null;
             epic_status_changed?: components["schemas"]["EpicStatusChangedEvent"] | null;
             epic_merged?: components["schemas"]["EpicMergedEvent"] | null;
             epic_merge_progress?: components["schemas"]["EpicMergeProgressEvent"] | null;
@@ -2833,8 +2833,8 @@ export interface components {
              * @enum {string}
              */
             role: "manager" | "reviewer";
-            /** Manager Thread */
-            manager_thread?: string | null;
+            /** Thread Id */
+            thread_id?: string | null;
             /** Active Workers */
             active_workers?: components["schemas"]["ActiveWorker"][];
             /** Started At */
@@ -3551,70 +3551,6 @@ export interface components {
             as_of_date: string;
         };
         /**
-         * UserInputRequestedEvent
-         * @description Emitted when a conversation run parks in ``waiting`` — it is the user's turn.
-         *
-         *     Every ended agent turn publishes this (the agent's question or report is
-         *     its final message in the thread, so ``question`` is always empty for new
-         *     events; the field survives for legacy replay compatibility until the P5
-         *     event rename).  ``thread_id`` is the conversation the run is bound to.
-         */
-        UserInputRequestedEvent: {
-            /** Project Id */
-            project_id: string;
-            /** Epic Id */
-            epic_id: string;
-            /** Run Id */
-            run_id: string;
-            /**
-             * Ts
-             * Format: date-time
-             */
-            ts?: string;
-            /**
-             * Type
-             * @default user_input_requested
-             * @constant
-             */
-            type: "user_input_requested";
-            /** Thread Id */
-            thread_id: string;
-            /** Question */
-            question: string;
-        };
-        /**
-         * UserInputResolvedEvent
-         * @description Emitted when a waiting run receives the user's reply and leaves ``waiting``.
-         *
-         *     Paired with ``UserInputRequestedEvent`` — publish this immediately after the run
-         *     transitions back to ``running``.  Because both events land in the replay buffer,
-         *     a subscriber that reconnects mid-run will receive request→resolved in order,
-         *     so the final replayed state is ``running`` rather than the stale ``waiting``.
-         *
-         *     ``thread_id`` is the conversation the run is bound to.
-         */
-        UserInputResolvedEvent: {
-            /** Project Id */
-            project_id: string;
-            /** Epic Id */
-            epic_id: string;
-            /** Run Id */
-            run_id: string;
-            /**
-             * Ts
-             * Format: date-time
-             */
-            ts?: string;
-            /**
-             * Type
-             * @default user_input_resolved
-             * @constant
-             */
-            type: "user_input_resolved";
-            /** Thread Id */
-            thread_id: string;
-        };
-        /**
          * UserMessageCommittedEvent
          * @description Emitted by the FSM hook immediately after a user message is persisted.
          *
@@ -3757,6 +3693,68 @@ export interface components {
             task_id?: string | null;
             /** Repo */
             repo?: string | null;
+        };
+        /**
+         * YourTurnEndedEvent
+         * @description Emitted when a waiting run receives the user's reply and leaves ``waiting``.
+         *
+         *     Paired with ``YourTurnEvent`` — publish this immediately after the run
+         *     transitions back to ``running``.  Because both events land in the replay buffer,
+         *     a subscriber that reconnects mid-run will receive your_turn→your_turn_ended in
+         *     order, so the final replayed state is ``running`` rather than the stale
+         *     ``waiting``.
+         *
+         *     ``thread_id`` is the conversation the run is bound to.
+         */
+        YourTurnEndedEvent: {
+            /** Project Id */
+            project_id: string;
+            /** Epic Id */
+            epic_id: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts?: string;
+            /**
+             * Type
+             * @default your_turn_ended
+             * @constant
+             */
+            type: "your_turn_ended";
+            /** Thread Id */
+            thread_id: string;
+        };
+        /**
+         * YourTurnEvent
+         * @description Emitted when a conversation run parks in ``waiting`` — it is the user's turn.
+         *
+         *     Every ended agent turn publishes this.  The agent's question or report is
+         *     its final message in the thread (the event carries no text — it is a pure
+         *     "your turn" signal).  ``thread_id`` is the conversation the run is bound to.
+         */
+        YourTurnEvent: {
+            /** Project Id */
+            project_id: string;
+            /** Epic Id */
+            epic_id: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts?: string;
+            /**
+             * Type
+             * @default your_turn
+             * @constant
+             */
+            type: "your_turn";
+            /** Thread Id */
+            thread_id: string;
         };
     };
     responses: never;

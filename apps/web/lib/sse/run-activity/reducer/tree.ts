@@ -194,7 +194,7 @@ export function handleTree(
 
     // #38: Removed dead thread_id cast branch. ManagerTurnStartedEvent has no thread_id,
     // so use tree.manager.threadId directly.
-    // Clear awaitingInput because the Manager has started working again.
+    // Clear yourTurn because the Manager has started working again.
     // Turn start = start of a new stream, so reset streamState to emptyStreamState().
     // ensureLiveBuffer preserves done=true for existing keys, so it is not used (#multi-turn-regression).
     case "MANAGER_TURN_STARTED": {
@@ -204,7 +204,7 @@ export function handleTree(
       return {
         ...state,
         runStatus: state.runStatus === "waiting" ? "running" : state.runStatus,
-        awaitingInput: null,
+        yourTurn: null,
         treeState: {
           ...tree,
           manager: { ...tree.manager, status: "thinking", isStreaming: true },

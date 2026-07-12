@@ -38,8 +38,8 @@ async def test_waiting_survives_restart_and_resumes_on_reply(tmp_path: Path) -> 
     from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
     from yukar.models.events import (
         RunCompletedEvent,
-        UserInputRequestedEvent,
         WorkerStartedEvent,
+        YourTurnEvent,
     )
     from yukar.runs.recovery import recover_interrupted_runs
     from yukar.storage import state_repo
@@ -101,7 +101,7 @@ async def test_waiting_survives_restart_and_resumes_on_reply(tmp_path: Path) -> 
     async def _collect() -> None:
         async for ev in event_bus.event_stream(project_id, epic_id):
             events.append(ev)
-            if isinstance(ev, UserInputRequestedEvent):
+            if isinstance(ev, YourTurnEvent):
                 awaiting.set()
 
     collector = asyncio.create_task(_collect())
@@ -164,8 +164,11 @@ async def test_waiting_survives_restart_and_resumes_on_reply(tmp_path: Path) -> 
         ),
     )
 
-    # orch1's teardown published a None sentinel that closed the first
-    # subscriber, so subscribe a fresh collector for the continuation run.
+    # A shutdown cancel does NOT publish the SSE sentinel (P5: the
+    # conversation is not over), so the first collector is still alive —
+    # close it explicitly and use a fresh one for the continuation run so
+    # the two phases' assertions stay separate.
+    # (test_shelve_stream_continuity.py proves the single-stream continuity.)
     collector.cancel()
     await asyncio.gather(collector, return_exceptions=True)
 
@@ -227,7 +230,7 @@ async def test_waiting_survives_restart_and_resumes_on_reply(tmp_path: Path) -> 
     # The continuation parks exactly once — AFTER doing the work (its terminal
     # park), never before (which would strand the reply).
     run2_parks = [
-        e for e in events2 if isinstance(e, UserInputRequestedEvent) and e.run_id == "run-2"
+        e for e in events2 if isinstance(e, YourTurnEvent) and e.run_id == "run-2"
     ]
     assert len(run2_parks) == 1, (
         f"continuation should park exactly once (terminal park), got {len(run2_parks)}"

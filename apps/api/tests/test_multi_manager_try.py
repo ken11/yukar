@@ -1057,16 +1057,19 @@ class TestStartRunResolvesActiveTrialId:
 
 
 # ---------------------------------------------------------------------------
-# Test 13: Regression — post_message after run completes (resolved/failed)
+# Test 13: Regression — post_message with LEGACY resolved/failed entries
 # ---------------------------------------------------------------------------
 
 
 class TestPostMessageAfterRunCompletes:
-    """Regression: run completion (resolved/failed) must not block follow-up messages.
+    """Legacy compat: resolved/failed manager entries must not block messages.
 
-    Before the fix, ``_is_active_manager_thread`` checked ``entry.status == "active"``
-    so a resolved/failed manager trial would fall through to the no-op inject path
-    instead of the continuation ``start_or_inject`` path.
+    Manager/Reviewer threads are never transitioned to resolved/failed any
+    more (a conversation has no end), but entries written by old versions
+    still exist on disk and must stay continuable.  Before the fix,
+    ``_is_active_manager_thread`` checked ``entry.status == "active"`` so a
+    legacy resolved/failed manager trial would fall through to the no-op
+    inject path instead of the continuation ``start_or_inject`` path.
     """
 
     def _make_epic(self, active_thread_id: str | None = None) -> Any:
@@ -1099,7 +1102,7 @@ class TestPostMessageAfterRunCompletes:
     # ------------------------------------------------------------------
 
     def test_resolved_manager_is_active(self) -> None:
-        """resolved manager trial is still continuable (not archived)."""
+        """A legacy resolved manager entry is still continuable (not archived)."""
         from yukar.api.routers.threads import _is_active_manager_thread
 
         epic = self._make_epic(active_thread_id=None)
@@ -1107,7 +1110,7 @@ class TestPostMessageAfterRunCompletes:
         assert _is_active_manager_thread(epic, tf, "manager") is True
 
     def test_failed_manager_is_active(self) -> None:
-        """failed manager trial is still continuable (not archived)."""
+        """A legacy failed manager entry is still continuable (not archived)."""
         from yukar.api.routers.threads import _is_active_manager_thread
 
         epic = self._make_epic(active_thread_id=None)
@@ -1115,7 +1118,7 @@ class TestPostMessageAfterRunCompletes:
         assert _is_active_manager_thread(epic, tf, "manager") is True
 
     def test_resolved_named_trial_is_active(self) -> None:
-        """resolved named trial (active_thread_id=th-x) is still continuable."""
+        """A legacy resolved named trial (active_thread_id=th-x) is still continuable."""
         from yukar.api.routers.threads import _is_active_manager_thread
 
         epic = self._make_epic(active_thread_id="th-x")
@@ -1152,7 +1155,7 @@ class TestPostMessageAfterRunCompletes:
     async def test_post_message_after_resolved_calls_start_or_inject(
         self, app_client: AsyncClient
     ) -> None:
-        """After run completes (resolved), a follow-up POST routes to start_or_inject.
+        """With a legacy resolved entry on disk, a POST routes to start_or_inject.
 
         Uses the lazy-registration "manager" thread id path (active_thread_id=None).
         """

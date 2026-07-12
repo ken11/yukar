@@ -25,7 +25,7 @@ export type RunActivityAction =
   | { type: "RUN_PREPARING" }
   | { type: "RUN_STARTED" }
   // RUN_COMPLETED is emitted by JOB runs only (resolve / arbiter) — a
-  // conversation run never completes (it parks via USER_INPUT_REQUESTED).
+  // conversation run never completes (it parks via YOUR_TURN).
   | { type: "RUN_COMPLETED" }
   | { type: "RUN_FAILED"; error?: string }
   | { type: "RUN_STOPPED" }
@@ -48,19 +48,19 @@ export type RunActivityAction =
   | { type: "TOOL_RESULT"; threadId: string; event: ToolResultEvent }
   // Worker failure
   | { type: "WORKER_FAILED"; event: WorkerFailedEvent }
-  // Your-turn signals (P3): REQUESTED = the run parked in "waiting",
-  // RESOLVED = the user's reply woke it. No question payload — the question is
-  // the agent's final message in the thread.
-  | { type: "USER_INPUT_REQUESTED"; threadId: string }
-  | { type: "USER_INPUT_RESOLVED"; threadId: string }
+  // Your-turn signals (P3): YOUR_TURN = the run parked in "waiting",
+  // YOUR_TURN_ENDED = the user's reply woke it. No question payload — the
+  // question is the agent's final message in the thread.
+  | { type: "YOUR_TURN"; threadId: string }
+  | { type: "YOUR_TURN_ENDED"; threadId: string }
   // Clears the live buffer for the specified thread when REST authoritative data arrives, preventing double rendering (Bug4)
   | { type: "CLEAR_LIVE_BUFFER"; threadId: string }
   // Immediate visibility of injected utterances (PR-C)
   | { type: "USER_MESSAGE_COMMITTED"; event: UserMessageCommittedEvent }
   // Sets the active manager trial id (from epic.active_thread_id) — composer
   // rights + tree scoping + links. P4 split: never sourced from
-  // RunState.manager_thread (that is the run's own thread, see SET_CURRENT_RUN).
+  // RunState.thread_id (that is the run's own thread, see SET_CURRENT_RUN).
   | { type: "SET_ACTIVE_TRIAL_ID"; threadId: string | null }
   // Sets the conversation run the epic's state refers to (REST RunState
-  // manager_thread + role) — "your turn" attribution and role wording.
+  // thread_id + role) — "your turn" attribution and role wording.
   | { type: "SET_CURRENT_RUN"; threadId: string; role: "manager" | "reviewer" | null };

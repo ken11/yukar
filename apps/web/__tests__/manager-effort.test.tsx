@@ -67,7 +67,7 @@ function effortWrapper(queryClient: QueryClient, contextEpic: Epic | null = base
       runStatus: "waiting" as const,
       pausePending: false,
       runError: null,
-      awaitingInput: null,
+      yourTurn: null,
       activeTrialId: null,
       currentRun: null,
       treeState: { manager: null, workers: {}, evaluators: {}, taskToWorker: {} },

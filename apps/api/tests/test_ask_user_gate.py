@@ -7,14 +7,14 @@ recorded in plan_approval.yaml; a chat reply never opens the dispatch gate.
 
 Covers:
 - Ending a turn parks the run in ``waiting`` and publishes
-  UserInputRequestedEvent (question always empty — pure "your turn" signal).
+  YourTurnEvent (a pure "your turn" signal — no payload text).
 - inject_message wakes the waiting run and restores running status.
 - dispatch is host-rejected until the recorded approval matches the plan.
 - stop() while waiting settles the state as ``waiting`` (restartable).
-- UserInputRequestedEvent is published to the event bus and SSE-serialized.
+- YourTurnEvent is published to the event bus and SSE-serialized.
 - A waiting run is preserved as-is by startup recovery (legacy
   awaiting_input state files are read back as waiting).
-- RunEvent discriminated union includes UserInputRequestedEvent.
+- RunEvent discriminated union includes YourTurnEvent.
 """
 
 from __future__ import annotations
@@ -56,11 +56,11 @@ async def _bootstrap(root: str, project_id: str, epic_id: str, repo_path: Path) 
 
 
 # ---------------------------------------------------------------------------
-# Unit: UserInputRequestedEvent round-trip
+# Unit: YourTurnEvent round-trip
 # ---------------------------------------------------------------------------
 
 
-class TestUserInputRequestedEventRoundTrip:
+class TestYourTurnEventRoundTrip:
     def _base(self) -> dict[str, Any]:
         from datetime import UTC, datetime
 
@@ -74,31 +74,28 @@ class TestUserInputRequestedEventRoundTrip:
     def test_roundtrip_via_run_event_union(self) -> None:
         from pydantic import TypeAdapter
 
-        from yukar.models.events import RunEvent, UserInputRequestedEvent
+        from yukar.models.events import RunEvent, YourTurnEvent
 
-        ev = UserInputRequestedEvent(
+        ev = YourTurnEvent(
             **self._base(),
             thread_id="manager",
-            question="Is this plan OK?",
         )
         ta: TypeAdapter[RunEvent] = TypeAdapter(RunEvent)
         data = ev.model_dump(mode="json")
         parsed = ta.validate_python(data)
-        assert isinstance(parsed, UserInputRequestedEvent)
-        assert parsed.type == "user_input_requested"
+        assert isinstance(parsed, YourTurnEvent)
+        assert parsed.type == "your_turn"
         assert parsed.thread_id == "manager"
-        assert parsed.question == "Is this plan OK?"
 
     def test_sse_serialization(self) -> None:
-        """UserInputRequestedEvent is serialized to SSE with type=user_input_requested."""
+        """YourTurnEvent is serialized to SSE with type=your_turn."""
         from yukar.events.sse import run_event_to_sse
-        from yukar.models.events import UserInputRequestedEvent
+        from yukar.models.events import YourTurnEvent
 
-        ev = UserInputRequestedEvent(**self._base(), thread_id="manager", question="Confirm plan?")
+        ev = YourTurnEvent(**self._base(), thread_id="manager")
         sse = run_event_to_sse(ev)
-        assert "event: user_input_requested" in sse
-        assert "user_input_requested" in sse
-        assert "Confirm plan?" in sse
+        assert "event: your_turn" in sse
+        assert "your_turn" in sse
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +217,7 @@ class TestWaitingGate:
 
 
 # ---------------------------------------------------------------------------
-# Unit: Major-1 fix — non-manager messages must not unlock awaiting_input
+# Unit: Major-1 fix — non-manager messages must not unlock the waiting gate
 # ---------------------------------------------------------------------------
 
 
@@ -238,7 +235,7 @@ class TestWaitForUserInputThreadFiltering:
         )
 
     async def test_non_manager_message_does_not_unlock(self) -> None:
-        """A message for a worker thread must not release the awaiting_input gate.
+        """A message for a worker thread must not release the waiting gate.
 
         The gate must remain open until a 'manager'-addressed message arrives.
         """
@@ -276,7 +273,7 @@ class TestWaitForUserInputThreadFiltering:
             orch.inject_message("worker-1", "This is a worker message")
             await asyncio.sleep(0.05)
 
-            # The task must still be running (awaiting_input not cleared).
+            # The task must still be blocked (the waiting gate not cleared).
             assert not wait_task.done(), (
                 "_wait_for_user_input returned after a non-manager message — "
                 "the gate was incorrectly released"
@@ -342,7 +339,7 @@ class TestWaitForUserInputThreadFiltering:
 
 
 # ---------------------------------------------------------------------------
-# Unit: Major-2 fix — pause() is no-op while awaiting_input
+# Unit: Major-2 fix — pause() is no-op while parked in waiting
 # ---------------------------------------------------------------------------
 
 
@@ -360,7 +357,7 @@ class TestPauseDuringAwaitingInput:
         )
 
     async def test_pause_noop_when_awaiting(self) -> None:
-        """pause() while awaiting_input must not clear _paused."""
+        """pause() while parked in waiting must not clear _paused."""
         orch = self._make_orchestrator()
         orch._awaiting_user = True
 
@@ -371,14 +368,14 @@ class TestPauseDuringAwaitingInput:
 
         # _paused must still be set — pause was a no-op.
         assert orch._paused.is_set(), (
-            "pause() cleared _paused while awaiting_input — "
+            "pause() cleared _paused while parked in waiting — "
             "this would cause a post-answer deadlock at the next _checkpoint()"
         )
         # _run_status must not change to 'paused'.
         assert orch._run_status == "running"
 
     async def test_pause_then_answer_does_not_block(self) -> None:
-        """pause() during awaiting_input followed by a user answer must not stall.
+        """pause() while parked, followed by a user answer, must not stall.
 
         Regression test: if pause() cleared _paused, the run would hang at
         _checkpoint() after _wait_for_user_input returned, even though
@@ -456,7 +453,7 @@ class TestPlanGateE2E:
 
         Verifies:
         1. The plan-presenting turn ends → the run parks in ``waiting`` and a
-           UserInputRequestedEvent (empty question) is published.
+           YourTurnEvent is published.
         2. A user reply WITHOUT the Approve-plan operation leaves dispatch
            host-rejected (no workers start).
         3. After the approval is recorded in plan_approval.yaml (the explicit
@@ -471,7 +468,7 @@ class TestPlanGateE2E:
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.models.events import UserInputRequestedEvent, WorkerStartedEvent
+        from yukar.models.events import WorkerStartedEvent, YourTurnEvent
         from yukar.models.task import PlanApproval, compute_plan_hash
         from yukar.storage import plan_approval_repo, state_repo, tasks_repo
 
@@ -543,7 +540,7 @@ class TestPlanGateE2E:
             park_count = 0
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
-                if isinstance(ev, UserInputRequestedEvent):
+                if isinstance(ev, YourTurnEvent):
                     if park_count < len(park_events):
                         park_events[park_count].set()
                     park_count += 1
@@ -618,11 +615,11 @@ class TestPlanGateE2E:
 
         event_types = [getattr(ev, "type", None) for ev in events_received]
 
-        # Every park is a pure "your turn" signal with an empty question.
-        uir_events = [e for e in events_received if isinstance(e, UserInputRequestedEvent)]
+        # Every park is a pure "your turn" signal.
+        uir_events = [e for e in events_received if isinstance(e, YourTurnEvent)]
         assert len(uir_events) >= 3, "Expected three parks (one per ended turn) on the bus"
-        assert all(e.question == "" for e in uir_events), (
-            "P3: the park signal must not carry a question payload"
+        assert all(e.thread_id == "manager" for e in uir_events), (
+            "The park signal must carry the conversation thread_id"
         )
 
         # No workers should have started before the approval was recorded.
@@ -655,7 +652,7 @@ class TestPlanGateE2E:
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.models.events import UserInputRequestedEvent
+        from yukar.models.events import YourTurnEvent
         from yukar.storage import state_repo
 
         root = str(tmp_path / "ws")
@@ -687,7 +684,7 @@ class TestPlanGateE2E:
         async def _collect() -> None:
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
-                if isinstance(ev, UserInputRequestedEvent):
+                if isinstance(ev, YourTurnEvent):
                     approval_requested.set()
 
         collector = asyncio.create_task(_collect())
@@ -731,7 +728,7 @@ class TestPlanGateE2E:
     ) -> None:
         """Simpler check: if the Manager plans on Turn 0 and ends its turn
         without dispatching, no WorkerStartedEvent appears before the park
-        (UserInputRequestedEvent).
+        (YourTurnEvent).
         """
         from unittest.mock import patch
 
@@ -739,7 +736,7 @@ class TestPlanGateE2E:
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.models.events import UserInputRequestedEvent, WorkerStartedEvent
+        from yukar.models.events import WorkerStartedEvent, YourTurnEvent
 
         root = str(tmp_path / "ws")
         project_id = "proj"
@@ -774,7 +771,7 @@ class TestPlanGateE2E:
         async def _collect() -> None:
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_in_order.append(ev)
-                if isinstance(ev, UserInputRequestedEvent):
+                if isinstance(ev, YourTurnEvent):
                     uir_seen.set()
 
         collector = asyncio.create_task(_collect())
@@ -790,32 +787,36 @@ class TestPlanGateE2E:
         with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
             run_task = asyncio.create_task(orch.start(root, project_id, epic_id, run_id))
 
-            # Wait for UserInputRequestedEvent.
+            # Wait for YourTurnEvent.
             await asyncio.wait_for(uir_seen.wait(), timeout=10.0)
 
-            # Cancel the run — we've confirmed ask_user was called.
+            # Cancel the run — we've confirmed the park was observed.
             run_task.cancel()
             with pytest.raises((asyncio.CancelledError, Exception)):
                 await run_task
 
-        await asyncio.wait_for(collector, timeout=5.0)
+        # A not-stopped cancel (shelve / shutdown) does not publish the SSE
+        # sentinel (P5 — the conversation is not over), so close the
+        # collector explicitly instead of waiting for stream end.
+        collector.cancel()
+        await asyncio.gather(collector, return_exceptions=True)
 
         # Find positions of key events.
         uir_positions = [
-            i for i, e in enumerate(events_in_order) if isinstance(e, UserInputRequestedEvent)
+            i for i, e in enumerate(events_in_order) if isinstance(e, YourTurnEvent)
         ]
         worker_positions = [
             i for i, e in enumerate(events_in_order) if isinstance(e, WorkerStartedEvent)
         ]
 
-        assert uir_positions, "UserInputRequestedEvent should be on the bus"
+        assert uir_positions, "YourTurnEvent should be on the bus"
 
-        # No worker should have started before UserInputRequestedEvent.
+        # No worker should have started before YourTurnEvent.
         if worker_positions:
             earliest_worker = min(worker_positions)
             earliest_uir = min(uir_positions)
             assert earliest_uir < earliest_worker, (
-                "WorkerStartedEvent appeared before UserInputRequestedEvent — "
+                "WorkerStartedEvent appeared before YourTurnEvent — "
                 "dispatch was called before user approval!"
             )
 
@@ -914,40 +915,39 @@ class TestWaitingRecovery:
 
 
 # ---------------------------------------------------------------------------
-# bus: UserInputRequestedEvent is replayed to late subscribers
+# bus: YourTurnEvent is replayed to late subscribers
 # ---------------------------------------------------------------------------
 
 
-class TestUserInputRequestedBusReplay:
+class TestYourTurnBusReplay:
     def test_uir_event_in_replay_buffer(self) -> None:
-        """UserInputRequestedEvent goes into the lifecycle replay buffer."""
+        """YourTurnEvent goes into the lifecycle replay buffer."""
         from yukar.events import bus as event_bus
-        from yukar.models.events import UserInputRequestedEvent
+        from yukar.models.events import YourTurnEvent
 
         event_bus._replay.clear()
 
-        ev = UserInputRequestedEvent(
+        ev = YourTurnEvent(
             project_id="p",
             epic_id="e",
             run_id="r",
             thread_id="manager",
-            question="Ready?",
         )
         event_bus.publish("p", "e", ev)
 
         buf = list(event_bus._replay[("p", "e")])
-        uir_in_buf = [x for x in buf if isinstance(x, UserInputRequestedEvent)]
+        uir_in_buf = [x for x in buf if isinstance(x, YourTurnEvent)]
         assert len(uir_in_buf) == 1
-        assert uir_in_buf[0].question == "Ready?"
+        assert uir_in_buf[0].thread_id == "manager"
 
 
 # ---------------------------------------------------------------------------
-# Bug 3: UserInputResolvedEvent — publish on resume + replay buffer
+# Bug 3: YourTurnEndedEvent — publish on resume + replay buffer
 # ---------------------------------------------------------------------------
 
 
-class TestUserInputResolvedEvent:
-    """UserInputResolvedEvent is published when resuming and replayed on reconnect."""
+class TestYourTurnEndedEvent:
+    """YourTurnEndedEvent is published when resuming and replayed on reconnect."""
 
     def _base(self) -> dict[str, Any]:
         from datetime import UTC, datetime
@@ -962,37 +962,37 @@ class TestUserInputResolvedEvent:
     def test_roundtrip_via_run_event_union(self) -> None:
         from pydantic import TypeAdapter
 
-        from yukar.models.events import RunEvent, UserInputResolvedEvent
+        from yukar.models.events import RunEvent, YourTurnEndedEvent
 
-        ev = UserInputResolvedEvent(
+        ev = YourTurnEndedEvent(
             **self._base(),
             thread_id="manager",
         )
         ta: TypeAdapter[RunEvent] = TypeAdapter(RunEvent)
         data = ev.model_dump(mode="json")
         parsed = ta.validate_python(data)
-        assert isinstance(parsed, UserInputResolvedEvent)
-        assert parsed.type == "user_input_resolved"
+        assert isinstance(parsed, YourTurnEndedEvent)
+        assert parsed.type == "your_turn_ended"
         assert parsed.thread_id == "manager"
 
     def test_sse_serialization(self) -> None:
-        """UserInputResolvedEvent serializes to SSE with type=user_input_resolved."""
+        """YourTurnEndedEvent serializes to SSE with type=your_turn_ended."""
         from yukar.events.sse import run_event_to_sse
-        from yukar.models.events import UserInputResolvedEvent
+        from yukar.models.events import YourTurnEndedEvent
 
-        ev = UserInputResolvedEvent(**self._base(), thread_id="manager")
+        ev = YourTurnEndedEvent(**self._base(), thread_id="manager")
         sse = run_event_to_sse(ev)
-        assert "event: user_input_resolved" in sse
-        assert "user_input_resolved" in sse
+        assert "event: your_turn_ended" in sse
+        assert "your_turn_ended" in sse
 
     def test_resolved_event_in_replay_buffer(self) -> None:
-        """UserInputResolvedEvent goes into the lifecycle replay buffer."""
+        """YourTurnEndedEvent goes into the lifecycle replay buffer."""
         from yukar.events import bus as event_bus
-        from yukar.models.events import UserInputResolvedEvent
+        from yukar.models.events import YourTurnEndedEvent
 
         event_bus._replay.clear()
 
-        ev = UserInputResolvedEvent(
+        ev = YourTurnEndedEvent(
             project_id="p2",
             epic_id="e2",
             run_id="r2",
@@ -1001,29 +1001,28 @@ class TestUserInputResolvedEvent:
         event_bus.publish("p2", "e2", ev)
 
         buf = list(event_bus._replay[("p2", "e2")])
-        resolved_in_buf = [x for x in buf if isinstance(x, UserInputResolvedEvent)]
+        resolved_in_buf = [x for x in buf if isinstance(x, YourTurnEndedEvent)]
         assert len(resolved_in_buf) == 1
 
     def test_request_then_resolved_in_replay_buffer(self) -> None:
         """request→resolved appear in order in the replay buffer.
 
         A late subscriber that replays both events ends up with 'running' state
-        (resolved wins) rather than 'awaiting_input' (requested alone).
+        (your_turn_ended wins) rather than 'waiting' (your_turn alone).
         """
         from yukar.events import bus as event_bus
-        from yukar.models.events import UserInputRequestedEvent, UserInputResolvedEvent
+        from yukar.models.events import YourTurnEndedEvent, YourTurnEvent
 
         event_bus._replay.clear()
 
         key = ("p3", "e3")
-        req = UserInputRequestedEvent(
+        req = YourTurnEvent(
             project_id=key[0],
             epic_id=key[1],
             run_id="r3",
             thread_id="manager",
-            question="OK?",
         )
-        resolved = UserInputResolvedEvent(
+        resolved = YourTurnEndedEvent(
             project_id=key[0],
             epic_id=key[1],
             run_id="r3",
@@ -1034,16 +1033,16 @@ class TestUserInputResolvedEvent:
 
         buf = list(event_bus._replay[key])
         types = [getattr(e, "type", None) for e in buf]
-        assert "user_input_requested" in types
-        assert "user_input_resolved" in types
+        assert "your_turn" in types
+        assert "your_turn_ended" in types
         # resolved must come after requested in replay order.
-        assert types.index("user_input_resolved") > types.index("user_input_requested")
+        assert types.index("your_turn_ended") > types.index("your_turn")
 
     async def test_inject_message_publishes_resolved_event(self) -> None:
-        """_wait_for_user_input publishes UserInputResolvedEvent after the user replies."""
+        """_wait_for_user_input publishes YourTurnEndedEvent after the user replies."""
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
-        from yukar.models.events import UserInputResolvedEvent
+        from yukar.models.events import YourTurnEndedEvent
         from yukar.models.run import RunState
         from yukar.storage import state_repo
 
@@ -1084,8 +1083,8 @@ class TestUserInputResolvedEvent:
             result = await asyncio.wait_for(wait_task, timeout=1.0)
             assert "Approved!" in result
 
-        # UserInputResolvedEvent must have been published.
-        resolved_events = [e for e in emitted if isinstance(e, UserInputResolvedEvent)]
+        # YourTurnEndedEvent must have been published.
+        resolved_events = [e for e in emitted if isinstance(e, YourTurnEndedEvent)]
         assert len(resolved_events) == 1
         assert resolved_events[0].thread_id == "manager"
         assert resolved_events[0].run_id == "run-res"
@@ -1100,7 +1099,7 @@ class TestSingleWriterUserMessages:
     """Verify that the orchestrator produces clean user messages (no boilerplate).
 
     Covers:
-    - Solicited (ask_user) reply: _wait_for_user_input returns raw text.
+    - Reply to a waiting run: _wait_for_user_input returns raw text.
     - Unsolicited (inject) messages: raw text only.
     - user_answer takes priority and is not mixed with planning boilerplate.
     """

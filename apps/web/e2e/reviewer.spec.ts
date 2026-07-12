@@ -96,6 +96,17 @@ test.describe
       );
       await expect(page.getByTestId("start-review-btn")).toBeVisible({ timeout: 15_000 });
 
+      // P5 stream continuity: starting the Reviewer shelves the parked
+      // manager run. Since P5 a shelve no longer publishes the SSE sentinel,
+      // so the epic EventSource opened by this page load must stay connected
+      // — count any NEW connection to the epic event stream from here on.
+      let sseReconnects = 0;
+      page.on("request", (req) => {
+        if (req.url().includes(`/epics/${state.epicId}/run/events`)) {
+          sseReconnects += 1;
+        }
+      });
+
       const [reviewResponse] = await Promise.all([
         page.waitForResponse(
           (resp) => resp.url().endsWith("/review") && resp.request().method() === "POST",
@@ -167,6 +178,14 @@ test.describe
       // The epic-level notification stays visible — it points at the reviewer
       // conversation (correct attribution, not suppression).
       await expect(page.getByText(REVIEWER_SHELL_BANNER)).toBeVisible();
+
+      // P5: the whole shelve → reviewer-run → park → SPA-navigation window
+      // above ran on the ORIGINAL EventSource — no reconnect was needed
+      // (pre-P5 the shelve severed the stream and forced one).
+      expect(
+        sseReconnects,
+        "Shelving the manager run must not sever the epic SSE stream (no EventSource reconnect)",
+      ).toBe(0);
     });
 
     test("Reviewer runs read-only: reports in body text, parks in waiting, epic untouched", async ({
@@ -182,7 +201,7 @@ test.describe
         .poll(
           async () => {
             const s = await getRunState(page, state.projectId, state.epicId);
-            return `${s.status}:${s.manager_thread ?? ""}`;
+            return `${s.status}:${s.thread_id ?? ""}`;
           },
           { timeout: 60_000, intervals: [500, 1000, 1000] },
         )
@@ -219,7 +238,7 @@ test.describe
 
       // The report body is visible in the conversation UI on a FRESH load —
       // this exercises the REST-restore path (thread history + GET /run/state
-      // with manager_thread + role), as opposed to the live SSE path already
+      // with thread_id + role), as opposed to the live SSE path already
       // asserted in the previous test.
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.reviewerId}`,
@@ -259,7 +278,7 @@ test.describe
 
       // A reviewer run must not hijack the active-trial pointer: the manager
       // thread still shows its composer (regression guard for the reviewer run
-      // overwriting RunState.manager_thread).
+      // overwriting RunState.thread_id).
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
       );
@@ -271,7 +290,7 @@ test.describe
       // Reload-misattribution regression guard (the original P4 bug): a fresh
       // load of the TRIAL thread while the reviewer run is parked must NOT
       // show a your-turn banner on the trial — the parked marker belongs to
-      // the reviewer conversation (REST restore uses RunState.manager_thread,
+      // the reviewer conversation (REST restore uses RunState.thread_id,
       // never the active-trial fallback).
       await expect(
         page.getByText(REVIEWER_SHELL_BANNER),
@@ -320,7 +339,7 @@ test.describe
         .poll(
           async () => {
             const s = await getRunState(page, state.projectId, state.epicId);
-            return `${s.status}:${s.manager_thread ?? ""}`;
+            return `${s.status}:${s.thread_id ?? ""}`;
           },
           { timeout: 60_000, intervals: [500, 1000, 1000] },
         )

@@ -119,9 +119,11 @@ def _is_active_manager_thread(epic: Epic, tf: ThreadsFile, thread_id: str) -> bo
         # No entry yet — accept only the default "manager" id (lazy registration).
         return thread_id == "manager"
     # Accept any non-archived manager trial so that users can send follow-up
-    # messages after a run completes (resolved/failed/interrupted).  Archived
-    # threads are rejected with 403 upstream (post_message) before this helper
-    # is called, so we only need to exclude "archived" here.
+    # messages whenever it is their turn (a conversation has no end — the run
+    # parks in waiting between turns; legacy resolved/failed entries on disk
+    # are continuable too).  Archived threads are rejected with 403 upstream
+    # (post_message) before this helper is called, so we only need to exclude
+    # "archived" here.
     from yukar.agents.trials import is_active_manager_thread as _is_active
 
     return _is_active(entry)

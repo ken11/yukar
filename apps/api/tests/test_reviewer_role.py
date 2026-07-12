@@ -1,8 +1,8 @@
 """Reviewer role (Phase 2 of the trial/session decoupling).
 
-The Reviewer is a read-only, conversational agent the user spawns at in_review
-to independently check the Manager's work against the epic's intent and report
-back to the USER (it never instructs the Manager directly).  It reuses the
+The Reviewer is a read-only, conversational agent the user can spawn at any
+time to independently check the Manager's work against the epic's intent and
+report back to the USER (it never instructs the Manager directly).  It reuses the
 orchestrator's conversation loop in a read-only "reviewer mode".
 
 Phase 2a (this batch): role plumbing — reviewer is a first-class AgentRole /
@@ -97,7 +97,9 @@ class TestReviewerPrompt:
         )
 
         messages = [
-            # Manager narration + an ask_user question (tool_use).
+            # Manager narration + a LEGACY ask_user question (tool_use) —
+            # old sessions recorded questions this way; the reader keeps
+            # extracting them (format_manager_conversation legacy compat).
             Message(
                 message=MessagePayload(
                     role="assistant",
@@ -148,7 +150,7 @@ class TestReviewerPrompt:
         ]
         out = format_manager_conversation(messages)
         assert "Here is my plan: add auth.py." in out
-        assert "OAuth or password login?" in out  # ask_user question kept
+        assert "OAuth or password login?" in out  # legacy ask_user question kept
         assert "OAuth please." in out  # user agreement kept
         assert "worker output blob" not in out  # tool_result noise dropped
         assert "dispatch" not in out  # dispatch tool_use dropped
@@ -898,7 +900,7 @@ class TestReviewerBlocksTrialMutations:
     async def test_new_trial_409_while_reviewer_active_after_manager_resolved(
         self, tmp_path
     ) -> None:  # type: ignore[no-untyped-def]
-        """Even when the manager trial is finished (resolved) — the path with no
+        """Even with a legacy resolved manager entry — the path with no
         archive_active — a new trial is blocked while the reviewer holds the slot."""
         from fastapi import HTTPException
 

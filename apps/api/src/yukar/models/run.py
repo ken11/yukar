@@ -13,15 +13,18 @@ Run-state vocabulary (lifecycle redesign P3):
 
 ``role`` (lifecycle redesign P4) records WHICH conversation agent the run
 belongs to — ``manager`` or ``reviewer`` — so REST restore can attribute
-"your turn" to the right thread and label it correctly.  ``manager_thread``
-remains "the conversation thread this run rides on" (for a reviewer run it
-points at the reviewer thread; rename is deferred to P5).
+"your turn" to the right thread and label it correctly.  ``thread_id`` is
+"the conversation thread this run rides on" (for a reviewer run it points at
+the reviewer thread).
 
-Legacy statuses (``idle`` / ``awaiting_input`` / ``interrupted``) are read
-back as ``waiting`` via a BeforeValidator so old state.yaml files stay
-loadable.  The removed ``pending_question`` key in old files is ignored by
-pydantic's default extra handling; a missing ``role`` key defaults to
-``manager``.
+Legacy compatibility (old state.yaml files stay loadable):
+- Legacy statuses (``idle`` / ``awaiting_input`` / ``interrupted``) are read
+  back as ``waiting`` via a BeforeValidator.
+- The legacy ``manager_thread`` key (renamed to ``thread_id`` in P5) is read
+  back via a before-mode model_validator (lazy migration — persisted under
+  the new key on the next save).
+- The removed ``pending_question`` key in old files is ignored by pydantic's
+  default extra handling; a missing ``role`` key defaults to ``manager``.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 RunStatus = Literal["running", "paused", "waiting", "error", "completed"]
 
@@ -63,8 +66,21 @@ class RunState(BaseModel):
     # conversation runs the user can be "waiting on".
     role: Literal["manager", "reviewer"] = "manager"
     # The conversation thread this run rides on (reviewer runs point at the
-    # reviewer thread; field rename is deferred to P5).
-    manager_thread: str | None = None
+    # reviewer thread).
+    thread_id: str | None = None
     active_workers: list[ActiveWorker] = Field(default_factory=list)
     started_at: datetime | None = None
     last_event_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_legacy_thread_key(cls, data: Any) -> Any:
+        """Legacy: pre-P5 state.yaml stored the thread under ``manager_thread``.
+
+        Lazy migration — map the old key onto ``thread_id`` when the new key
+        is absent; the next save persists the new key only.
+        """
+        if isinstance(data, dict) and "thread_id" not in data and "manager_thread" in data:
+            data = dict(data)
+            data["thread_id"] = data.pop("manager_thread")
+        return data

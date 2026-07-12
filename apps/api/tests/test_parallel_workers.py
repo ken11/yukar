@@ -8,8 +8,8 @@ Covers:
 - pause → state.yaml status="paused" + RunPausedEvent published.
 - resume → state.yaml status="running" + RunResumedEvent published → run continues.
 - stop-while-paused does not hang; in_progress tasks are rolled back to todo.
-- GET …/run/state returns current RunState (404 when epic absent, idle default
-  when state.yaml absent).
+- GET …/run/state returns current RunState (404 when epic absent, a synthetic
+  waiting default when state.yaml is absent).
 - GET /api/projects/{p}/events streams only lifecycle events.
 """
 
@@ -239,7 +239,7 @@ class TestParallelDifferentRepos:
         # Both tasks should complete and the run should park (P3: a
         # conversation run never emits run_completed).
         event_types = [getattr(e, "type", None) for e in events_received]
-        assert "user_input_requested" in event_types
+        assert "your_turn" in event_types
         assert "run_completed" not in event_types
 
         from yukar.storage import tasks_repo

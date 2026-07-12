@@ -16,7 +16,7 @@ import { expect, type Page } from "@playwright/test";
 export interface RunStateBody {
   run_id: string;
   status: string;
-  manager_thread?: string | null;
+  thread_id?: string | null;
 }
 
 export async function getRunState(

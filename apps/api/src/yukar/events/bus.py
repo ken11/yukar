@@ -32,10 +32,10 @@ tokens from a previous run would bleed into the next run's backfill.
 To prevent this, ``RunStartedEvent``, ``RunCompletedEvent``, ``RunFailedEvent``
 and ``RunStoppedEvent`` all drop every ``_thread_token_buffer`` key whose
 prefix matches ``(project_id, epic_id)``.  Conversation runs (Manager /
-Reviewer) no longer emit ``RunCompletedEvent`` — they park in ``waiting``
+Reviewer) never emit ``RunCompletedEvent`` — they park in ``waiting``
 instead — so for them the effective sweep points are the NEXT run's
 ``RunStartedEvent`` plus ``RunFailedEvent`` / ``RunStoppedEvent``.  Job runs
-(resolve / arbiter / dummy) still emit ``RunCompletedEvent``.
+(resolve / arbiter) still emit ``RunCompletedEvent``.
 
 Global usage stream
 -------------------
@@ -73,11 +73,11 @@ from yukar.models.events import (
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
-    UserInputRequestedEvent,
-    UserInputResolvedEvent,
     UserMessageCommittedEvent,
     WorkerCompletedEvent,
     WorkerFailedEvent,
+    YourTurnEndedEvent,
+    YourTurnEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,8 +109,8 @@ _LIFECYCLE_TYPES = (
     RunStoppedEvent,
     RunPausedEvent,
     RunResumedEvent,
-    UserInputRequestedEvent,
-    UserInputResolvedEvent,
+    YourTurnEvent,
+    YourTurnEndedEvent,
     EpicStatusChangedEvent,
     EpicMergedEvent,
     EpicMergeProgressEvent,
@@ -368,7 +368,7 @@ async def subscribe_project(
 
     Only lifecycle events (``_LIFECYCLE_TYPES``: run_started / run_completed /
     run_failed / run_stopped / run_paused / run_resumed, the "your turn"
-    signals user_input_requested / user_input_resolved, epic_status_changed,
+    signals your_turn / your_turn_ended, epic_status_changed,
     epic_merged, merge progress, sensitive-file writes) are delivered here —
     high-frequency events (token, tool_call, etc.) are excluded.  The
     your-turn signals let the epic board update its waiting badges live (P4).

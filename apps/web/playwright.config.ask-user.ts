@@ -1,14 +1,16 @@
 /**
- * Playwright config for ask_user / awaiting_input reload E2E test.
+ * Playwright config for the question-reload E2E test (historically the
+ * ask_user scenario; the agent now asks in its final message and parks in
+ * "waiting").
  *
  * Separated from the existing playwright.config.ts; starts FastAPI and Next.js
- * with a dedicated FAKE_SCRIPT that calls ask_user.
+ * with a dedicated FAKE_SCRIPT whose turn ends on a question message.
  *
  * Prerequisite: ports 8000 and 3000 must be free before running.
  * (Stop any running pnpm dev first if necessary.)
  *
  * Launch strategy:
- *   - FastAPI (8000): started with ask_user FAKE_SCRIPT
+ *   - FastAPI (8000): started with the ask-user scenario FAKE_SCRIPT
  *   - Next.js (3000): started with pnpm dev
  *   - YUKAR_CONFIG_DIR: ASK_USER_SEED.configDir (isolated temp dir)
  */
@@ -41,7 +43,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"], ["html", { outputFolder: "playwright-report/ask-user", open: "never" }]],
 
-  /* Generous timeouts: allow headroom for REST pending_question restore and SSE backfill after reload */
+  /* Generous timeouts: allow headroom for the REST run/state + thread-history restore and SSE backfill after reload */
   timeout: 120_000,
   expect: { timeout: 30_000 },
 
@@ -62,7 +64,7 @@ export default defineConfig({
   globalTeardown: "./e2e/ask-user-global-teardown.ts",
 
   webServer: [
-    // ---- FastAPI (port 8000) — started with ask_user FAKE_SCRIPT ----
+    // ---- FastAPI (port 8000) — started with the ask-user scenario FAKE_SCRIPT ----
     {
       command: [
         "uv",

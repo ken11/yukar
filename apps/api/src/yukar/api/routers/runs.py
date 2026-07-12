@@ -115,8 +115,8 @@ async def start_run(
         # records which thread is the active manager trial.  Persisting it here
         # (rather than leaving it None for single-trial epics) means the frontend
         # resolves the active trial from epic.active_thread_id — which takes
-        # priority over RunState.manager_thread — so a subsequent reviewer run
-        # (whose RunState.manager_thread points at the reviewer thread) can never
+        # priority over RunState.thread_id — so a subsequent reviewer run
+        # (whose RunState.thread_id points at the reviewer thread) can never
         # shift the UI's notion of the manager trial and hide its composer.
         if epic_fresh.active_thread_id is None:
             from yukar.storage.epic_repo import save_epic as _save_epic
@@ -248,7 +248,7 @@ async def project_events_sse(
 
     Delivers only lifecycle events: run_started / run_completed / run_failed /
     run_stopped / run_paused / run_resumed, the "your turn" signals
-    user_input_requested / user_input_resolved (a conversation run parked in
+    your_turn / your_turn_ended (a conversation run parked in
     ``waiting`` / left it — used for live board badges), epic_status_changed,
     epic_merged and merge-progress events.  High-frequency events (token,
     tool_call, etc.) are excluded — this stream is intended for notification

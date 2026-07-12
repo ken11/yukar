@@ -5,10 +5,9 @@
  *
  * YUKAR_FAKE_SLEEP=6.0 inserts a 6.0s delay between each chunk.
  * Because 6.0s > supervisor's 5s cancel timeout, stopping from "running" state
- * causes the asyncio.Task to be cancelled → CancelledError → state.status = "idle".
- * The script alternates task_update(T1 todo) + text every turn (no dispatch/
- * complete_epic): each turn stays productive so turn-end semantics never park
- * the run, keeping it alive for a long running window.
+ * causes the asyncio.Task to be cancelled → CancelledError → state.status = "waiting".
+ * The script alternates task_update(T1 todo) + text every turn (no dispatch):
+ * each turn stays productive, keeping the run alive for a long running window.
  *
  * Launch strategy:
  *   - FastAPI (8000): started with PAUSE_RESUME_FAKE_SCRIPT

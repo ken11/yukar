@@ -54,18 +54,18 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
   });
 
   // Live "your turn" badges (P4): the project SSE streams the your-turn
-  // signals (user_input_requested = a conversation run parked in "waiting",
-  // user_input_resolved = the reply woke it). Patch the run_summary of the
+  // signals (your_turn = a conversation run parked in "waiting",
+  // your_turn_ended = the reply woke it). Patch the run_summary of the
   // affected epic in the list cache — badge only, no unread persistence.
   const { subscribe } = useProjectEventStream();
   useEffect(() => {
     return subscribe(({ data }) => {
-      if (data.type !== "user_input_requested" && data.type !== "user_input_resolved") return;
+      if (data.type !== "your_turn" && data.type !== "your_turn_ended") return;
       qc.setQueryData<EpicWithRunSummary[]>(queryKeys.epics.list(projectId), (prev) => {
         if (!prev) return prev;
         return prev.map((e) => {
           if (e.id !== data.epic_id) return e;
-          if (data.type === "user_input_requested") {
+          if (data.type === "your_turn") {
             // The run parked — it is the user's turn on this epic.
             // NOTE: role / last_event_at are carried over from the previous
             // summary (the event carries neither) and may be stale until the
@@ -81,8 +81,8 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
               },
             };
           }
-          // user_input_resolved: only a waiting summary reverts to running —
-          // a delayed resolved must not fake execution after stop/error.
+          // your_turn_ended: only a waiting summary reverts to running —
+          // a delayed signal must not fake execution after stop/error.
           if (e.run_summary?.status !== "waiting") return e;
           return { ...e, run_summary: { ...e.run_summary, status: "running" } };
         });

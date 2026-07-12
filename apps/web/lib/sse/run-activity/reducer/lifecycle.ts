@@ -18,7 +18,7 @@ export function handleLifecycle(
     // runError is cleared here so that if a previous run ended with error,
     // the error banner disappears immediately when a new run begins preparing.
     case "RUN_PREPARING":
-      return { ...state, runStatus: "preparing", runError: null, awaitingInput: null };
+      return { ...state, runStatus: "preparing", runError: null, yourTurn: null };
 
     // Always push the Manager node to the tree simultaneously with run start (spec: "display Manager simultaneously with run start").
     // For a new run, the INIT from threads.yaml has not yet arrived and the Manager node does not exist,
@@ -46,7 +46,7 @@ export function handleLifecycle(
         ...state,
         runStatus: "running",
         runError: null,
-        awaitingInput: null,
+        yourTurn: null,
         treeState: { ...tree, manager },
       };
     }
@@ -60,7 +60,7 @@ export function handleLifecycle(
         runStatus: "completed",
         pausePending: false,
         runError: null,
-        awaitingInput: null,
+        yourTurn: null,
         treeState: { ...tree, manager, workers },
       };
     }
@@ -74,7 +74,7 @@ export function handleLifecycle(
         runStatus: "error",
         pausePending: false,
         runError: action.error ?? null,
-        awaitingInput: null,
+        yourTurn: null,
         treeState: { ...tree, manager, workers },
       };
     }
@@ -90,7 +90,7 @@ export function handleLifecycle(
         runStatus: "waiting",
         pausePending: false,
         runError: null,
-        awaitingInput: null,
+        yourTurn: null,
         treeState: { ...tree, manager, workers },
       };
     }
@@ -99,14 +99,14 @@ export function handleLifecycle(
       return { ...state, runStatus: "paused" };
 
     case "RUN_RESUMED":
-      return { ...state, runStatus: "running", pausePending: false, awaitingInput: null };
+      return { ...state, runStatus: "running", pausePending: false, yourTurn: null };
 
     // The run parked in "waiting" — it is the user's turn. The question/report
     // is the agent's final message in the thread (no payload here).
-    case "USER_INPUT_REQUESTED": {
+    case "YOUR_TURN": {
       // Do not downgrade a terminal run (completed=job / error) when a delayed
       // parked snapshot arrives due to a race between REST (getRunState) and SSE.
-      // Symmetric guard to USER_INPUT_RESOLVED which only reverts to running when waiting.
+      // Symmetric guard to YOUR_TURN_ENDED which only reverts to running when waiting.
       if (state.runStatus === "completed" || state.runStatus === "error") {
         return state;
       }
@@ -121,23 +121,21 @@ export function handleLifecycle(
       return {
         ...state,
         runStatus: "waiting",
-        awaitingInput: { threadId: action.threadId },
+        yourTurn: { threadId: action.threadId },
         currentRun,
       };
     }
 
-    case "USER_INPUT_RESOLVED":
+    case "YOUR_TURN_ENDED":
       // The user's reply woke the run: clear the parked marker and revert to running.
       // Only revert when an actually-parked run exists (waiting + marker):
       // "waiting" alone is also the default/stopped resting state, and a delayed
-      // resolved replay after stop / terminal states must not fake "running".
+      // your_turn_ended replay after stop / terminal states must not fake "running".
       return {
         ...state,
         runStatus:
-          state.runStatus === "waiting" && state.awaitingInput !== null
-            ? "running"
-            : state.runStatus,
-        awaitingInput: null,
+          state.runStatus === "waiting" && state.yourTurn !== null ? "running" : state.runStatus,
+        yourTurn: null,
       };
 
     case "PAUSE_EFFECTIVE":

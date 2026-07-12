@@ -1,6 +1,6 @@
 /**
  * Your-turn banner (lifecycle redesign P3) tests:
- * - The banner shows when the run parked on this thread (isAwaitingInput) and
+ * - The banner shows when the run parked on this thread (isYourTurn) and
  *   uses the neutral wording — no hardcoded role name ("Manager …" is gone).
  * - No banner when it is not the user's turn, and the run-failed banner wins.
  * - No synthetic "__awaiting__" bubble is ever rendered (P3 removed it); the
@@ -37,7 +37,7 @@ function renderChat(props: Partial<Parameters<typeof ThreadChatInner>[0]> = {}) 
       runStatus: "waiting" as const,
       pausePending: false,
       runError: null,
-      awaitingInput: { threadId: "manager" },
+      yourTurn: { threadId: "manager" },
       activeTrialId: "manager",
       currentRun: { threadId: "manager", role: "manager" as const },
       treeState: { manager: null, workers: {}, evaluators: {}, taskToWorker: {} },
@@ -58,7 +58,7 @@ function renderChat(props: Partial<Parameters<typeof ThreadChatInner>[0]> = {}) 
             isRunning={false}
             runFailed={false}
             runError={null}
-            isAwaitingInput={false}
+            isYourTurn={false}
             onSendMessage={vi.fn()}
             isSending={false}
             isActiveTrial={false}
@@ -79,7 +79,7 @@ beforeEach(() => {
 
 describe("your-turn banner (P3)", () => {
   it("shows the neutral your-turn wording when the run parked on this thread", () => {
-    renderChat({ isAwaitingInput: true });
+    renderChat({ isYourTurn: true });
     const banner = screen.getByText(ja.conversation.awaitingBanner);
     expect(banner).toBeTruthy();
     // Neutral wording — the old "Manager があなたの承認・回答を待っています"
@@ -88,12 +88,12 @@ describe("your-turn banner (P3)", () => {
   });
 
   it("does not show the banner when it is not the user's turn", () => {
-    renderChat({ isAwaitingInput: false });
+    renderChat({ isYourTurn: false });
     expect(screen.queryByText(ja.conversation.awaitingBanner)).toBeNull();
   });
 
   it("the run-failed banner wins over the your-turn banner", () => {
-    renderChat({ isAwaitingInput: true, runFailed: true, runError: "boom" });
+    renderChat({ isYourTurn: true, runFailed: true, runError: "boom" });
     expect(screen.queryByText(ja.conversation.awaitingBanner)).toBeNull();
     expect(screen.getByText(`▲ ${ja.conversation.runFailedTitle}`)).toBeTruthy();
   });
@@ -108,7 +108,7 @@ describe("your-turn banner (P3)", () => {
       repo: null,
       parent_thread_id: null,
     };
-    renderChat({ thread: reviewerThread, isAwaitingInput: true });
+    renderChat({ thread: reviewerThread, isYourTurn: true });
     // Role-aware wording: the banner names the Reviewer, not the neutral text.
     expect(screen.getByText(ja.conversation.awaitingBannerReviewer)).toBeTruthy();
     expect(screen.queryByText(ja.conversation.awaitingBanner)).toBeNull();
@@ -116,7 +116,7 @@ describe("your-turn banner (P3)", () => {
 
   it("renders persisted messages as-is — no synthetic '__awaiting__' bubble", () => {
     renderChat({
-      isAwaitingInput: true,
+      isYourTurn: true,
       messages: [
         {
           id: "42",

@@ -109,9 +109,9 @@ from yukar.models.events import (
     RunFailedEvent,
     RunStartedEvent,
     RunStoppedEvent,
-    UserInputRequestedEvent,
-    UserInputResolvedEvent,
     UserMessageCommittedEvent,
+    YourTurnEndedEvent,
+    YourTurnEvent,
 )
 from yukar.models.roles import AgentRole
 from yukar.models.run import RunState
@@ -404,10 +404,18 @@ class EpicOrchestrator:
             run_id=run_id,
             status="running",
             role="reviewer" if self._agent_role == "reviewer" else "manager",
-            manager_thread=self._manager_thread_id,
+            thread_id=self._manager_thread_id,
             started_at=datetime.now(UTC),
         )
         await state_repo.save_state(root, project_id, epic_id, state)
+
+        # Whether the finally block below should close the SSE stream (publish
+        # the ``None`` sentinel).  True for stop / error / normal return.
+        # Flipped False for a not-stopped CancelledError (shelve / server
+        # shutdown): the conversation is not over, so the stream stays open and
+        # a continuation run's events arrive on the SAME stream — no forced
+        # EventSource reconnect on every shelve (P5).
+        close_sse_stream = True
 
         try:
             pub(RunStartedEvent(project_id=project_id, epic_id=epic_id, run_id=run_id))
@@ -467,6 +475,9 @@ class EpicOrchestrator:
                 pub(RunStoppedEvent(project_id=project_id, epic_id=epic_id, run_id=run_id))
                 await state_repo.save_state(root, project_id, epic_id, state)
             else:
+                # Shelve / shutdown: the conversation continues later, so keep
+                # subscriber streams open (no sentinel in the finally below).
+                close_sse_stream = False
                 logger.info(
                     "Run %s cancelled by shutdown (not a user stop); "
                     "preserving state.yaml (status=%s) for restart recovery",
@@ -529,7 +540,7 @@ class EpicOrchestrator:
                 except asyncio.CancelledError as _ce:
                     # Outer task was cancelled while stop_async was running.
                     # _stop() continues to completion inside the shield.
-                    # Record to re-raise after the sentinel publish below.
+                    # Record to re-raise after the cleanup below.
                     _mcp_cancel = _ce
                     logger.warning(
                         "L3 MCP: outer cancel received during MCP stop for project %s"
@@ -542,8 +553,13 @@ class EpicOrchestrator:
                         project_id,
                         exc_info=True,
                     )
-            # Sentinel closes SSE streams.
-            event_bus.publish(project_id, epic_id, None)
+            # Sentinel closes SSE streams — only when this exit really ends
+            # the stream's usefulness (stop / error / normal return).  A
+            # shelve or server shutdown skips it: state.yaml still says
+            # ``waiting`` and the next continuation run publishes to the same
+            # (project_id, epic_id) queues, so subscribers keep their stream.
+            if close_sse_stream:
+                event_bus.publish(project_id, epic_id, None)
             # Re-raise any cancel that arrived during MCP cleanup so the task
             # is correctly marked cancelled by asyncio.
             if _mcp_cancel is not None:
@@ -1694,10 +1710,9 @@ class EpicOrchestrator:
         Sets the in-memory gate, persists ``status=waiting`` immediately (so
         callers that check state.yaml right after the event see the correct
         status, and GET /run/state restores it after a page reload), then
-        publishes ``UserInputRequestedEvent`` (question always empty — the
-        agent's final message is already visible in the conversation, so
-        there is nothing to repeat; the event is a pure "your turn" signal
-        until the P5 rename).
+        publishes ``YourTurnEvent`` (a pure "your turn" signal — the agent's
+        final message is already visible in the conversation, so there is
+        nothing to repeat).
 
         ``_wait_for_user_input`` re-persists the same state idempotently on
         the next loop iteration and then blocks until the user replies (or
@@ -1722,12 +1737,11 @@ class EpicOrchestrator:
 
         if self._pub is not None:
             self._pub(
-                UserInputRequestedEvent(
+                YourTurnEvent(
                     project_id=self._project_id,
                     epic_id=self._epic_id,
                     run_id=self._run_id,
                     thread_id=self._manager_thread_id,
-                    question="",
                 )
             )
         logger.info("Run %s parked in waiting (turn ended — the user's turn)", self._run_id)
@@ -1818,13 +1832,13 @@ class EpicOrchestrator:
         state.last_event_at = datetime.now(UTC)
         await state_repo.save_state(root, project_id, epic_id, state)
 
-        # Publish the resolved event so the replay buffer contains both
-        # request→resolved.  Late subscribers that reconnect mid-run will replay
-        # both events in order and end up with a "running" final state — not
-        # the stale "waiting" that UserInputRequestedEvent alone would leave.
+        # Publish your_turn_ended so the replay buffer contains both
+        # your_turn→your_turn_ended.  Late subscribers that reconnect mid-run
+        # will replay both events in order and end up with a "running" final
+        # state — not the stale "waiting" that YourTurnEvent alone would leave.
         if self._pub is not None:
             self._pub(
-                UserInputResolvedEvent(
+                YourTurnEndedEvent(
                     project_id=project_id,
                     epic_id=epic_id,
                     run_id=run_id,

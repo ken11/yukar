@@ -70,8 +70,9 @@ class TestDummyRunner:
                     try:
                         event = await asyncio.wait_for(q.get(), timeout=10.0)
                         received.append(event)
-                        # Stop after run_completed
-                        if hasattr(event, "type") and event.type == "run_completed":  # type: ignore[union-attr]
+                        # Stop after the end-of-script "your turn" signal
+                        # (DummyRunner parks in waiting like a conversation run).
+                        if hasattr(event, "type") and event.type == "your_turn":  # type: ignore[union-attr]
                             break
                     except TimeoutError:
                         break
@@ -85,7 +86,8 @@ class TestDummyRunner:
 
         event_types = [getattr(e, "type", None) for e in received]
         assert "run_started" in event_types
-        assert "run_completed" in event_types
+        assert "your_turn" in event_types
+        assert "run_completed" not in event_types  # conversation stand-in: no end
         assert "task_update" in event_types
 
     async def test_dummy_runner_stop(self, tmp_workspace: Path) -> None:
@@ -126,7 +128,7 @@ class TestSSEEndpoint:
                     try:
                         event = await asyncio.wait_for(q.get(), timeout=8.0)
                         received.append(event)
-                        if hasattr(event, "type") and event.type == "run_completed":  # type: ignore[union-attr]
+                        if hasattr(event, "type") and event.type == "your_turn":  # type: ignore[union-attr]
                             break
                     except TimeoutError:
                         break

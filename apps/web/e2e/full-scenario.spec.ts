@@ -353,7 +353,7 @@ test.describe
         .poll(
           async () => {
             const st = await getRunState(page, s.projectId, s.epicId);
-            return `${st.status}:${st.manager_thread ?? ""}`;
+            return `${st.status}:${st.thread_id ?? ""}`;
           },
           { timeout: 60_000, intervals: [500, 1000] },
         )

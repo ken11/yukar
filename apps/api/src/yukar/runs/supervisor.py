@@ -26,7 +26,7 @@ Epic / state status (architecture.md §3.2):
       running → waiting   : the turn ends (park), stop, or turn-limit backstop
                             — "waiting" means "the user's turn; restartable"
       running → error     : unhandled internal exception inside orchestrator
-      running → completed : JOB runs only (resolve / arbiter / dummy)
+      running → completed : JOB runs only (resolve / arbiter)
 
 Settings resolution (architecture.md §5 decision#7):
   - Settings changes must apply to new Runs but NOT to already-running Runs.
@@ -428,8 +428,11 @@ class RunSupervisor:
         A conversation run parked in ``waiting`` keeps a live task (for instant
         reply injection) but does NOT count as executing: it no longer holds
         the epic's run slot for guard purposes — callers that need the slot
-        shelve it first (``shelve_waiting``).  Job runs (resolve / arbiter /
-        dummy) never park, so for them this is equivalent to ``is_running``.
+        shelve it first (``shelve_waiting``).  Job runs (resolve / arbiter)
+        never park, so for them this is equivalent to ``is_running``; the
+        fake-provider DummyRunner exposes no ``is_parked`` either — it stands
+        in for a conversation run but its task simply ends after the script,
+        returning its slot implicitly.
         """
         key = self._key(project_id, epic_id)
         handle = self._runs.get(key)
@@ -609,7 +612,9 @@ class RunSupervisor:
                 # the max_parallel_epics permit itself — held only while a turn
                 # is EXECUTING, released while parked in waiting — so parked
                 # conversations cannot starve other epics' runs.  Job runners
-                # (resolve/arbiter/dummy) never park and keep the plain wrapper.
+                # (resolve/arbiter) never park and keep the plain wrapper — as
+                # does the DummyRunner conversation stand-in, whose task ends
+                # after its script and returns the permit implicitly.
                 _set_slot = getattr(runner, "set_turn_slot", None)
                 if callable(_set_slot):
                     _set_slot(self._semaphore)
@@ -733,6 +738,12 @@ class RunSupervisor:
                         project_id=project_id, epic_id=epic_id, run_id=handle.run_id
                     ),
                 )
+                # A user stop closes the SSE stream.  The shelve cancel itself
+                # no longer publishes the sentinel (P5 — a plain shelve keeps
+                # the stream open for the continuation run), so the stop path
+                # publishes it here, AFTER RunStoppedEvent — live subscribers
+                # see the stop before the stream closes (correct ordering).
+                event_bus.publish(project_id, epic_id, None)
                 return
             # A message raced the park→stop window and the run is executing
             # again — fall through to the normal stop path below.

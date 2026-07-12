@@ -7,8 +7,8 @@ Covers:
 2. ``GET /epics`` run_summary — digest present when state.yaml exists, null
    when it does not, and null (log-and-degrade, epic still listed) when
    state.yaml is corrupt.
-3. Project-scope SSE — the "your turn" signals (user_input_requested /
-   user_input_resolved) reach ``subscribe_project`` consumers so the board
+3. Project-scope SSE — the "your turn" signals (your_turn /
+   your_turn_ended) reach ``subscribe_project`` consumers so the board
    can update its waiting badges live.
 """
 
@@ -78,13 +78,13 @@ class TestRunStateRole:
         from yukar.storage import state_repo
 
         root = str(tmp_path / "ws")
-        state = RunState(run_id="r-1", status="waiting", role="reviewer", manager_thread="rev-1")
+        state = RunState(run_id="r-1", status="waiting", role="reviewer", thread_id="rev-1")
         await state_repo.save_state(root, "p1", "EP-1", state)
 
         loaded = await state_repo.get_state(root, "p1", "EP-1")
         assert loaded is not None
         assert loaded.role == "reviewer"
-        assert loaded.manager_thread == "rev-1"
+        assert loaded.thread_id == "rev-1"
 
     @pytest.mark.asyncio
     async def test_legacy_state_without_role_defaults_to_manager(self, tmp_path: Path) -> None:
@@ -95,7 +95,8 @@ class TestRunStateRole:
         root = str(tmp_path / "ws")
         yaml_path = paths.state_yaml(root, "p1", "EP-1")
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
-        # Legacy vocabulary on purpose: awaiting_input status + no role key.
+        # Legacy vocabulary on purpose: awaiting_input status + no role key
+        # + the pre-P5 manager_thread key (read back as thread_id).
         yaml_path.write_text(
             "run_id: r-old\nstatus: awaiting_input\nmanager_thread: manager\n",
             encoding="utf-8",
@@ -105,6 +106,13 @@ class TestRunStateRole:
         assert loaded is not None
         assert loaded.role == "manager"
         assert loaded.status == "waiting"  # legacy status coercion still applies
+        assert loaded.thread_id == "manager"  # legacy manager_thread key coercion
+
+        # Lazy migration: the next save persists the NEW key only.
+        await state_repo.save_state(root, "p1", "EP-1", loaded)
+        rewritten = yaml_path.read_text(encoding="utf-8")
+        assert "thread_id" in rewritten
+        assert "manager_thread" not in rewritten
 
     @pytest.mark.asyncio
     async def test_manager_run_writes_manager_role(self, tmp_path: Path) -> None:
@@ -129,7 +137,7 @@ class TestRunStateRole:
         state = await state_repo.get_state(root, project_id, epic_id)
         assert state is not None
         assert state.role == "manager"
-        assert state.manager_thread == "manager"
+        assert state.thread_id == "manager"
         assert state.status == "waiting"
 
     @pytest.mark.asyncio
@@ -141,7 +149,7 @@ class TestRunStateRole:
 
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn
-        from yukar.models.events import UserInputRequestedEvent
+        from yukar.models.events import YourTurnEvent
         from yukar.storage import state_repo
 
         root = str(tmp_path / "ws")
@@ -157,7 +165,7 @@ class TestRunStateRole:
                     ev = await q.get()
                     if ev is None:
                         return
-                    if isinstance(ev, UserInputRequestedEvent):
+                    if isinstance(ev, YourTurnEvent):
                         received.append(ev)
                         return
 
@@ -177,7 +185,7 @@ class TestRunStateRole:
             state = await state_repo.get_state(root, project_id, epic_id)
             assert state is not None
             assert state.role == "reviewer"
-            assert state.manager_thread == "rev-1"
+            assert state.thread_id == "rev-1"
             assert state.status == "waiting"
 
             await asyncio.wait_for(collector, timeout=5.0)
@@ -228,7 +236,7 @@ class TestEpicListRunSummary:
             root,
             pid,
             "EP-1",
-            RunState(run_id="r-1", status="waiting", role="reviewer", manager_thread="rev-1"),
+            RunState(run_id="r-1", status="waiting", role="reviewer", thread_id="rev-1"),
         )
         corrupt = paths.state_yaml(root, pid, "EP-3")
         corrupt.parent.mkdir(parents=True, exist_ok=True)
@@ -287,11 +295,11 @@ class TestEpicListRunSummary:
 
 class TestProjectSseYourTurn:
     @pytest.mark.asyncio
-    async def test_user_input_events_fan_out_to_project_subscribers(self) -> None:
-        """user_input_requested / user_input_resolved are lifecycle events:
+    async def test_your_turn_events_fan_out_to_project_subscribers(self) -> None:
+        """your_turn / your_turn_ended are lifecycle events:
         project-scope subscribers (the board) receive them."""
         from yukar.events import bus as event_bus
-        from yukar.models.events import UserInputRequestedEvent, UserInputResolvedEvent
+        from yukar.models.events import YourTurnEndedEvent, YourTurnEvent
 
         pid, eid = "p-sse", "EP-sse"
         received: list[Any] = []
@@ -310,21 +318,19 @@ class TestProjectSseYourTurn:
         event_bus.publish(
             pid,
             eid,
-            UserInputRequestedEvent(
-                project_id=pid, epic_id=eid, run_id="r-1", thread_id="rev-1", question=""
-            ),
+            YourTurnEvent(project_id=pid, epic_id=eid, run_id="r-1", thread_id="rev-1"),
         )
         event_bus.publish(
             pid,
             eid,
-            UserInputResolvedEvent(project_id=pid, epic_id=eid, run_id="r-1", thread_id="rev-1"),
+            YourTurnEndedEvent(project_id=pid, epic_id=eid, run_id="r-1", thread_id="rev-1"),
         )
         event_bus.publish_project_sentinel(pid)
 
         await asyncio.wait_for(collector, timeout=2.0)
         assert [type(e).__name__ for e in received] == [
-            "UserInputRequestedEvent",
-            "UserInputResolvedEvent",
+            "YourTurnEvent",
+            "YourTurnEndedEvent",
         ]
         assert received[0].thread_id == "rev-1"
         assert received[1].thread_id == "rev-1"

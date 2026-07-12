@@ -25,11 +25,11 @@ import type {
   RunState,
   RunStoppedEvent,
   ThreadEntry,
-  UserInputRequestedEvent,
-  UserInputResolvedEvent,
   UserMessageCommittedEvent,
   WorkerCompletedEvent,
   WorkerStartedEvent,
+  YourTurnEndedEvent,
+  YourTurnEvent,
 } from "../lib/api/endpoints";
 import { queryKeys } from "../lib/api/query-keys";
 import { streamStateIsEmpty, streamStateTextLength } from "../lib/assistant-ui/runtime";
@@ -99,7 +99,7 @@ function applyActions(actions: RunActivityAction[]): RunActivityState {
     runStatus: "waiting",
     pausePending: false,
     runError: null,
-    awaitingInput: null,
+    yourTurn: null,
     treeState: { manager: null, workers: {}, evaluators: {}, taskToWorker: {} },
     liveBuffers: {},
     activeTrialId: null,
@@ -1473,27 +1473,27 @@ describe("useRunActivity — SSE: runState cache is patched to waiting by run_st
 });
 
 // ============================================================
-// 22. user_input_requested — approval gate
+// 22. your_turn — approval gate
 // ============================================================
 
-describe("USER_INPUT_REQUESTED — the run parks in waiting (your turn)", () => {
-  it("USER_INPUT_REQUESTED sets runStatus=waiting and the parked marker", () => {
+describe("YOUR_TURN — the run parks in waiting (your turn)", () => {
+  it("YOUR_TURN sets runStatus=waiting and the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
     ]);
     expect(state.runStatus).toBe("waiting");
-    expect(state.awaitingInput).toEqual({ threadId: "manager" });
+    expect(state.yourTurn).toEqual({ threadId: "manager" });
   });
 
   it("RUN_RESUMED clears the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_RESUMED" },
     ]);
     expect(state.runStatus).toBe("running");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
   it("MANAGER_TURN_STARTED clears the parked marker and returns runStatus to running", () => {
@@ -1506,178 +1506,155 @@ describe("USER_INPUT_REQUESTED — the run parks in waiting (your turn)", () => 
     const state = applyActions([
       { type: "INIT", threads },
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "MANAGER_TURN_STARTED", event: turnEv },
     ]);
     expect(state.runStatus).toBe("running");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
   it("RUN_COMPLETED (job run) clears the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_COMPLETED" },
     ]);
     expect(state.runStatus).toBe("completed");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
   it("RUN_FAILED clears the parked marker", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_FAILED", error: "boom" },
     ]);
     expect(state.runStatus).toBe("error");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
-  it("a delayed USER_INPUT_REQUESTED after terminal(completed) does not roll back to waiting", () => {
+  it("a delayed YOUR_TURN after terminal(completed) does not roll back to waiting", () => {
     // Race between REST (getRunState) and SSE: do not revive terminal state when
     // a delayed parked snapshot arrives after run_completed (job run).
     const state = applyActions([
       { type: "RUN_STARTED" },
       { type: "RUN_COMPLETED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
     ]);
     expect(state.runStatus).toBe("completed");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
-  it("a delayed USER_INPUT_REQUESTED after terminal(error) does not roll back to waiting", () => {
+  it("a delayed YOUR_TURN after terminal(error) does not roll back to waiting", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
       { type: "RUN_FAILED", error: "boom" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
     ]);
     expect(state.runStatus).toBe("error");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
-  it("from the initial waiting default (reload restore), USER_INPUT_REQUESTED sets the parked marker", () => {
+  it("from the initial waiting default (reload restore), YOUR_TURN sets the parked marker", () => {
     // initialState.runStatus is "waiting" (never-run default). The terminal guard
     // must not include waiting, or REST restore of a parked run would break.
-    const state = applyActions([{ type: "USER_INPUT_REQUESTED", threadId: "manager" }]);
+    const state = applyActions([{ type: "YOUR_TURN", threadId: "manager" }]);
     expect(state.runStatus).toBe("waiting");
-    expect(state.awaitingInput).toEqual({ threadId: "manager" });
+    expect(state.yourTurn).toEqual({ threadId: "manager" });
   });
 
   it("RUN_STOPPED clears the parked marker and stays waiting", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_STOPPED" },
     ]);
     expect(state.runStatus).toBe("waiting");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
   it("RESET returns the parked marker to null", () => {
-    let state = applyActions([
-      { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
-    ]);
-    expect(state.awaitingInput).not.toBeNull();
+    let state = applyActions([{ type: "RUN_STARTED" }, { type: "YOUR_TURN", threadId: "manager" }]);
+    expect(state.yourTurn).not.toBeNull();
     state = runActivityReducer(state, { type: "RESET" });
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
     expect(state.runStatus).toBe("waiting");
   });
 });
 
 // ============================================================
-// 23. toRunActivityAction — user_input_requested conversion
+// 23. toRunActivityAction — your_turn conversion
 // ============================================================
 
-describe("toRunActivityAction — user_input_requested → USER_INPUT_REQUESTED", () => {
-  it("user_input_requested event is converted to a USER_INPUT_REQUESTED action (question dropped)", () => {
-    const event: UserInputRequestedEvent = {
+describe("toRunActivityAction — your_turn → YOUR_TURN", () => {
+  it("your_turn event is converted to a YOUR_TURN action (pure signal — no text payload)", () => {
+    const event: YourTurnEvent = {
       ...BASE_EVENT,
-      type: "user_input_requested",
+      type: "your_turn",
       thread_id: "manager",
-      question: "",
     };
     const action = toRunActivityAction(event);
     expect(action).toEqual({
-      type: "USER_INPUT_REQUESTED",
-      threadId: "manager",
-    });
-  });
-
-  it("a legacy replayed event with a non-empty question still maps to the plain your-turn action", () => {
-    const event: UserInputRequestedEvent = {
-      ...BASE_EVENT,
-      type: "user_input_requested",
-      thread_id: "manager",
-      question: "Do you approve the plan?",
-    };
-    const action = toRunActivityAction(event);
-    expect(action).toEqual({
-      type: "USER_INPUT_REQUESTED",
+      type: "YOUR_TURN",
       threadId: "manager",
     });
   });
 });
 
 // ============================================================
-// 24. applyRunCachePatch — user_input_requested cache patch
+// 24. applyRunCachePatch — your_turn cache patch
 // ============================================================
 
-describe("applyRunCachePatch — user_input_requested: runState becomes waiting", () => {
-  it("runState cache becomes waiting on user_input_requested", () => {
+describe("applyRunCachePatch — your_turn: runState becomes waiting", () => {
+  it("runState cache becomes waiting on your_turn", () => {
     seedRunState(makeRunState({ status: "running" }));
 
-    const event: UserInputRequestedEvent = {
+    const event: YourTurnEvent = {
       ...BASE_EVENT,
-      type: "user_input_requested",
+      type: "your_turn",
       thread_id: "manager",
-      question: "",
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
 
     expect(getRunStateCache()?.status).toBe("waiting");
   });
 
-  it("user_input_requested refreshes the run identity fields, not just status", () => {
+  it("your_turn refreshes the run identity fields, not just status", () => {
     // The runState cache is otherwise "mount snapshot + status patches" — a
-    // frozen run_id/manager_thread re-dispatched later (dispatchForRunStatus
+    // frozen run_id/thread_id re-dispatched later (dispatchForRunStatus
     // on trial change) would attribute the parked marker to a long-gone run.
-    seedRunState(
-      makeRunState({ status: "running", run_id: "run-old", manager_thread: "trial-old" }),
-    );
+    seedRunState(makeRunState({ status: "running", run_id: "run-old", thread_id: "trial-old" }));
 
-    const event: UserInputRequestedEvent = {
+    const event: YourTurnEvent = {
       ...BASE_EVENT,
-      type: "user_input_requested",
+      type: "your_turn",
       run_id: "run-new",
       thread_id: "rev-1",
-      question: "",
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
 
     const cached = getRunStateCache();
     expect(cached?.status).toBe("waiting");
     expect(cached?.run_id).toBe("run-new");
-    expect(cached?.manager_thread).toBe("rev-1");
+    expect(cached?.thread_id).toBe("rev-1");
   });
 
-  it("user_input_requested is a no-op when runState cache is empty", () => {
-    const event: UserInputRequestedEvent = {
+  it("your_turn is a no-op when runState cache is empty", () => {
+    const event: YourTurnEvent = {
       ...BASE_EVENT,
-      type: "user_input_requested",
+      type: "your_turn",
       thread_id: "manager",
-      question: "",
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
     expect(getRunStateCache()).toBeUndefined();
   });
 
-  it("user_input_resolved returns a waiting cache to running", () => {
+  it("your_turn_ended returns a waiting cache to running", () => {
     seedRunState(makeRunState({ status: "waiting" }));
 
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, {
       ...BASE_EVENT,
-      type: "user_input_resolved",
+      type: "your_turn_ended",
       thread_id: "manager",
     });
 
@@ -1686,11 +1663,11 @@ describe("applyRunCachePatch — user_input_requested: runState becomes waiting"
 });
 
 // ============================================================
-// 25. useRunActivity hook — user_input_requested SSE event
+// 25. useRunActivity hook — your_turn SSE event
 // ============================================================
 
-describe("useRunActivity — SSE: transitions to waiting on user_input_requested", () => {
-  it("runStatus becomes waiting (with the parked marker) on a user_input_requested SSE event", () => {
+describe("useRunActivity — SSE: transitions to waiting on your_turn", () => {
+  it("runStatus becomes waiting (with the parked marker) on a your_turn SSE event", () => {
     seedRunState(makeRunState({ status: "running" }));
 
     const { result } = renderHook(
@@ -1701,20 +1678,19 @@ describe("useRunActivity — SSE: transitions to waiting on user_input_requested
     const es = MockEventSource.instances[0];
     act(() => {
       es.emit(
-        "user_input_requested",
+        "your_turn",
         JSON.stringify({
-          type: "user_input_requested",
+          type: "your_turn",
           project_id: PROJECT_ID,
           epic_id: EPIC_ID,
           run_id: "run-1",
           thread_id: "manager",
-          question: "",
         }),
       );
     });
 
     expect(result.current.state.runStatus).toBe("waiting");
-    expect(result.current.state.awaitingInput).toEqual({ threadId: "manager" });
+    expect(result.current.state.yourTurn).toEqual({ threadId: "manager" });
   });
 });
 
@@ -1840,26 +1816,26 @@ describe("CLEAR_LIVE_BUFFER — Bug4: clear the live buffer when the REST canoni
 });
 
 // ============================================================
-// 27. USER_INPUT_RESOLVED — Bug3 fix for status lingering after approval
+// 27. YOUR_TURN_ENDED — Bug3 fix for status lingering after approval
 // ============================================================
 
-describe("USER_INPUT_RESOLVED — Bug3: waiting does not linger on replay", () => {
-  it("USER_INPUT_REQUESTED → USER_INPUT_RESOLVED in order makes awaitingInput null", () => {
+describe("YOUR_TURN_ENDED — Bug3: waiting does not linger on replay", () => {
+  it("YOUR_TURN → YOUR_TURN_ENDED in order makes yourTurn null", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
-      { type: "USER_INPUT_RESOLVED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
+      { type: "YOUR_TURN_ENDED", threadId: "manager" },
     ]);
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
     expect(state.runStatus).toBe("running");
   });
 
-  it("USER_INPUT_RESOLVED while running stays running (no parked marker to release)", () => {
+  it("YOUR_TURN_ENDED while running stays running (no parked marker to release)", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_RESOLVED", threadId: "manager" },
+      { type: "YOUR_TURN_ENDED", threadId: "manager" },
     ]);
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
     expect(state.runStatus).toBe("running");
   });
 
@@ -1867,40 +1843,40 @@ describe("USER_INPUT_RESOLVED — Bug3: waiting does not linger on replay", () =
     // Simulating replay on SSE reconnect: request arrives first, then resolved
     let state = applyActions([{ type: "RUN_STARTED" }]);
     state = runActivityReducer(state, {
-      type: "USER_INPUT_REQUESTED",
+      type: "YOUR_TURN",
       threadId: "manager",
     });
     expect(state.runStatus).toBe("waiting");
-    expect(state.awaitingInput).not.toBeNull();
+    expect(state.yourTurn).not.toBeNull();
 
     state = runActivityReducer(state, {
-      type: "USER_INPUT_RESOLVED",
+      type: "YOUR_TURN_ENDED",
       threadId: "manager",
     });
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
     expect(state.runStatus).toBe("running");
   });
 });
 
-describe("toRunActivityAction — user_input_resolved → USER_INPUT_RESOLVED", () => {
-  it("user_input_resolved event is converted to a USER_INPUT_RESOLVED action", () => {
-    const event: UserInputResolvedEvent = {
+describe("toRunActivityAction — your_turn_ended → YOUR_TURN_ENDED", () => {
+  it("your_turn_ended event is converted to a YOUR_TURN_ENDED action", () => {
+    const event: YourTurnEndedEvent = {
       ...BASE_EVENT,
-      type: "user_input_resolved",
+      type: "your_turn_ended",
       thread_id: "manager",
     };
     const action = toRunActivityAction(event);
-    expect(action).toEqual({ type: "USER_INPUT_RESOLVED", threadId: "manager" });
+    expect(action).toEqual({ type: "YOUR_TURN_ENDED", threadId: "manager" });
   });
 });
 
-describe("applyRunCachePatch — user_input_resolved: runState returns to running", () => {
-  it("runState cache becomes running on user_input_resolved", () => {
+describe("applyRunCachePatch — your_turn_ended: runState returns to running", () => {
+  it("runState cache becomes running on your_turn_ended", () => {
     seedRunState(makeRunState({ status: "waiting" }));
 
-    const event: UserInputResolvedEvent = {
+    const event: YourTurnEndedEvent = {
       ...BASE_EVENT,
-      type: "user_input_resolved",
+      type: "your_turn_ended",
       thread_id: "manager",
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
@@ -1908,10 +1884,10 @@ describe("applyRunCachePatch — user_input_resolved: runState returns to runnin
     expect(getRunStateCache()?.status).toBe("running");
   });
 
-  it("user_input_resolved is a no-op when runState cache is empty", () => {
-    const event: UserInputResolvedEvent = {
+  it("your_turn_ended is a no-op when runState cache is empty", () => {
+    const event: YourTurnEndedEvent = {
       ...BASE_EVENT,
-      type: "user_input_resolved",
+      type: "your_turn_ended",
       thread_id: "manager",
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
@@ -1919,8 +1895,8 @@ describe("applyRunCachePatch — user_input_resolved: runState returns to runnin
   });
 });
 
-describe("useRunActivity — SSE: waiting is cleared by user_input_resolved", () => {
-  it("a user_input_resolved SSE event returns runStatus to running and clears the parked marker", () => {
+describe("useRunActivity — SSE: waiting is cleared by your_turn_ended", () => {
+  it("a your_turn_ended SSE event returns runStatus to running and clears the parked marker", () => {
     seedRunState(makeRunState({ status: "waiting" }));
 
     const { result } = renderHook(
@@ -1929,17 +1905,16 @@ describe("useRunActivity — SSE: waiting is cleared by user_input_resolved", ()
     );
 
     const es = MockEventSource.instances[0];
-    // first transition to awaiting_input state
+    // first, park the run (your turn)
     act(() => {
       es.emit(
-        "user_input_requested",
+        "your_turn",
         JSON.stringify({
-          type: "user_input_requested",
+          type: "your_turn",
           project_id: PROJECT_ID,
           epic_id: EPIC_ID,
           run_id: "run-1",
           thread_id: "manager",
-          question: "",
         }),
       );
     });
@@ -1948,9 +1923,9 @@ describe("useRunActivity — SSE: waiting is cleared by user_input_resolved", ()
     // resolved releases it
     act(() => {
       es.emit(
-        "user_input_resolved",
+        "your_turn_ended",
         JSON.stringify({
-          type: "user_input_resolved",
+          type: "your_turn_ended",
           project_id: PROJECT_ID,
           epic_id: EPIC_ID,
           run_id: "run-1",
@@ -1960,7 +1935,7 @@ describe("useRunActivity — SSE: waiting is cleared by user_input_resolved", ()
     });
 
     expect(result.current.state.runStatus).toBe("running");
-    expect(result.current.state.awaitingInput).toBeNull();
+    expect(result.current.state.yourTurn).toBeNull();
   });
 });
 
@@ -1983,63 +1958,63 @@ describe("CLEAR_LIVE_BUFFER — Bug4 guard: the done flag can be respected even 
 });
 
 // ============================================================
-// 29. USER_INPUT_RESOLVED guard: does not overwrite terminal state
+// 29. YOUR_TURN_ENDED guard: does not overwrite terminal state
 // ============================================================
 
-describe("USER_INPUT_RESOLVED — does not overwrite terminal/stopped state with running", () => {
-  it("USER_INPUT_RESOLVED arriving after completed leaves runStatus as completed", () => {
+describe("YOUR_TURN_ENDED — does not overwrite terminal/stopped state with running", () => {
+  it("YOUR_TURN_ENDED arriving after completed leaves runStatus as completed", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_COMPLETED" }, // transition to terminal state
-      { type: "USER_INPUT_RESOLVED", threadId: "manager" }, // delayed resolved
+      { type: "YOUR_TURN_ENDED", threadId: "manager" }, // delayed resolved
     ]);
     expect(state.runStatus).toBe("completed");
-    expect(state.awaitingInput).toBeNull(); // awaitingInput is cleared
+    expect(state.yourTurn).toBeNull(); // yourTurn is cleared
   });
 
-  it("USER_INPUT_RESOLVED arriving after failed leaves runStatus as error", () => {
+  it("YOUR_TURN_ENDED arriving after failed leaves runStatus as error", () => {
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_FAILED", error: "some error" },
-      { type: "USER_INPUT_RESOLVED", threadId: "manager" },
+      { type: "YOUR_TURN_ENDED", threadId: "manager" },
     ]);
     expect(state.runStatus).toBe("error");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
-  it("USER_INPUT_RESOLVED arriving after stopped stays waiting (marker already cleared)", () => {
+  it("YOUR_TURN_ENDED arriving after stopped stays waiting (marker already cleared)", () => {
     // RUN_STOPPED settles into waiting WITHOUT the parked marker; a delayed
     // resolved replay must not fake "running" out of that resting state.
     const state = applyActions([
       { type: "RUN_STARTED" },
-      { type: "USER_INPUT_REQUESTED", threadId: "manager" },
+      { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_STOPPED" },
-      { type: "USER_INPUT_RESOLVED", threadId: "manager" },
+      { type: "YOUR_TURN_ENDED", threadId: "manager" },
     ]);
     expect(state.runStatus).toBe("waiting");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 });
 
-describe("applyRunCachePatch — user_input_resolved: does not overwrite terminal state with running", () => {
-  it("cache remains completed when user_input_resolved arrives in completed state", () => {
+describe("applyRunCachePatch — your_turn_ended: does not overwrite terminal state with running", () => {
+  it("cache remains completed when your_turn_ended arrives in completed state", () => {
     seedRunState(makeRunState({ status: "completed" }));
-    const event: UserInputResolvedEvent = {
+    const event: YourTurnEndedEvent = {
       ...BASE_EVENT,
-      type: "user_input_resolved",
+      type: "your_turn_ended",
       thread_id: "manager",
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
     expect(getRunStateCache()?.status).toBe("completed");
   });
 
-  it("in waiting state, user_input_resolved returns to running (happy path)", () => {
+  it("in waiting state, your_turn_ended returns to running (happy path)", () => {
     seedRunState(makeRunState({ status: "waiting" }));
-    const event: UserInputResolvedEvent = {
+    const event: YourTurnEndedEvent = {
       ...BASE_EVENT,
-      type: "user_input_resolved",
+      type: "your_turn_ended",
       thread_id: "manager",
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
@@ -2407,7 +2382,7 @@ describe("useRunActivity — SSE: user_message_committed is immediately reflecte
 //
 // P3 semantics:
 //   - A parked run persists status="waiting" with a real run_id. On reload the
-//     REST RunState alone restores the parked marker (awaitingInput) — the
+//     REST RunState alone restores the parked marker (yourTurn) — the
 //     question needs no restore path because it is the agent's final message
 //     in the thread (fetched with the thread messages).
 //   - A never-run epic gets a synthesised RunState (run_id="") — it is also
@@ -2419,7 +2394,7 @@ describe("Reload scenario — the parked marker is restored from REST waiting st
   it("initialRunState waiting with a real run_id restores the parked marker on mount (no SSE needed)", () => {
     const initialRunState: RunState = makeRunState({
       status: "waiting",
-      manager_thread: "manager",
+      thread_id: "manager",
     });
 
     const { result } = renderHook(
@@ -2433,7 +2408,7 @@ describe("Reload scenario — the parked marker is restored from REST waiting st
     );
 
     expect(result.current.state.runStatus).toBe("waiting");
-    expect(result.current.state.awaitingInput).toEqual({ threadId: "manager" });
+    expect(result.current.state.yourTurn).toEqual({ threadId: "manager" });
   });
 
   it("a synthesised never-run RunState (run_id='') stays waiting WITHOUT the parked marker", () => {
@@ -2450,13 +2425,13 @@ describe("Reload scenario — the parked marker is restored from REST waiting st
     );
 
     expect(result.current.state.runStatus).toBe("waiting");
-    expect(result.current.state.awaitingInput).toBeNull();
+    expect(result.current.state.yourTurn).toBeNull();
   });
 
-  it("the parked marker is attributed to RunState.manager_thread when present", () => {
+  it("the parked marker is attributed to RunState.thread_id when present", () => {
     const initialRunState: RunState = makeRunState({
       status: "waiting",
-      manager_thread: "trial-2",
+      thread_id: "trial-2",
     });
 
     const { result } = renderHook(
@@ -2469,7 +2444,7 @@ describe("Reload scenario — the parked marker is restored from REST waiting st
       { wrapper },
     );
 
-    expect(result.current.state.awaitingInput).toEqual({ threadId: "trial-2" });
+    expect(result.current.state.yourTurn).toEqual({ threadId: "trial-2" });
   });
 
   it("the parked marker is also restored when the getRunState fetch returns waiting", async () => {
@@ -2477,7 +2452,7 @@ describe("Reload scenario — the parked marker is restored from REST waiting st
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve(makeRunState({ status: "waiting", manager_thread: "manager" })),
+        json: () => Promise.resolve(makeRunState({ status: "waiting", thread_id: "manager" })),
       }),
     );
 
@@ -2491,7 +2466,7 @@ describe("Reload scenario — the parked marker is restored from REST waiting st
     });
 
     expect(result.current.state.runStatus).toBe("waiting");
-    expect(result.current.state.awaitingInput).toEqual({ threadId: "manager" });
+    expect(result.current.state.yourTurn).toEqual({ threadId: "manager" });
   });
 });
 
@@ -2505,7 +2480,7 @@ describe("M1: Multi-trial — manager node threadId is unified to the real id", 
     let state = applyActions([{ type: "INIT", threads }]);
     expect(state.treeState.manager?.threadId).toBe("trial-1");
 
-    // Restore from RunState.manager_thread via REST
+    // Restore from RunState.thread_id via REST
     state = runActivityReducer(state, {
       type: "SET_ACTIVE_TRIAL_ID",
       threadId: "trial-2",
@@ -2620,23 +2595,23 @@ describe("M1: Multi-trial — manager node threadId is unified to the real id", 
 
 // ============================================================
 // 35. activeTrialId resolution (P4 split) — epic.active_thread_id is the sole authority;
-//     RunState.manager_thread never feeds the trial (it is the run's own thread → currentRun)
+//     RunState.thread_id never feeds the trial (it is the run's own thread → currentRun)
 //
 // Regression verification for the fix:
 //   Immediately after creating a new trial, epic.active_thread_id = new trial, but
-//   RunState.manager_thread = the thread id from a completed old run (stale).
+//   RunState.thread_id = the thread id from a completed old run (stale).
 //   If activeThreadId is not prioritized, the composer disappears.
 // ============================================================
 
 describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id) takes top priority", () => {
-  it("when activeThreadId is specified, it is not overwritten by stale RunState.manager_thread", async () => {
-    // RunState.manager_thread = stale id from an old trial
+  it("when activeThreadId is specified, it is not overwritten by stale RunState.thread_id", async () => {
+    // RunState.thread_id = stale id from an old trial
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
         json: () =>
-          Promise.resolve(makeRunState({ status: "completed", manager_thread: "th-old-stale" })),
+          Promise.resolve(makeRunState({ status: "completed", thread_id: "th-old-stale" })),
       }),
     );
 
@@ -2660,13 +2635,13 @@ describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id
     expect(result.current.state.activeTrialId).toBe("th-new-active");
   });
 
-  it("when activeThreadId is not specified, manager_thread feeds currentRun — NOT activeTrialId (P4 split)", async () => {
+  it("when activeThreadId is not specified, thread_id feeds currentRun — NOT activeTrialId (P4 split)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
         json: () =>
-          Promise.resolve(makeRunState({ status: "running", manager_thread: "th-current-run" })),
+          Promise.resolve(makeRunState({ status: "running", thread_id: "th-current-run" })),
       }),
     );
 
@@ -2684,7 +2659,7 @@ describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
-    // P4: RunState.manager_thread is the RUN's own thread. It is captured as
+    // P4: RunState.thread_id is the RUN's own thread. It is captured as
     // currentRun (banner attribution) and never becomes the active trial
     // (during a reviewer run it would point at the reviewer thread).
     expect(result.current.state.activeTrialId).toBeNull();
@@ -2694,11 +2669,11 @@ describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id
     });
   });
 
-  it("when activeThreadId is specified, it is not overwritten by initialRunState's manager_thread either", () => {
-    // Pass a stale manager_thread as initialRunState
+  it("when activeThreadId is specified, it is not overwritten by initialRunState's thread_id either", () => {
+    // Pass a stale thread_id as initialRunState
     const initialRunState: RunState = makeRunState({
       status: "completed",
-      manager_thread: "th-old-stale",
+      thread_id: "th-old-stale",
     });
 
     const { result } = renderHook(
@@ -2734,7 +2709,7 @@ describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id
       { wrapper },
     );
 
-    // RunState.manager_thread is null, activeThreadId is null
+    // RunState.thread_id is null, activeThreadId is null
     // → resolved (non-archived) manager from initialThreads is used as fallback
     expect(result.current.state.activeTrialId).toBe("th-resolved-mgr");
   });
@@ -2889,13 +2864,10 @@ describe("RUN_PREPARING — preparing phase before Manager starts", () => {
     expect(state.runError).toBeNull();
   });
 
-  it("RUN_PREPARING clears awaitingInput", () => {
-    const state = applyActions([
-      { type: "USER_INPUT_REQUESTED", threadId: "mgr" },
-      { type: "RUN_PREPARING" },
-    ]);
+  it("RUN_PREPARING clears yourTurn", () => {
+    const state = applyActions([{ type: "YOUR_TURN", threadId: "mgr" }, { type: "RUN_PREPARING" }]);
     expect(state.runStatus).toBe("preparing");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
   });
 
   it("RUN_STARTED after RUN_PREPARING transitions to 'running'", () => {
@@ -3062,7 +3034,7 @@ describe("P4: reviewer run attribution — marker on the reviewer thread, compos
   it("REST restore of a parked reviewer run: marker + currentRun on the reviewer thread, activeTrialId on the trial", () => {
     const initialRunState: RunState = makeRunState({
       status: "waiting",
-      manager_thread: "rev-1",
+      thread_id: "rev-1",
       role: "reviewer",
     });
 
@@ -3080,26 +3052,26 @@ describe("P4: reviewer run attribution — marker on the reviewer thread, compos
     // Composer stays on the manager trial; the your-turn marker belongs to the
     // reviewer conversation the run actually rides on (the misattribution bug).
     expect(result.current.state.activeTrialId).toBe("trial-1");
-    expect(result.current.state.awaitingInput).toEqual({ threadId: "rev-1" });
+    expect(result.current.state.yourTurn).toEqual({ threadId: "rev-1" });
     expect(result.current.state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
   });
 
-  it("reducer: USER_INPUT_REQUESTED does NOT attribute the marker to the trial thread", () => {
+  it("reducer: YOUR_TURN does NOT attribute the marker to the trial thread", () => {
     let state = applyActions([{ type: "SET_ACTIVE_TRIAL_ID", threadId: "trial-1" }]);
-    state = runActivityReducer(state, { type: "USER_INPUT_REQUESTED", threadId: "rev-1" });
-    expect(state.awaitingInput).toEqual({ threadId: "rev-1" });
+    state = runActivityReducer(state, { type: "YOUR_TURN", threadId: "rev-1" });
+    expect(state.yourTurn).toEqual({ threadId: "rev-1" });
     expect(state.activeTrialId).toBe("trial-1");
   });
 
-  it("reducer: USER_INPUT_REQUESTED keeps the known role when the thread matches", () => {
+  it("reducer: YOUR_TURN keeps the known role when the thread matches", () => {
     let state = applyActions([{ type: "SET_CURRENT_RUN", threadId: "rev-1", role: "reviewer" }]);
-    state = runActivityReducer(state, { type: "USER_INPUT_REQUESTED", threadId: "rev-1" });
+    state = runActivityReducer(state, { type: "YOUR_TURN", threadId: "rev-1" });
     expect(state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
   });
 
-  it("reducer: USER_INPUT_REQUESTED resets the role when the thread changed (unknown until the REST refresh)", () => {
+  it("reducer: YOUR_TURN resets the role when the thread changed (unknown until the REST refresh)", () => {
     let state = applyActions([{ type: "SET_CURRENT_RUN", threadId: "trial-1", role: "manager" }]);
-    state = runActivityReducer(state, { type: "USER_INPUT_REQUESTED", threadId: "rev-1" });
+    state = runActivityReducer(state, { type: "YOUR_TURN", threadId: "rev-1" });
     expect(state.currentRun).toEqual({ threadId: "rev-1", role: null });
   });
 
@@ -3111,18 +3083,18 @@ describe("P4: reviewer run attribution — marker on the reviewer thread, compos
       role: "reviewer",
     });
     expect(state.runStatus).toBe("running");
-    expect(state.awaitingInput).toBeNull();
+    expect(state.yourTurn).toBeNull();
     expect(state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
   });
 
-  it("SSE user_input_requested triggers a role refresh from REST (reviewer wording without reload)", async () => {
+  it("SSE your_turn triggers a role refresh from REST (reviewer wording without reload)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
         json: () =>
           Promise.resolve(
-            makeRunState({ status: "waiting", manager_thread: "rev-1", role: "reviewer" }),
+            makeRunState({ status: "waiting", thread_id: "rev-1", role: "reviewer" }),
           ),
       }),
     );
@@ -3135,20 +3107,19 @@ describe("P4: reviewer run attribution — marker on the reviewer thread, compos
     const es = MockEventSource.instances[0];
     await act(async () => {
       es.emit(
-        "user_input_requested",
+        "your_turn",
         JSON.stringify({
-          type: "user_input_requested",
+          type: "your_turn",
           project_id: PROJECT_ID,
           epic_id: EPIC_ID,
           run_id: "run-1",
           thread_id: "rev-1",
-          question: "",
         }),
       );
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
-    expect(result.current.state.awaitingInput).toEqual({ threadId: "rev-1" });
+    expect(result.current.state.yourTurn).toEqual({ threadId: "rev-1" });
     expect(result.current.state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
     // The composer never migrates to the reviewer thread.
     expect(result.current.state.activeTrialId).toBe("trial-1");

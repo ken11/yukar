@@ -381,7 +381,7 @@ class TestStartOrInject:
 
 
 # ---------------------------------------------------------------------------
-# 3. Reconcile → 'interrupted' (not 'error')
+# 3. Startup recovery settles crashed running/paused runs into 'waiting'
 # ---------------------------------------------------------------------------
 
 
@@ -533,7 +533,7 @@ class TestRecoverInterrupted:
 
 
 # ---------------------------------------------------------------------------
-# 4. POST /run from completed/interrupted is allowed
+# 4. POST /run with no live run is allowed (any prior outcome)
 # ---------------------------------------------------------------------------
 
 

@@ -2,6 +2,9 @@
 
 DummyRunner simulates an agent run by publishing a scripted sequence of events
 to the event bus at 0.5–1 s intervals, and updating state.yaml accordingly.
+Like a real conversation run it ends its script by settling into ``waiting``
+and publishing ``YourTurnEvent`` (it never emits ``RunCompletedEvent`` — that
+event is for job runs).
 
 DummyRunner is a permanent no-LLM/test fallback used by the supervisor when
 no real orchestrator is configured (e.g. in integration tests).  It satisfies
@@ -19,12 +22,12 @@ from typing import Protocol
 from yukar.events import bus as event_bus
 from yukar.models.events import (
     EvalResultEvent,
-    RunCompletedEvent,
     RunStartedEvent,
     TaskUpdateEvent,
     TokenEvent,
     WorkerCompletedEvent,
     WorkerStartedEvent,
+    YourTurnEvent,
 )
 from yukar.models.run import ActiveWorker, RunState
 from yukar.storage import state_repo
@@ -84,9 +87,12 @@ class DummyRunner:
         # Update state to running.
         # NOTE: epic.yaml.status is user-owned (open ⇄ completed via the API)
         # and is never written by runs.  runner only owns state.yaml.
+        # thread_id mirrors the conversation-run contract so the final
+        # YourTurnEvent and the run summary agree on the thread.
         state = RunState(
             run_id=run_id,
             status="running",
+            thread_id="manager",
             started_at=datetime.now(UTC),
         )
         await state_repo.save_state(root, project_id, epic_id, state)
@@ -257,18 +263,19 @@ class DummyRunner:
             # Scripted sequence done — settle into "waiting" (a DummyRunner
             # stands in for a conversation run, which never writes
             # "completed"; only job runs do).  epic.yaml.status is user-owned
-            # and untouched.  The RunCompletedEvent below is kept as the
-            # legacy end-of-script signal for SSE smoke tests.
+            # and untouched.  Like the real orchestrator's park, persist
+            # ``waiting`` first, then publish the "your turn" signal.
             state.status = "waiting"
             state.active_workers = []
             state.last_event_at = datetime.now(UTC)
             await state_repo.save_state(root, project_id, epic_id, state)
 
             pub(
-                RunCompletedEvent(
+                YourTurnEvent(
                     project_id=project_id,
                     epic_id=epic_id,
                     run_id=run_id,
+                    thread_id=state.thread_id or "manager",
                 )
             )
         finally:

@@ -815,7 +815,7 @@ class TestEpicOrchestrator:
         assert "eval_result" in event_types
         # P3: the ended turn parks the run (your-turn signal); a conversation
         # run never emits run_completed.
-        assert "user_input_requested" in event_types
+        assert "your_turn" in event_types
         assert "run_completed" not in event_types
 
         # Verify eval result accepted
@@ -1323,7 +1323,7 @@ class TestEpicOrchestrator:
 
         # The run parks normally (attempt exhaustion is not a run failure).
         assert not any(getattr(e, "type", None) == "run_failed" for e in events_received)
-        assert any(getattr(e, "type", None) == "user_input_requested" for e in events_received)
+        assert any(getattr(e, "type", None) == "your_turn" for e in events_received)
 
     async def test_stop_updates_state(self, git_repo: Path, tmp_path: Path) -> None:
         """Stopping an orchestrator mid-run sets state.yaml to waiting (not error).

@@ -313,7 +313,7 @@ describe("EpicsBoardClient your-turn badge (P4)", () => {
     expect(screen.queryByTestId("your-turn-EP-13")).not.toBeInTheDocument();
   });
 
-  it("project SSE user_input_requested adds the badge live; user_input_resolved removes it", async () => {
+  it("project SSE your_turn adds the badge live; your_turn_ended removes it", async () => {
     const epics = [
       makeEpic("EP-14", "open", {
         runSummary: {
@@ -333,9 +333,9 @@ describe("EpicsBoardClient your-turn badge (P4)", () => {
     // The run parked → the board badge appears without a refetch.
     await act(async () => {
       es?.emit(
-        "user_input_requested",
+        "your_turn",
         JSON.stringify({
-          type: "user_input_requested",
+          type: "your_turn",
           project_id: "proj1",
           epic_id: "EP-14",
           run_id: "run-1",
@@ -350,9 +350,9 @@ describe("EpicsBoardClient your-turn badge (P4)", () => {
     // The user's reply woke the run → the badge disappears.
     await act(async () => {
       es?.emit(
-        "user_input_resolved",
+        "your_turn_ended",
         JSON.stringify({
-          type: "user_input_resolved",
+          type: "your_turn_ended",
           project_id: "proj1",
           epic_id: "EP-14",
           run_id: "run-1",
@@ -380,9 +380,9 @@ describe("EpicsBoardClient your-turn badge (P4)", () => {
     const es = MockEventSource.instances.find((i) => i.url.endsWith("/events"));
     await act(async () => {
       es?.emit(
-        "user_input_requested",
+        "your_turn",
         JSON.stringify({
-          type: "user_input_requested",
+          type: "your_turn",
           project_id: "proj1",
           epic_id: "EP-99",
           run_id: "run-9",

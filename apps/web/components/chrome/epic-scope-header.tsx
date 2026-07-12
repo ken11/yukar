@@ -125,7 +125,7 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
   const status = resolveStatus(
     epic?.status,
     activityState.runStatus,
-    activityState.awaitingInput != null,
+    activityState.yourTurn != null,
   );
 
   // Task progress — same query key as EpicTabBar, so this will be a cache hit

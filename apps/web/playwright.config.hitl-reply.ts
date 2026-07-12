@@ -2,7 +2,7 @@
  * Playwright config for hitl-reply (resume run via HITL reply) E2E test.
  *
  * Separated from the existing playwright.config.ts; starts FastAPI and Next.js
- * with a dedicated FAKE_SCRIPT covering ask_user → reply → completed.
+ * with a dedicated FAKE_SCRIPT covering question turn → reply → next turn.
  *
  * Prerequisite: ports 8000 and 3000 must be free before running.
  * (Stop any running pnpm dev first if necessary.)
@@ -41,7 +41,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"], ["html", { outputFolder: "playwright-report/hitl-reply", open: "never" }]],
 
-  /* Generous timeouts: awaiting_input → reply → completed needs headroom */
+  /* Generous timeouts: waiting → reply → the follow-up turn needs headroom */
   timeout: 120_000,
   expect: { timeout: 30_000 },
 

@@ -55,19 +55,19 @@ export type {
  * Pure function that maps RunState to the corresponding RunActivityAction.
  * #4: Unified the identical if-else chain that was duplicated in 2 places inside use-run-activity.
  * P3: "waiting" is the resting state (your turn). A real parked run
- * (run_id non-empty) dispatches USER_INPUT_REQUESTED so the your-turn banner
+ * (run_id non-empty) dispatches YOUR_TURN so the your-turn banner
  * is restored from REST alone; a never-run epic (synthesised run_id="") is
  * left at the reducer's default waiting state without the parked marker.
  * The question itself needs no restore path — it is the agent's final message
- * in the thread (pending_question was removed with ask_user).
+ * in the thread (the legacy pending_question carrier was removed with ask_user).
  *
  * P4 attribution split — two independent concepts:
  *   - activeTrialId (composer rights / tree / links): epic.active_thread_id
- *     with the non-archived-manager fallback. RunState.manager_thread is NOT a
+ *     with the non-archived-manager fallback. RunState.thread_id is NOT a
  *     candidate anymore — during a reviewer run it points at the reviewer
  *     thread and used to misattribute the trial (the root-cause bug).
  *   - currentRun (your-turn banner attribution + role wording): the run's own
- *     conversation, i.e. RunState.manager_thread + RunState.role.
+ *     conversation, i.e. RunState.thread_id + RunState.role.
  *
  * @param primaryActiveTrialId - Highest-priority value for activeTrialId.
  *   Pass epic.active_thread_id when it has been confirmed.
@@ -78,18 +78,18 @@ export type {
 function dispatchForRunStatus(
   runState: Pick<
     import("@/lib/api/endpoints").RunState,
-    "status" | "run_id" | "manager_thread" | "role"
+    "status" | "run_id" | "thread_id" | "role"
   >,
   dispatchFn: (action: import("./run-activity/actions").RunActivityAction) => void,
   primaryActiveTrialId?: string | null,
   fallbackActiveTrialId?: string | null,
 ): void {
-  const { status, run_id, manager_thread, role } = runState;
+  const { status, run_id, thread_id, role } = runState;
 
   // Resolution order: primaryActiveTrialId(epic.active_thread_id) → fallback → null.
   // epic.active_thread_id is the sole authority for the trial; the old
-  // RunState.manager_thread fallback is gone (P4) — it is the RUN's thread and
-  // caused both the "stale manager_thread hides the composer in the gap between
+  // RunState.thread_id fallback is gone (P4) — it is the RUN's thread and
+  // caused both the "stale run thread hides the composer in the gap between
   // trial creation and first run" regression workaround and the reviewer
   // misattribution.
   //
@@ -101,8 +101,8 @@ function dispatchForRunStatus(
 
   // currentRun: the conversation this run rides on + its role — the banner
   // attribution source. Only a real run (run_id non-empty) counts.
-  if (run_id && manager_thread) {
-    dispatchFn({ type: "SET_CURRENT_RUN", threadId: manager_thread, role: role ?? "manager" });
+  if (run_id && thread_id) {
+    dispatchFn({ type: "SET_CURRENT_RUN", threadId: thread_id, role: role ?? "manager" });
   }
 
   if (status === "running") dispatchFn({ type: "RUN_STARTED" });
@@ -113,11 +113,11 @@ function dispatchForRunStatus(
     // A real run parked here (your turn) — restore the parked marker from REST
     // alone (no SSE replay dependency). A synthesised never-run state
     // (run_id="") stays at the reducer default: waiting without the marker.
-    // Attribution: the run's OWN thread (manager_thread — for a reviewer run
+    // Attribution: the run's OWN thread (thread_id — for a reviewer run
     // this is the reviewer thread), falling back to the trial only when the
-    // state predates manager_thread.
-    const parkedThreadId = manager_thread ?? resolvedTrialId ?? "manager";
-    dispatchFn({ type: "USER_INPUT_REQUESTED", threadId: parkedThreadId });
+    // state predates RunState.thread_id.
+    const parkedThreadId = thread_id ?? resolvedTrialId ?? "manager";
+    dispatchFn({ type: "YOUR_TURN", threadId: parkedThreadId });
   }
 }
 
@@ -139,10 +139,10 @@ export function useRunActivity({
    * Highest-priority source for activeTrialId (composer rights).
    * Resolution order: activeThreadId(epic.active_thread_id) → non-archived manager in initialThreads → "manager"
    *
-   * P4 split: RunState.manager_thread is no longer a candidate here — it is the
+   * P4 split: RunState.thread_id is no longer a candidate here — it is the
    * RUN's own thread (currentRun) and, during a reviewer run, points at the
    * reviewer thread. Removing it also removes the regression class where a
-   * stale manager_thread overwrote epic.active_thread_id in the gap between
+   * stale run thread overwrote epic.active_thread_id in the gap between
    * "new trial creation" and "first run start", hiding the composer.
    *
    * The fallback is the first thread in initialThreads with role=manager && status!=="archived".
@@ -177,10 +177,10 @@ export function useRunActivity({
     // Highest priority: activeThreadId(epic.active_thread_id) — authoritative value guaranteed by the backend.
     // Fallback: first thread in initialThreads with role=manager && status!="archived".
     // Final: "manager" (backward compat, applied by consumers).
-    // RunState.manager_thread is NOT a candidate (it is the run's own thread —
+    // RunState.thread_id is NOT a candidate (it is the run's own thread —
     // a reviewer run would misattribute the trial; banner attribution reads it
     // via currentRun instead). This also removes the old regression class where
-    // a stale manager_thread overwrote active_thread_id in the gap between
+    // a stale run thread overwrote active_thread_id in the gap between
     // "new trial creation" and "first run start", hiding the composer.
     const primaryMgrThreadId = activeThreadId ?? null;
     // Find the first non-archived manager thread from initialThreads (for use as fallback)
@@ -224,7 +224,7 @@ export function useRunActivity({
   const initialThreadsRef = useRef(initialThreads);
   initialThreadsRef.current = initialThreads;
 
-  // P4 parked-thread sync, coalesced.  user_input_requested triggers a REST
+  // P4 parked-thread sync, coalesced.  your_turn triggers a REST
   // round-trip (authoritative RunState for the banner's role + the parked
   // thread's persisted messages), but the SSE replay buffer can carry dozens
   // of park events from earlier turns on every mount/reconnect — the timeout
@@ -252,7 +252,7 @@ export function useRunActivity({
     const threadId = s.threadId;
 
     // 1. Authoritative RunState: refresh the identity fields of the runState
-    // cache (SSE only patches status, so run_id / manager_thread / role would
+    // cache (SSE only patches status, so run_id / thread_id / role would
     // otherwise stay frozen at mount time — a stale hybrid that can revive
     // the pre-P4 misattribution when dispatchForRunStatus re-reads the cache)
     // and give the banner its role.  Status stays SSE-owned: a late response
@@ -264,15 +264,15 @@ export function useRunActivity({
             ? {
                 ...prev,
                 run_id: rs.run_id,
-                manager_thread: rs.manager_thread,
+                thread_id: rs.thread_id,
                 role: rs.role,
               }
             : rs,
         );
-        if (rs.run_id && rs.manager_thread) {
+        if (rs.run_id && rs.thread_id) {
           dispatch({
             type: "SET_CURRENT_RUN",
-            threadId: rs.manager_thread,
+            threadId: rs.thread_id,
             role: rs.role ?? "manager",
           });
         }
@@ -284,7 +284,8 @@ export function useRunActivity({
     // 2. Parked thread messages: the agent's final message (question/report)
     // is on disk by the time the park event fires.  manager_message usually
     // covers the refetch, but it is not replayed after the run-teardown SSE
-    // sentinel closes the stream (e.g. POST /review shelving the parked run),
+    // sentinel closes the stream (stop / error / normal exit — P5 removed the
+    // sentinel from the shelve path, so shelving no longer cuts the stream),
     // so the replayed park event anchors it instead.  MERGE by message_id
     // rather than invalidate: an invalidation's refetch can resolve after a
     // concurrent SSE user_message_committed setQueryData and wipe the user's
@@ -329,7 +330,7 @@ export function useRunActivity({
       // of park events collapses into a single fetch for the latest one.
       // Attribution only — SET_CURRENT_RUN never touches runStatus, so a late
       // response cannot fake execution state.
-      if (event.type === "user_input_requested") {
+      if (event.type === "your_turn") {
         const s = parkedSyncRef.current;
         s.threadId = event.thread_id ?? "";
         if (!s.scheduled) {
@@ -356,7 +357,7 @@ export function useRunActivity({
       .then((rs) => {
         // #4: unified the duplicated if-else chain into dispatchForRunStatus
         // Pass activeThreadId(epic.active_thread_id) as primaryMgrThreadId at highest priority.
-        // This prevents a stale RunState.manager_thread from overwriting active_thread_id.
+        // This prevents a stale RunState.thread_id from overwriting active_thread_id.
         const primaryMgrThreadId = activeThreadIdRef.current ?? null;
         const fallbackFromThreads =
           initialThreadsRef.current?.find((t) => t.role === "manager" && t.status !== "archived")

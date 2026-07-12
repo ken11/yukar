@@ -6,7 +6,7 @@ host never injects a prompt to keep a run going — no stall notices, no
 dispatch nudges, no completion tool:
 
 - A turn that ends (tool-using or not) parks the run in ``waiting`` and
-  publishes a question-less UserInputRequestedEvent (pure "your turn" signal).
+  publishes a question-less YourTurnEvent (pure "your turn" signal).
 - The ONLY host-authored user prompt is turn-0 initialisation.
 - stop() on a live waiting run settles the state as ``waiting`` (restartable),
   never ``completed`` — a conversation run has no completed state.
@@ -80,7 +80,7 @@ class TestParkHelper:
         from yukar.agents.orchestrator import EpicOrchestrator
         from yukar.config.settings import LLMSettings
         from yukar.models.epic import Epic
-        from yukar.models.events import UserInputRequestedEvent
+        from yukar.models.events import YourTurnEvent
         from yukar.models.project import Project
         from yukar.models.run import RunState
         from yukar.storage import state_repo
@@ -114,16 +114,16 @@ class TestParkHelper:
         assert persisted is not None
         assert persisted.status == "waiting"
 
-        uir = [e for e in emitted if isinstance(e, UserInputRequestedEvent)]
+        uir = [e for e in emitted if isinstance(e, YourTurnEvent)]
         assert len(uir) == 1
-        assert uir[0].question == "", "P3: the your-turn signal carries no question text"
         assert uir[0].thread_id == "manager"
 
 
 class TestEveryTurnParks:
     """E2E: every ended turn parks; a user reply drives exactly one more turn.
 
-    Reproduces the old conversational flow without ask_user/complete_epic:
+    The conversational flow with plain text turns (questions and reports
+    live in the message body — no dedicated tools):
     turn 0 presents a plan in the message body and ends → park; the user's
     question is answered in text → park; the user approves (explicit
     operation) and says go → dispatch runs → park.  The host never injects
@@ -135,7 +135,7 @@ class TestEveryTurnParks:
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.models.events import UserInputRequestedEvent
+        from yukar.models.events import YourTurnEvent
         from yukar.storage import state_repo
 
         root = str(tmp_path / "ws")
@@ -195,7 +195,7 @@ class TestEveryTurnParks:
             nonlocal park_count
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
-                if isinstance(ev, UserInputRequestedEvent):
+                if isinstance(ev, YourTurnEvent):
                     if park_count < len(park_events):
                         park_events[park_count].set()
                     park_count += 1
@@ -285,7 +285,7 @@ class TestToolUsingTurnAlsoParks:
         from yukar.config.settings import LLMSettings
         from yukar.events import bus as event_bus
         from yukar.llm.fake import FakeModel, TextTurn, ToolUseTurn
-        from yukar.models.events import UserInputRequestedEvent
+        from yukar.models.events import YourTurnEvent
         from yukar.storage import state_repo
 
         root = str(tmp_path / "ws")
@@ -318,7 +318,7 @@ class TestToolUsingTurnAlsoParks:
         async def _collect() -> None:
             async for ev in event_bus.event_stream(project_id, epic_id):
                 events_received.append(ev)
-                if isinstance(ev, UserInputRequestedEvent):
+                if isinstance(ev, YourTurnEvent):
                     park_seen.set()
 
         collector = asyncio.create_task(_collect())
