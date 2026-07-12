@@ -375,7 +375,7 @@ class TestEpicStatusUntouchedByRuns:
     async def test_epic_status_via_api_run(self, app_client: AsyncClient) -> None:
         """POST /run leaves the epic status open before, during, and after the turn.
 
-        P3: a conversation run never completes — the scripted turn ends by
+        Lifecycle redesign: a conversation run never completes — the scripted turn ends by
         parking in ``waiting`` (your_turn), which is the new
         "the run's turn is over" signal.
         """

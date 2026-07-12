@@ -47,7 +47,7 @@ export function TasksPageClient({ projectId, epicId, initialTasksFile }: TasksPa
           <p className="text-body-sm text-on-surface-variant">
             {done}/{total} completed
           </p>
-          {/* Plan-approval state (P2) — a datum, not a card. Approval binds to the
+          {/* Plan-approval state — a datum, not a card. Approval binds to the
               current plan snapshot: any plan change reverts this to unapproved. */}
           {tasks.length > 0 && (
             <span

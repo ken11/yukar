@@ -1,5 +1,5 @@
 /**
- * Evaluator-only dispatch E2E test (P6: task-composition freedom).
+ * Evaluator-only dispatch E2E test (task-composition freedom).
  *
  * Purpose:
  *   Verify in a real browser that changes drafted by a worker-only dispatch

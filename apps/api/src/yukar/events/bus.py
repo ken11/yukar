@@ -371,7 +371,7 @@ async def subscribe_project(
     signals your_turn / your_turn_ended, epic_status_changed,
     epic_merged, merge progress, sensitive-file writes) are delivered here —
     high-frequency events (token, tool_call, etc.) are excluded.  The
-    your-turn signals let the epic board update its waiting badges live (P4).
+    your-turn signals let the epic board update its waiting badges live.
 
     No replay buffer for project-level subscriptions: the project stream is
     used for notifications, not for state reconstruction.

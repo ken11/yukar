@@ -1,8 +1,8 @@
 /**
- * Seed constants and fake script for the plan-approval-gate scenario (P2:
- * snapshot-bound approval).
+ * Seed constants and fake script for the plan-approval-gate scenario
+ * (snapshot-bound approval).
  *
- * This scenario proves the host-enforced approval gate in its P2 form:
+ * This scenario proves the host-enforced approval gate in its redesigned form:
  * approval is an EXPLICIT user operation (POST /plan/approval via the
  * approve-plan-btn) bound to a hash of the task-plan snapshot — a chat reply
  * alone never grants it, and any plan change produces a new snapshot whose

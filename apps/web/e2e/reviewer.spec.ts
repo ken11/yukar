@@ -9,10 +9,10 @@
  *   2. "Ask Reviewer" works while the manager run is parked in waiting (the
  *      parked run is shelved, not a 409) → creates a reviewer thread
  *      (role=reviewer) and navigates to it; the composer is shown (repliable).
- *      P4 live attribution (same SPA session, no reload): the report streams
+ *      Live attribution (same SPA session, no reload): the report streams
  *      into the REVIEWER thread, the your-turn banner appears there with
  *      Reviewer wording, and an SPA transition to the Trial thread shows NO
- *      misattributed banner (the pre-P4 bug).
+ *      misattributed banner (the old attribution bug).
  *   3. The reviewer runs read-only: it inspects read_branch_diff, reports in
  *      plain BODY TEXT and parks at "waiting", WITHOUT changing epic.status or
  *      epic.active_thread_id (the manager trial stays the active trial).
@@ -96,8 +96,8 @@ test.describe
       );
       await expect(page.getByTestId("start-review-btn")).toBeVisible({ timeout: 15_000 });
 
-      // P5 stream continuity: starting the Reviewer shelves the parked
-      // manager run. Since P5 a shelve no longer publishes the SSE sentinel,
+      // Stream continuity: starting the Reviewer shelves the parked
+      // manager run. A shelve no longer publishes the SSE sentinel,
       // so the epic EventSource opened by this page load must stay connected
       // — count any NEW connection to the epic event stream from here on.
       let sseReconnects = 0;
@@ -130,10 +130,11 @@ test.describe
         "Reviewer thread shows a reply composer",
       ).toBeVisible({ timeout: 20_000 });
 
-      // ---- P4 live attribution (same SPA session — NO reload from here) ----
+      // ---- Live attribution (same SPA session — NO reload from here) ----
 
       // The reviewer's report streams into ITS OWN thread live (SSE events
-      // carry the reviewer thread_id; pre-P4 this required a fresh load).
+      // carry the reviewer thread_id; before the attribution split this
+      // required a fresh load).
       await expect(
         page.getByText("Reviewed the branch").first(),
         "Reviewer report streams live into the reviewer thread (no reload)",
@@ -153,7 +154,7 @@ test.describe
 
       // SPA transition to the Trial thread (sidebar link — still no reload):
       // the banner must NOT follow. The parked marker belongs to the reviewer
-      // conversation; showing it on the Trial thread was the pre-P4
+      // conversation; showing it on the Trial thread was the old
       // misattribution bug (managerThreadId doubling as run attribution).
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
@@ -179,9 +180,9 @@ test.describe
       // conversation (correct attribution, not suppression).
       await expect(page.getByText(REVIEWER_SHELL_BANNER)).toBeVisible();
 
-      // P5: the whole shelve → reviewer-run → park → SPA-navigation window
+      // Stream continuity: the whole shelve → reviewer-run → park → SPA-navigation window
       // above ran on the ORIGINAL EventSource — no reconnect was needed
-      // (pre-P5 the shelve severed the stream and forced one).
+      // (previously the shelve severed the stream and forced one).
       expect(
         sseReconnects,
         "Shelving the manager run must not sever the epic SSE stream (no EventSource reconnect)",
@@ -248,7 +249,7 @@ test.describe
         "The reviewer's report text renders as an agent bubble",
       ).toBeVisible({ timeout: 20_000 });
 
-      // REST-restore attribution (P4): the reloaded reviewer thread shows the
+      // REST-restore attribution: the reloaded reviewer thread shows the
       // your-turn banner with Reviewer wording (RunState.role — no SSE replay).
       await expect(
         page.getByText(REVIEWER_TURN_BANNER),
@@ -287,7 +288,7 @@ test.describe
         "Manager thread keeps its composer after a reviewer run",
       ).toBeVisible({ timeout: 20_000 });
 
-      // Reload-misattribution regression guard (the original P4 bug): a fresh
+      // Reload-misattribution regression guard (the original attribution bug): a fresh
       // load of the TRIAL thread while the reviewer run is parked must NOT
       // show a your-turn banner on the trial — the parked marker belongs to
       // the reviewer conversation (REST restore uses RunState.thread_id,
@@ -345,7 +346,7 @@ test.describe
         )
         .toBe(`waiting:${state.reviewerId}`);
 
-      // P3 shelving semantics: a live run parked in "waiting" does not hold
+      // Shelving semantics: a live run parked in "waiting" does not hold
       // the epic's run slot. A manager operation that used to 409 on
       // "run active" — creating a new trial — must now succeed (the parked
       // reviewer run is shelved).

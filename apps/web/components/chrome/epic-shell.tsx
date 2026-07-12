@@ -79,7 +79,7 @@ export function EpicShell({
     epicId,
     initialRunState: initialRunState ?? undefined,
     initialThreads,
-    // activeTrialId resolution order (P4 split — composer rights only):
+    // activeTrialId resolution order (attribution split — composer rights only):
     //   1. epic.active_thread_id (liveActiveThreadId) — live-fetched via useQuery, highest priority
     //   2. First thread in initialThreads where role=manager && status!=="archived" (RSC prop, not live cache)
     //   3. "manager" (legacy compatibility fallback, applied by consumers)
@@ -186,7 +186,7 @@ export function EpicShell({
 
         {/* your turn: cyan dot + concise text (datum language). Shown only when a
             run actually parked (yourTurn marker) — a never-run epic is
-            "waiting" too but carries no marker, so no banner. Role-aware (P4):
+            "waiting" too but carries no marker, so no banner. Role-aware:
             currentRun.role says WHICH agent is waiting (Reviewer report vs the
             neutral manager wording). */}
         {!runFailed && activityState.yourTurn != null && (

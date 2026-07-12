@@ -137,7 +137,7 @@ def state_yaml(root: str, project_id: str, epic_id: str) -> Path:
 
 
 def plan_approval_yaml(root: str, project_id: str, epic_id: str) -> Path:
-    """Per-epic plan-approval record (lifecycle redesign P2).
+    """Per-epic plan-approval record (lifecycle redesign).
 
     Lives next to tasks.yaml / state.yaml but is run-independent: it records
     the task-plan snapshot hash the user approved, and survives run stop /

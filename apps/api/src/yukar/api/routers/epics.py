@@ -53,7 +53,7 @@ class PatchEpicRequest(BaseModel):
 
 
 class RunSummary(BaseModel):
-    """Digest of an epic's state.yaml, embedded in the epic-list response (P4).
+    """Digest of an epic's state.yaml, embedded in the epic-list response.
 
     Lets the board render "your turn" markers (``status == "waiting"`` with a
     non-empty ``run_id``) without N+1 ``GET /run/state`` calls.  Pure current
@@ -214,7 +214,7 @@ async def patch_epic(
     # done work or abandoning unfinished work) must not race an in-flight run.
     # The whole check + write runs inside the supervisor's run-start lock so a
     # concurrent run start cannot slip between the guard and the status write
-    # (P2-leftover TOCTOU closed): start/start_continuation re-read
+    # (TOCTOU closed): start/start_continuation re-read
     # epic.status under the same lock.  An EXECUTING turn is a 409; a live run
     # merely parked in ``waiting`` is shelved (state preserved) before the
     # epic is completed.  Reopening ("open") needs no guard.

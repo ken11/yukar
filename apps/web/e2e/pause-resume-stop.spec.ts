@@ -4,7 +4,7 @@
  * Purpose:
  *   Verify Run pause, resume, and stop through the real UI.
  *   YUKAR_FAKE_SLEEP=6.0 + 15 consecutive task_update tool turns keep the run
- *   in the "running" state for a long window (P3: every ENDED turn parks the
+ *   in the "running" state for a long window (every ENDED turn parks the
  *   run in "waiting", so the window comes from tool_use recursion INSIDE one
  *   manager turn — no end_turn is emitted while the tests drive pause/resume/stop).
  *
@@ -40,7 +40,7 @@ import fs from "node:fs";
 import { expect, test } from "@playwright/test";
 import { PAUSE_RESUME_SEED } from "./pause-resume-stop-seed";
 
-// RunState.status enum (apps/api/src/yukar/models/run.py, P3 vocabulary)
+// RunState.status enum (apps/api/src/yukar/models/run.py)
 // "running" | "paused" | "waiting" | "error" | "completed" (job runs only)
 type RunStatus = "running" | "paused" | "waiting" | "error" | "completed";
 
@@ -235,7 +235,7 @@ test.describe
     //   → handle.task.cancel() → CancelledError
     //   → orchestrator: _stopped=True → state.status = "waiting"
     //
-    // P3: "waiting" is the single resting state — a stop never produces a
+    // "waiting" is the single resting state — a stop never produces a
     // distinct terminal status (the conversation is intact; the user can
     // simply message again to continue).
 

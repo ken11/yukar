@@ -18,7 +18,7 @@
  * Worker failure mechanism:
  *   - Worker RaiseTurn(MaxTokensReachedException) → WorkerFailedEvent emitted
  *   - ThreadTreePanel WorkerNode: status="failed" → "失敗" label + warning icon
- *   - run_state.status: "waiting" (P3 turn-end semantics — every ended turn
+ *   - run_state.status: "waiting" (turn-end semantics — every ended turn
  *     parks the run; the Manager reported the failure in body text)
  *
  * The context_overflow variant (ContextWindowOverflowException) is also verified in a

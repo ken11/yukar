@@ -1,5 +1,5 @@
 /**
- * Global teardown for the worker-only dispatch E2E scenario (P6).
+ * Global teardown for the worker-only dispatch E2E scenario.
  * Removes the temp dir dedicated to the worker-only scenario.
  */
 import fs from "node:fs";

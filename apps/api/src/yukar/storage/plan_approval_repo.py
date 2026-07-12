@@ -1,4 +1,4 @@
-"""Plan-approval CRUD — plan_approval.yaml per epic (lifecycle redesign P2).
+"""Plan-approval CRUD — plan_approval.yaml per epic (lifecycle redesign).
 
 The record binds the user's approval to a task-plan snapshot hash
 (see ``yukar.models.task.compute_plan_hash``).  Absence of the file means

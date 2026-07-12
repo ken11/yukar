@@ -1,4 +1,4 @@
-"""Tests for the dispatch ``agents`` argument (lifecycle redesign P6).
+"""Tests for the dispatch ``agents`` argument (lifecycle redesign).
 
 Task composition is NOT a persisted field — it is a per-dispatch-item
 argument.  Allowed values:

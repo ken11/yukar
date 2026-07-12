@@ -1,5 +1,5 @@
 /**
- * Worker-only dispatch E2E test (P6: task-composition freedom).
+ * Worker-only dispatch E2E test (task-composition freedom).
  *
  * Purpose:
  *   Verify in a real browser that dispatch(agents=["worker"]) runs ONLY the

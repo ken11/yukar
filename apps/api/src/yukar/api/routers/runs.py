@@ -76,7 +76,7 @@ async def start_run(
             status_code=409, detail="Epic is completed — reopen it before starting a run"
         )
     # 409 only when a live run is actually EXECUTING a turn.  A live run
-    # parked in ``waiting`` does not hold the slot (P3 rule): pressing Start
+    # parked in ``waiting`` does not hold the slot (slot rule): pressing Start
     # on a parked conversation shelves the live task (state preserved) and
     # restarts — same semantics as restarting after a stop, instead of the
     # dead-end 409 the parked-live case used to produce.

@@ -48,7 +48,7 @@ export type RunActivityAction =
   | { type: "TOOL_RESULT"; threadId: string; event: ToolResultEvent }
   // Worker failure
   | { type: "WORKER_FAILED"; event: WorkerFailedEvent }
-  // Your-turn signals (P3): YOUR_TURN = the run parked in "waiting",
+  // Your-turn signals: YOUR_TURN = the run parked in "waiting",
   // YOUR_TURN_ENDED = the user's reply woke it. No question payload — the
   // question is the agent's final message in the thread.
   | { type: "YOUR_TURN"; threadId: string }
@@ -58,7 +58,7 @@ export type RunActivityAction =
   // Immediate visibility of injected utterances (PR-C)
   | { type: "USER_MESSAGE_COMMITTED"; event: UserMessageCommittedEvent }
   // Sets the active manager trial id (from epic.active_thread_id) — composer
-  // rights + tree scoping + links. P4 split: never sourced from
+  // rights + tree scoping + links. Attribution split: never sourced from
   // RunState.thread_id (that is the run's own thread, see SET_CURRENT_RUN).
   | { type: "SET_ACTIVE_TRIAL_ID"; threadId: string | null }
   // Sets the conversation run the epic's state refers to (REST RunState

@@ -661,7 +661,7 @@ class ArbiterRunner:
 
             # Record the merge fact (idempotent; publishes EpicMergedEvent).
             # The epic itself stays open — merging never completes an epic.
-            await record_epic_merged(root, project_id, epic, run_id=run_id)
+            await record_epic_merged(root, project_id, real_epic_id, run_id=run_id)
 
             await save_and_publish_state(
                 root,

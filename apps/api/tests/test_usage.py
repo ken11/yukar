@@ -1940,7 +1940,7 @@ class TestRememberEmbedFailureSurfaced:
     """remember() must surface a memory write that fails to embed/persist.
 
     Successor of the complete_epic learnings tests: complete_epic is gone
-    (P3 — a conversation has no completion tool) and remember() is the only
+    (lifecycle redesign — a conversation has no completion tool) and remember() is the only
     memory-write path, so the embed-failure visibility guarantee moves here.
     """
 

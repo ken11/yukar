@@ -2869,7 +2869,7 @@ export interface components {
         };
         /**
          * RunSummary
-         * @description Digest of an epic's state.yaml, embedded in the epic-list response (P4).
+         * @description Digest of an epic's state.yaml, embedded in the epic-list response.
          *
          *     Lets the board render "your turn" markers (``status == "waiting"`` with a
          *     non-empty ``run_id``) without N+1 ``GET /run/state`` calls.  Pure current

@@ -1,6 +1,6 @@
 /**
  * Seed constants and fake script dedicated to the question/reload scenario
- * (historically the "ask_user" scenario; under P3 the ask_user tool is gone —
+ * (historically the "ask_user" scenario; the ask_user tool is gone —
  * a question is plain assistant body text and the turn end parks the run).
  *
  * The manager's first turn plans a task and asks a question in BODY TEXT,

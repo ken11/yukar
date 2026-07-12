@@ -1,6 +1,6 @@
 """Task models — spec §4.2 tasks.yaml — and the plan-approval snapshot.
 
-Plan approval (lifecycle redesign P2) binds the user's approval to a
+Plan approval (lifecycle redesign) binds the user's approval to a
 *snapshot* of the task plan: ``compute_plan_hash`` hashes only the fields
 that define the plan (never execution state), and ``PlanApproval`` records
 the hash the user approved.  The dispatch gate compares the stored hash
@@ -40,7 +40,7 @@ class TasksFile(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Plan-approval snapshot (lifecycle redesign P2)
+# Plan-approval snapshot (lifecycle redesign)
 # ---------------------------------------------------------------------------
 
 # The fields that DEFINE a plan.  Execution state (``status``, ``thread``,

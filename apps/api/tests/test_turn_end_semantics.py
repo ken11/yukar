@@ -1,4 +1,4 @@
-"""Tests for turn-end semantics (lifecycle redesign P3).
+"""Tests for turn-end semantics (lifecycle redesign).
 
 EVERY ended turn is the agent's yield: the run parks in ``waiting`` (the
 user's turn) and the next user message drives exactly one more turn.  The
@@ -277,7 +277,7 @@ class TestToolUsingTurnAlsoParks:
     """E2E: a turn that used effector tools STILL parks when it ends.
 
     Under the old semantics an effector turn re-armed a stall notice and the
-    host kept the loop flowing; under P3 the host never continues on its own.
+    host kept the loop flowing; now the host never continues on its own.
     """
 
     async def test_effector_turn_parks_without_notice(self, tmp_path: Path) -> None:

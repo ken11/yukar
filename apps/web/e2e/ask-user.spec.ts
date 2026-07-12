@@ -2,7 +2,7 @@
  * Question / reload E2E test (historically the ask_user scenario).
  *
  * Purpose:
- *   Under P3 a question is plain assistant BODY TEXT: the manager writes it
+ *   A question is plain assistant BODY TEXT (no ask_user tool): the manager writes it
  *   and ends its turn, which parks the run in "waiting" (your turn).  Verify
  *   in a real browser that the question bubble appears, that it survives a
  *   page reload (it is an ordinary conversation message — no pending_question

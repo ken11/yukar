@@ -272,6 +272,49 @@ describe("cache update via queryFn", () => {
 
     expect(result.current.messages).toHaveLength(2);
   });
+
+  it("mount refetch merges with the cache — optimistic/SSE appends are not rolled back", async () => {
+    // The mount-time revalidation (initialDataUpdatedAt: 0) can resolve AFTER
+    // an SSE user_message_committed / optimistic send appended newer entries.
+    // A wholesale replacement would wipe those bubbles; the queryFn merges by
+    // message_id instead (fetch result as base, cache-only ids kept at tail).
+    const m1 = makeMsg(1, "persisted");
+    const sseCommitted = makeMsg(7, "sse-committed");
+    // The fetch snapshot does NOT know message 7 yet.
+    mockGetThreadMessages.mockResolvedValue([m1]);
+    // The cache already carries it (SSE patch landed before the refetch).
+    qc.setQueryData(queryKeys.threads.messages(P, E, T), [m1, sseCommitted]);
+
+    renderHook(
+      () => useThreadMessages({ projectId: P, epicId: E, threadId: T, initialMessages: [m1] }),
+      { wrapper: makeWrapper(qc) },
+    );
+
+    await waitFor(() => expect(mockGetThreadMessages).toHaveBeenCalled());
+    await waitFor(() => {
+      const cached = qc.getQueryData<Message[]>(queryKeys.threads.messages(P, E, T));
+      // Message 7 survives the refetch; no duplicates.
+      expect(cached?.map((m) => m.message_id)).toEqual([1, 7]);
+    });
+  });
+
+  it("mount refetch result stays authoritative for ids it knows (no duplication)", async () => {
+    const m1 = makeMsg(1, "persisted");
+    const m2 = makeMsg(2, "also-persisted");
+    // Fetch knows both; cache only has a subset.
+    mockGetThreadMessages.mockResolvedValue([m1, m2]);
+    qc.setQueryData(queryKeys.threads.messages(P, E, T), [m2]);
+
+    renderHook(
+      () => useThreadMessages({ projectId: P, epicId: E, threadId: T, initialMessages: [m2] }),
+      { wrapper: makeWrapper(qc) },
+    );
+
+    await waitFor(() => {
+      const cached = qc.getQueryData<Message[]>(queryKeys.threads.messages(P, E, T));
+      expect(cached?.map((m) => m.message_id)).toEqual([1, 2]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

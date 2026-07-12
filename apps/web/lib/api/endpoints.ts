@@ -12,7 +12,7 @@ export { ApiError } from "./client";
 
 export type Project = components["schemas"]["Project"];
 export type Epic = components["schemas"]["Epic"];
-// Epic + run digest (P4): the list endpoint embeds a per-epic state.yaml
+// Epic + run digest: the list endpoint embeds a per-epic state.yaml
 // summary so boards can show "your turn" without N+1 run/state calls.
 export type EpicWithRunSummary = components["schemas"]["EpicWithRunSummary"];
 export type RunSummary = components["schemas"]["RunSummary"];

@@ -29,7 +29,7 @@ const initialTreeState: ThreadTreeState = {
 
 export const initialState: RunActivityState = {
   // "waiting" is the resting default: an epic that has never run is simply
-  // "your turn" (P3). yourTurn stays null until a run actually parks.
+  // "your turn". yourTurn stays null until a run actually parks.
   runStatus: "waiting",
   pausePending: false,
   runError: null,

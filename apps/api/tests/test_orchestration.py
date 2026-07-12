@@ -654,7 +654,7 @@ class TestEpicOrchestrator:
 
     - ``script_manager`` must include ``ToolUseTurn(tool_name="dispatch", ...)``
       in addition to ``task_update`` calls; its final TextTurn ends the turn
-      and the run parks in ``waiting`` (P3: no completion tool — a
+      and the run parks in ``waiting`` (no completion tool — a
       conversation has no end).
     - ``script_worker`` / ``script_evaluator`` are injected via ``fake_create_model``
       and consumed when the host runs ``_run_one_attempt`` during dispatch.
@@ -739,7 +739,7 @@ class TestEpicOrchestrator:
                 require_plan_approval=False,
             )
             run_id = "test-run"
-            # P3: the run parks in ``waiting`` when the scripted turn ends —
+            # Turn-end semantics: the run parks in ``waiting`` when the scripted turn ends —
             # it never completes on its own.  Wait for the park, then stop.
             await run_until_parked(orch, root, project_id, epic_id, run_id)
 
@@ -813,7 +813,7 @@ class TestEpicOrchestrator:
         assert "worker_started" in event_types
         assert "worker_completed" in event_types
         assert "eval_result" in event_types
-        # P3: the ended turn parks the run (your-turn signal); a conversation
+        # The ended turn parks the run (your-turn signal); a conversation
         # run never emits run_completed.
         assert "your_turn" in event_types
         assert "run_completed" not in event_types
@@ -1979,7 +1979,7 @@ class TestThreadStatusLifecycle:
         self, git_repo: Path, tmp_path: Path
     ) -> None:
         """The Manager conversation never resolves — it stays active after the
-        turn parks (P3: a conversation has no end; only archived is terminal)."""
+        turn parks (a conversation has no end; only archived is terminal)."""
         from yukar.storage.threads_repo import get_threads
 
         root, project_id, epic_id = _make_workspace(tmp_path)
@@ -2466,7 +2466,7 @@ class TestDependencyResolutionLoop:
     ) -> None:
         """A task whose dependency never completes stays ``todo`` when the run parks.
 
-        P3 removed the post-loop cleanup that fabricated ``blocked`` tasks: the
+        The lifecycle redesign removed the post-loop cleanup that fabricated ``blocked`` tasks: the
         run no longer "ends", so there is nothing to reconcile.  The host still
         rejects the dispatch of a dep-unsatisfied task; the plan simply stays
         as the Manager left it, and it is the user's turn.
@@ -2521,7 +2521,7 @@ class TestDependencyResolutionLoop:
         tf = await tasks_repo.get_tasks(root, project_id, epic_id)
         task_by_id = {t.id: t for t in tf.tasks}
         assert task_by_id["T2"].status == "todo", (
-            "P3: no post-loop cleanup may fabricate a blocked status; "
+            "Lifecycle redesign: no post-loop cleanup may fabricate a blocked status; "
             f"T2 must stay todo, got {task_by_id['T2'].status!r}"
         )
 
@@ -2649,7 +2649,7 @@ class TestManagerAutonomy:
 
 
 class TestManagerMultiTurn:
-    """Verify the P3 turn loop: one user input drives exactly one turn.
+    """Verify the turn loop: one user input drives exactly one turn.
 
     Turn 0 ends with a TextTurn → the run parks in ``waiting``.  The user's
     reply (inject_message) wakes the run; the Strands agent's next
@@ -2824,7 +2824,7 @@ class TestDispatchRejections:
         """A dispatch of a dep-unsatisfied task is rejected; the task stays todo.
 
         T2 depends on T1 (never created/done).  Manager dispatches T2; the host
-        rejects it and the Manager ends its turn.  P3 removed the post-loop
+        rejects it and the Manager ends its turn.  The lifecycle redesign removed the post-loop
         cleanup, so nothing fabricates a blocked status — the plan stays as
         the Manager left it.
         """
@@ -2944,7 +2944,7 @@ class TestDispatchRejections:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _MAX_MANAGER_TURNS exhaustion — cost backstop, not an error (P3)
+# Tests: _MAX_MANAGER_TURNS exhaustion — cost backstop, not an error
 # ---------------------------------------------------------------------------
 
 

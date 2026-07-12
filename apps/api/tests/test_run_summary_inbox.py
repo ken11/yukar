@@ -1,4 +1,4 @@
-"""Lifecycle redesign P4 — "your turn" inbox plumbing (backend).
+"""Lifecycle redesign — "your turn" inbox plumbing (backend).
 
 Covers:
 1. ``RunState.role`` — persistence round-trip, legacy default (state.yaml
@@ -47,7 +47,7 @@ async def _bootstrap(root: str, project_id: str, epic_id: str, repo_path: Path) 
         id=epic_id,
         slug="test-epic",
         title="Test Epic",
-        description="P4 role test epic.",
+        description="Role-attribution test epic.",
         branch="yukar/ep-1-test-epic",
     )
     await save_epic(root, project_id, epic)
@@ -96,7 +96,7 @@ class TestRunStateRole:
         yaml_path = paths.state_yaml(root, "p1", "EP-1")
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
         # Legacy vocabulary on purpose: awaiting_input status + no role key
-        # + the pre-P5 manager_thread key (read back as thread_id).
+        # + the legacy manager_thread key (read back as thread_id).
         yaml_path.write_text(
             "run_id: r-old\nstatus: awaiting_input\nmanager_thread: manager\n",
             encoding="utf-8",
@@ -144,7 +144,7 @@ class TestRunStateRole:
     async def test_reviewer_run_writes_reviewer_role(self, tmp_path: Path) -> None:
         """A scripted reviewer run records role=reviewer + its own thread id,
         and its park signal reaches project-scope SSE subscribers with that
-        thread id (the attribution P4 exists to fix)."""
+        thread id (the attribution gap the your-turn inbox exists to fix)."""
         from unittest.mock import patch
 
         from yukar.events import bus as event_bus

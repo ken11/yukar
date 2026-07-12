@@ -119,7 +119,7 @@ test.describe
       await expect(panel.locator("text=util.py")).toBeVisible({ timeout: 10_000 });
     });
 
-    test("P4 board: your-turn badge — static on load AND live via the project SSE", async ({
+    test("board: your-turn badge — static on load AND live via the project SSE", async ({
       page,
     }) => {
       // ---- Static: run_summary embedded in GET /epics ----

@@ -9,13 +9,13 @@
 import type { Epic, EpicWithRunSummary, ThreadEntry } from "./api/endpoints";
 
 /**
- * "Your turn" (P4): the epic's conversation run parked in "waiting" and is
+ * "Your turn": the epic's conversation run parked in "waiting" and is
  * waiting for the user's reply. run_id must be non-empty — a synthesised
  * never-run state does not count. Pure current state (run_summary is derived
  * from state.yaml at list time); there is no unread persistence.
  *
- * Completed epics never show the badge: they are locked history, and after
- * P3 every conversation run settles in waiting, so without the open-status
+ * Completed epics never show the badge: they are locked history, and now that
+ * every conversation run settles in waiting, so without the open-status
  * condition every epic that ever ran would keep an inbox badge forever
  * after being completed.
  */

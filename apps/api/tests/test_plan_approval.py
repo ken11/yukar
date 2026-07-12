@@ -1,4 +1,4 @@
-"""Plan-approval snapshot (lifecycle redesign P2).
+"""Plan-approval snapshot (lifecycle redesign).
 
 Covers:
 - compute_plan_hash: deterministic, order-insensitive, execution-state-blind,

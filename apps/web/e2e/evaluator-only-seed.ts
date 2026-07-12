@@ -1,5 +1,5 @@
 /**
- * Seed constants and fake script for the evaluator-only dispatch scenario (P6).
+ * Seed constants and fake script for the evaluator-only dispatch scenario.
  *
  * Verification scenario (two phases across one live parked run):
  *   Phase 1 (turn 0): the Manager registers T1 and dispatches it with

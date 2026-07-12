@@ -55,7 +55,7 @@ export function ThreadPageClient({
   const runFailed = activityState.runStatus === "error";
   const runError = activityState.runError;
 
-  // Your turn (P4 attribution split): the banner belongs to the run's OWN
+  // Your turn (run-attribution split): the banner belongs to the run's OWN
   // conversation — exactly the parked marker's threadId (SSE event.thread_id /
   // REST RunState.thread_id). No active-trial fallback: during a reviewer
   // run the marker sits on the reviewer thread and the Trial thread must NOT

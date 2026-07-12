@@ -3,9 +3,9 @@
  *
  * Purpose:
  *   Run a fake run and verify in a real browser that the notification unread
- *   badge increments from run-lifecycle SSE events. Under P3 a conversation
+ *   badge increments from run-lifecycle SSE events. A conversation
  *   run never emits run_completed (it parks in "waiting"), so the badge source
- *   here is run_started; a richer "your turn" inbox is P4 territory.
+ *   here is run_started; the "your turn" inbox has its own coverage.
  *   Then open the popover, click a notification entry, and confirm navigation
  *   to the epics/{id}/tasks page.
  *
@@ -85,7 +85,7 @@ test.describe
 
       // Mount the project page FIRST (NotificationsPopover is part of the
       // project-header) so its SSE subscription is live before the run starts:
-      // under P3 the only badge source is run_started, which fires immediately
+      // the only badge source here is run_started, which fires immediately
       // on POST /run — a fake run can start and park before a subsequent
       // page.goto could connect, and notification state is in-memory.
       await page.goto(`/projects/${state.projectId}`);
@@ -103,8 +103,8 @@ test.describe
       // with every task done.
       await waitForWorkDone(page, state.projectId, state.epicId);
 
-      // The run_started SSE event has updated the badge (P3: no run_completed
-      // for conversation runs — the "your turn" inbox is P4).
+      // The run_started SSE event has updated the badge (no run_completed
+      // for conversation runs — the "your turn" inbox is covered elsewhere).
       // The notification button must become visible with "(N unread)" in its aria-label
       const notifBtn = page.getByRole("button", { name: /notifications.*unread/i });
       await expect(notifBtn).toBeVisible({ timeout: 30_000 });

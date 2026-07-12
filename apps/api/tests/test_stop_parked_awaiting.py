@@ -1,6 +1,6 @@
-"""Stopping a run that is parked in ``waiting`` (lifecycle redesign P3).
+"""Stopping a run that is parked in ``waiting`` (lifecycle redesign).
 
-Successor of the e771261 regression guard.  Under P3 a parked run comes in
+Successor of the e771261 regression guard.  Under the lifecycle redesign a parked run comes in
 two shapes:
 
 - LIVE parked run (task alive, waiting for a reply): ``POST /run/stop`` must

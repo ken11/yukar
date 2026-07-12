@@ -37,16 +37,30 @@ export function useThreadMessages({
 
   const { data: rawMessages = initialMessages } = useQuery({
     queryKey: queryKeys.threads.messages(projectId, epicId, threadId),
-    queryFn: () => getThreadMessages(projectId, epicId, threadId),
+    // MERGE the fetch result with the existing cache by message_id instead of
+    // replacing it wholesale: the mount-time revalidation (initialDataUpdatedAt
+    // 0) can resolve AFTER an optimistic send / SSE user_message_committed
+    // appended newer entries, and a plain replace would roll those bubbles
+    // back. Fetch result is the base; cache-only ids are kept at the tail —
+    // the same shape as the parked-thread sync in use-run-activity.
+    queryFn: async () => {
+      const fetched = await getThreadMessages(projectId, epicId, threadId);
+      const cached = qc.getQueryData<Message[]>(
+        queryKeys.threads.messages(projectId, epicId, threadId),
+      );
+      if (!cached) return fetched;
+      const known = new Set(fetched.map((m) => m.message_id));
+      return [...fetched, ...cached.filter((m) => !known.has(m.message_id))];
+    },
     initialData: initialMessages,
     // The RSC snapshot is captured at navigation time and can predate messages
     // an in-flight run writes moments later (e.g. an SPA transition onto a
-    // fresh reviewer thread whose run reports seconds after). The turn-end SSE
-    // invalidation (manager_message) no-ops while this query is not in the
-    // cache yet, so a "fresh" initialData would pin the stale empty snapshot
-    // for the global staleTime. Mark the initialData as already stale: the
-    // mount revalidates once, then the SSE invalidation path owns freshness
-    // (P4 — reviewer-thread live report after an SPA transition).
+    // fresh reviewer thread whose run reports seconds after — the reviewer
+    // attribution fix depends on this). The turn-end SSE invalidation
+    // (manager_message) no-ops while this query is not in the cache yet, so a
+    // "fresh" initialData would pin the stale empty snapshot for the global
+    // staleTime. Mark the initialData as already stale: the mount revalidates
+    // once, then the SSE invalidation path owns freshness.
     initialDataUpdatedAt: 0,
   });
 

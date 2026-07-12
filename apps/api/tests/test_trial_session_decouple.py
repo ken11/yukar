@@ -1,4 +1,4 @@
-"""Trial / conversation-session decoupling (案A).
+"""Trial / conversation-session decoupling (Plan A).
 
 Design: a *trial* is a (branch + worktree) line of work; a *conversation
 session* (fresh context + role) attaches to a trial.  The worktree is keyed by

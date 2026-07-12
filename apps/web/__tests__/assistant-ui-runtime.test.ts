@@ -472,7 +472,7 @@ describe("buildYukarAdapter", () => {
     expect(sent).toBe("hello agent");
   });
 
-  it("P3: never appends a synthetic '__awaiting__' bubble — the question is the last persisted message", () => {
+  it("never appends a synthetic '__awaiting__' bubble — the question is the last persisted message", () => {
     const [msg1] = strandsMessagesToThreadMessageLikes([
       {
         message_id: 1,
@@ -489,7 +489,7 @@ describe("buildYukarAdapter", () => {
     expect(adapter.messages?.some((m) => m.id === "__awaiting__")).toBe(false);
   });
 
-  it("P3: only the streaming bubble is concatenated while streaming — no synthetic tail", () => {
+  it("only the streaming bubble is concatenated while streaming — no synthetic tail", () => {
     const streamState = applyTokenEvent(emptyStreamState(), "generating...");
     const adapter = buildYukarAdapter({
       messages: [],

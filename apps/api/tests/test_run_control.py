@@ -840,7 +840,7 @@ class TestContinuationFsmSoleWriter:
         seed = "please add a /health endpoint"
 
         # Fake manager: a tool-less text reply — turn-0 ends and the run
-        # parks in waiting (P3 turn-end semantics).
+        # parks in waiting (turn-end semantics).
         manager_script = [
             TextTurn("Done."),
         ]
@@ -968,6 +968,138 @@ class TestContinuationFsmSoleWriter:
         assert first_text is not None, "First user message content must be text"
         assert "previous run ended" in first_text, (
             f"Expected resume-prompt text; got {first_text!r}"
+        )
+
+    async def test_continuation_turn0_seed_keeps_predrained_hitl(self, tmp_path: Path) -> None:
+        """Regression: an unsolicited HITL message that arrives before a seeded
+        continuation's turn-0 must be appended to the seed prompt — the
+        turn-0 drain must not discard it."""
+        from unittest.mock import patch
+
+        from tests._helpers import make_git_repo
+        from yukar.agents.orchestrator import EpicOrchestrator
+        from yukar.config.settings import LLMSettings
+        from yukar.llm.fake import FakeModel, TextTurn
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo, RepoCommands
+        from yukar.storage import session_store
+        from yukar.storage.epic_repo import save_epic
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        project_id = "proj"
+        epic_id = "EP-C3"
+        repo_path = make_git_repo(tmp_path, "myrepo-seed-hitl")
+
+        await save_project(root, Project(id=project_id, name=project_id, repos=[repo_path.name]))
+        await save_repo(
+            root,
+            project_id,
+            Repo(
+                name=repo_path.name,
+                path=str(repo_path),
+                default_branch="main",
+                commands=RepoCommands(allow=["git"], deny=[]),
+            ),
+        )
+        await save_epic(
+            root,
+            project_id,
+            Epic(id=epic_id, slug="cont3", title="Cont Epic 3", branch="yukar/cont3"),
+        )
+
+        seed = "please revise T1"
+        hitl = "also update the README"
+
+        def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
+            return FakeModel(script=[TextTurn("Done.")])
+
+        orch = EpicOrchestrator(
+            llm_settings=LLMSettings(provider="fake"),
+            git_author_name="a",
+            git_author_email="a@b.com",
+            seed_prompt=seed,
+            is_continuation=True,
+        )
+        # The unsolicited message lands before turn-0 drains the queue.
+        orch.inject_message("manager", hitl)
+
+        with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
+            await run_until_parked(orch, root, project_id, epic_id, "run-cont-seed-hitl")
+
+        messages = session_store.list_messages(root, project_id, epic_id, "manager")
+        user_msgs = [m for m in messages if m.message.role == "user"]
+        assert len(user_msgs) >= 1
+        first_text = user_msgs[0].message.content[0].text
+        assert first_text == f"{seed}\n\n{hitl}", (
+            f"seed + HITL must both survive turn-0; got {first_text!r}"
+        )
+
+    async def test_continuation_turn0_resume_keeps_predrained_hitl(self, tmp_path: Path) -> None:
+        """Regression: an unsolicited HITL message that arrives before a
+        seedless continuation's turn-0 must be appended to the resume
+        prompt — the turn-0 drain must not discard it."""
+        from unittest.mock import patch
+
+        from tests._helpers import make_git_repo
+        from yukar.agents.orchestrator import EpicOrchestrator
+        from yukar.config.settings import LLMSettings
+        from yukar.llm.fake import FakeModel, TextTurn
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo, RepoCommands
+        from yukar.storage import session_store
+        from yukar.storage.epic_repo import save_epic
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        project_id = "proj"
+        epic_id = "EP-C4"
+        repo_path = make_git_repo(tmp_path, "myrepo-resume-hitl")
+
+        await save_project(root, Project(id=project_id, name=project_id, repos=[repo_path.name]))
+        await save_repo(
+            root,
+            project_id,
+            Repo(
+                name=repo_path.name,
+                path=str(repo_path),
+                default_branch="main",
+                commands=RepoCommands(allow=["git"], deny=[]),
+            ),
+        )
+        await save_epic(
+            root,
+            project_id,
+            Epic(id=epic_id, slug="cont4", title="Cont Epic 4", branch="yukar/cont4"),
+        )
+
+        hitl = "one more thing: bump the version"
+
+        def fake_create_model(settings: Any, role: Any = None, **kwargs: Any) -> FakeModel:
+            return FakeModel(script=[TextTurn("OK"), TextTurn("Done.")])
+
+        orch = EpicOrchestrator(
+            llm_settings=LLMSettings(provider="fake"),
+            git_author_name="a",
+            git_author_email="a@b.com",
+            seed_prompt=None,
+            is_continuation=True,
+        )
+        orch.inject_message("manager", hitl)
+
+        with patch("yukar.agents.orchestrator.create_model", side_effect=fake_create_model):
+            await run_until_parked(orch, root, project_id, epic_id, "run-cont-resume-hitl")
+
+        messages = session_store.list_messages(root, project_id, epic_id, "manager")
+        user_msgs = [m for m in messages if m.message.role == "user"]
+        assert len(user_msgs) >= 1
+        first_text = user_msgs[0].message.content[0].text
+        assert first_text is not None
+        assert "previous run ended" in first_text, (
+            f"Expected resume-prompt text; got {first_text!r}"
+        )
+        assert first_text.endswith(f"\n\n{hitl}"), (
+            f"HITL text must be appended to the resume prompt; got {first_text!r}"
         )
 
     async def test_fresh_run_turn0_hitl_does_not_lose_epic_prompt(self, tmp_path: Path) -> None:

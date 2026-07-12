@@ -1,4 +1,4 @@
-"""Run-slot semantics under P3 (review follow-ups).
+"""Run-slot semantics under the lifecycle redesign (review follow-ups).
 
 Covers the concurrency contracts around parked conversation runs:
 
@@ -100,6 +100,43 @@ class TestIsParkedQueueAware:
         orch = _make_orchestrator(str(tmp_path / "ws"))
         assert orch.is_parked is False
 
+    async def test_deferred_nonmanager_message_means_not_parked(self, tmp_path: Path) -> None:
+        """A non-manager message held in the wait loop's local deferred list
+        exists only in this task's memory: is_parked must stay False so a
+        shelve at that instant cannot cancel the task and drop it."""
+        root = str(tmp_path / "ws")
+        orch = _make_orchestrator(root)
+        orch._awaiting_user = True
+
+        wait_task = asyncio.create_task(
+            orch._wait_for_user_input(root, "proj", "ep", "run-slot", orch._state, orch._pub)
+        )
+        try:
+            # Let the wait loop block on the queue, then send a WORKER message.
+            await asyncio.sleep(0.05)
+            orch.inject_message("worker-1", "worker-bound text")
+            # Wait until the loop has consumed it into its local deferred list.
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while not orch._pending_messages.empty():
+                assert asyncio.get_running_loop().time() < deadline, "message never consumed"
+                await asyncio.sleep(0.01)
+            # Queue is empty but the message is deferred in-flight: NOT parked.
+            assert orch._deferred_inflight == 1
+            assert orch.is_parked is False
+
+            # The manager reply wakes the run; the deferred message returns to
+            # the queue for the next _drain_pending().
+            orch.inject_message("manager", "the awaited reply")
+            reply = await asyncio.wait_for(wait_task, timeout=5.0)
+            assert reply == "the awaited reply"
+            assert orch._deferred_inflight == 0
+            assert orch._drain_pending() == [("worker-1", "worker-bound text")]
+        finally:
+            if not wait_task.done():
+                wait_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await wait_task
+
 
 # ---------------------------------------------------------------------------
 # 2. Turn-slot bookkeeping
@@ -147,6 +184,46 @@ class TestTurnSlot:
         orch = _make_orchestrator(str(tmp_path / "ws"))
         await orch._acquire_turn_slot()
         orch._release_turn_slot()  # must not raise
+
+    async def test_cancel_during_slot_reacquire_requeues_consumed_reply(
+        self, tmp_path: Path
+    ) -> None:
+        """A cancellation that lands while the wake path awaits the turn slot
+        must put the already-consumed reply back on the queue (best-effort)
+        instead of dropping it with the dying task."""
+        root = str(tmp_path / "ws")
+        orch = _make_orchestrator(root)
+        slot = asyncio.Semaphore(1)
+        orch.set_turn_slot(slot)
+        await slot.acquire()  # slot held elsewhere → re-acquire will block
+
+        orch._awaiting_user = True
+        wait_task = asyncio.create_task(
+            orch._wait_for_user_input(root, "proj", "ep", "run-slot", orch._state, orch._pub)
+        )
+        try:
+            await asyncio.sleep(0.05)
+            orch.inject_message("manager", "precious reply")
+            # Wait until the reply is consumed and the task is blocked on the
+            # slot re-acquire (_awaiting_user flips False in the same step).
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while orch._awaiting_user or not orch._pending_messages.empty():
+                assert asyncio.get_running_loop().time() < deadline, "wake never reached acquire"
+                await asyncio.sleep(0.01)
+
+            wait_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await wait_task
+            assert wait_task.cancelled()
+
+            # The consumed reply was returned to the queue, not dropped.
+            assert orch._pending_messages.get_nowait() == ("manager", "precious reply")
+        finally:
+            if not wait_task.done():
+                wait_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await wait_task
+            slot.release()
 
 
 # ---------------------------------------------------------------------------
@@ -268,4 +345,82 @@ class TestRouterShelveRace:
             # Stop whatever real run the 202 started so the test exits cleanly.
             with contextlib.suppress(Exception):
                 await sv.stop("proj", "EP-1")
+            sv._runs.pop(("proj", "EP-1"), None)
+
+class TestPutTasksRunGuard:
+    """PUT /tasks is a plan mutation: it must not race an in-flight run."""
+
+    _TASKS_BODY = {
+        "tasks": [
+            {
+                "id": "T1",
+                "title": "Edited task",
+                "status": "todo",
+                "depends_on": [],
+                "contract": "c",
+            }
+        ],
+        "progress": {"done": 0, "total": 1},
+    }
+
+    async def test_put_tasks_409_while_executing(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        from yukar.runs.supervisor import get_supervisor
+
+        await _seed_project_epic(app_client)
+        sv = get_supervisor()
+        executing = MagicMock(is_parked=False)
+        task = _register_handle(sv, str(tmp_workspace), executing, "proj", "EP-1")
+        try:
+            resp = await app_client.put(
+                "/api/projects/proj/epics/EP-1/tasks", json=self._TASKS_BODY
+            )
+            assert resp.status_code == 409, resp.text
+            # The plan was NOT rewritten under the executing run.
+            r2 = await app_client.get("/api/projects/proj/epics/EP-1/tasks")
+            assert r2.json()["tasks"] == []
+        finally:
+            await _cleanup_task(task)
+            sv._runs.pop(("proj", "EP-1"), None)
+
+    async def test_put_tasks_409_when_run_wakes_mid_shelve(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        from yukar.runs.supervisor import get_supervisor
+
+        await _seed_project_epic(app_client)
+        sv = get_supervisor()
+        task = _register_handle(sv, str(tmp_workspace), _WakesDuringShelveRunner(), "proj", "EP-1")
+        try:
+            resp = await app_client.put(
+                "/api/projects/proj/epics/EP-1/tasks", json=self._TASKS_BODY
+            )
+            assert resp.status_code == 409, resp.text
+            assert "woke" in resp.json()["detail"].lower()
+        finally:
+            await _cleanup_task(task)
+            sv._runs.pop(("proj", "EP-1"), None)
+
+    async def test_put_tasks_shelves_parked_live_run(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        """A live run merely parked in ``waiting`` yields the slot: the plan
+        edit succeeds and the parked task is shelved."""
+        from yukar.runs.supervisor import get_supervisor
+
+        await _seed_project_epic(app_client)
+        sv = get_supervisor()
+        parked = MagicMock(is_parked=True)
+        task = _register_handle(sv, str(tmp_workspace), parked, "proj", "EP-1")
+        try:
+            resp = await app_client.put(
+                "/api/projects/proj/epics/EP-1/tasks", json=self._TASKS_BODY
+            )
+            assert resp.status_code == 200, resp.text
+            assert task.cancelled() or task.done()
+            r2 = await app_client.get("/api/projects/proj/epics/EP-1/tasks")
+            assert [t["id"] for t in r2.json()["tasks"]] == ["T1"]
+        finally:
+            await _cleanup_task(task)
             sv._runs.pop(("proj", "EP-1"), None)

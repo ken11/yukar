@@ -193,7 +193,7 @@ async def _finalize_epic_if_all_merged(
 
     # All repos are merged — record the merge fact (the epic stays open).
     logger.info("All repos merged for epic %s; recording merged_at", epic.id)
-    await record_epic_merged(root, project_id, epic)
+    await record_epic_merged(root, project_id, epic.id)
 
 
 @router.post("/git/merge")

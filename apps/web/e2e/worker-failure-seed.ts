@@ -4,7 +4,7 @@
  * The manager runs normally through task_update → dispatch,
  * then the worker's first turn is a RaiseTurn (MaxTokensReachedException) that causes it to fail.
  * Afterwards the manager reports in body text and its turn end parks the run
- * in "waiting" (P3: a conversation run never completes).
+ * in "waiting" (a conversation run never completes).
  *
  * Verification points:
  *   - The ThreadTreePanel WorkerNode shows status="failed"

@@ -1,6 +1,6 @@
 """Tasks router — GET/PUT tasks and the plan-approval operations.
 
-Plan approval (lifecycle redesign P2): approval is an explicit user
+Plan approval (lifecycle redesign): approval is an explicit user
 operation bound to a task-plan snapshot hash, not something an agent (or a
 chat reply) can grant.  GET /tasks reports the current plan hash and the
 approval state; POST /plan/approval records an approval for exactly the
@@ -15,8 +15,8 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from yukar.api.routers import get_epic_or_404
-from yukar.deps import WorkspaceRootDep
+from yukar.api.routers import get_epic_or_404, shelve_or_409
+from yukar.deps import SupervisorDep, WorkspaceRootDep
 from yukar.models.task import PlanApproval, TasksFile, compute_plan_hash
 from yukar.storage import plan_approval_repo, tasks_repo
 
@@ -73,9 +73,22 @@ async def get_tasks(project_id: str, epic_id: str, root: WorkspaceRootDep) -> Ta
 
 @router.put("/tasks", response_model=TasksFile)
 async def put_tasks(
-    project_id: str, epic_id: str, body: TasksFile, root: WorkspaceRootDep
+    project_id: str,
+    epic_id: str,
+    body: TasksFile,
+    root: WorkspaceRootDep,
+    supervisor: SupervisorDep,
 ) -> TasksFile:
     await get_epic_or_404(root, project_id, epic_id)
+    # Rewriting the plan must not race an in-flight run (the orchestrator
+    # reads and writes tasks.yaml during a turn).  An EXECUTING turn is a
+    # 409; a live run merely parked in ``waiting`` is shelved (state
+    # preserved — the conversation resumes as a continuation) first.
+    if supervisor.is_executing(project_id, epic_id):
+        raise HTTPException(
+            status_code=409, detail="A run is executing for this epic — tasks are read-only"
+        )
+    await shelve_or_409(supervisor, project_id, epic_id)
     await tasks_repo.save_tasks(root, project_id, epic_id, body)
     return body
 

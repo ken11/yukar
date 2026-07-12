@@ -42,7 +42,7 @@ import type {
  *     trial, or is `null` (just added live under the active trial, parent not
  *     yet resolved — kept optimistically).
  *   - An evaluator is kept iff its parent worker survived, OR it is a DIRECT
- *     evaluator (P6 evaluator-only dispatch: no worker ran, so its live
+ *     evaluator (evaluator-only dispatch: no worker ran, so its live
  *     events carry worker_id "" and its ThreadEntry is parented to the
  *     manager trial itself).
  */
@@ -385,6 +385,13 @@ export function handleTree(
     case "EVALUATOR_STARTED": {
       const ev = action.event;
       const tree = state.treeState;
+      // Direct evaluator (evaluator-only dispatch: no worker ran, backend sends
+      // worker_id "") — bind it to the ACTIVE trial instead of keeping the
+      // bare "". A bare "" survives scopeTreeToManager under ANY trial, so the
+      // node would linger after a trial switch; bound to the trial id it is
+      // kept/dropped by the existing `workerId === activeManagerId` rule.
+      // Fall back to "" when no trial is known yet (same visibility as before).
+      const workerId = ev.worker_id === "" ? (state.activeTrialId ?? "") : ev.worker_id;
       // Turn start = start of a new stream, so reset streamState to emptyStreamState().
       // ensureLiveBuffer preserves done=true for existing keys, so it is not used (#multi-turn-regression).
       return {
@@ -396,7 +403,7 @@ export function handleTree(
             [ev.eval_id]: {
               role: "evaluator",
               threadId: ev.eval_id,
-              workerId: ev.worker_id,
+              workerId,
               taskId: ev.task_id,
               repo: ev.repo,
               evalId: ev.eval_id,

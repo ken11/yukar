@@ -1,5 +1,5 @@
 /**
- * Plan-approval-gate E2E test (P2: snapshot-bound approval).
+ * Plan-approval-gate E2E test (snapshot-bound approval).
  *
  * Proves the host-enforced approval gate in a real browser + real backend:
  *   - The Manager tries to `dispatch` BEFORE the user approves the plan. The

@@ -1,5 +1,5 @@
 /**
- * Plan approval (lifecycle redesign P2) tests:
+ * Plan approval (lifecycle redesign: snapshot-bound approval) tests:
  * - endpoints: approvePlan POST body / revokePlanApproval DELETE
  * - PlanApprovalBanner: visibility conditions (unapproved plan on the active
  *   trial), approvePlan call with the echoed backend hash, the approval
@@ -193,6 +193,75 @@ describe("PlanApprovalBanner", () => {
     await waitFor(() => {
       expect(onSendMessage).toHaveBeenCalledWith(ja.conversation.planApprovedMessage);
     });
+  });
+
+  it("re-arms the approve button after a re-plan (new hash) without a reload", async () => {
+    // Approval success → the manager re-plans (tasks refetch returns a NEW
+    // unapproved hash). The previous mutation's isSuccess must not keep the
+    // button dead — the new snapshot is a new approval decision.
+    vi.mocked(getTasks)
+      .mockResolvedValueOnce(tasksResponse()) // initial plan: hash-1, unapproved
+      .mockResolvedValue(tasksResponse({ plan_hash: "hash-2" })); // re-planned: hash-2, unapproved
+    vi.mocked(approvePlan).mockResolvedValue({
+      tasks_hash: "hash-1",
+      approved_at: "2026-07-11T00:00:00Z",
+    });
+    const onSendMessage = vi.fn();
+    const user = userEvent.setup();
+
+    render(<PlanApprovalBanner projectId="proj1" epicId="EP-1" onSendMessage={onSendMessage} />, {
+      wrapper: wrapper(newQueryClient()),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approve-plan-btn")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("approve-plan-btn"));
+    await waitFor(() => {
+      expect(approvePlan).toHaveBeenCalledWith("proj1", "EP-1", "hash-1");
+    });
+
+    // The refetch (new hash) resets the mutation → the button is clickable again.
+    await waitFor(() => {
+      expect(screen.getByTestId("approve-plan-btn")).not.toBeDisabled();
+    });
+    await user.click(screen.getByTestId("approve-plan-btn"));
+    await waitFor(() => {
+      expect(approvePlan).toHaveBeenCalledWith("proj1", "EP-1", "hash-2");
+    });
+  });
+
+  it("keeps the button dead while the hash is unchanged after a successful approval", async () => {
+    // Same-snapshot guard: as long as the refetch still reports the SAME hash
+    // (e.g. plan_approved has not landed yet), no reset happens — a fast
+    // double-click cannot post the wake message twice.
+    vi.mocked(getTasks).mockResolvedValue(tasksResponse()); // always hash-1, unapproved
+    vi.mocked(approvePlan).mockResolvedValue({
+      tasks_hash: "hash-1",
+      approved_at: "2026-07-11T00:00:00Z",
+    });
+    const onSendMessage = vi.fn();
+    const user = userEvent.setup();
+
+    render(<PlanApprovalBanner projectId="proj1" epicId="EP-1" onSendMessage={onSendMessage} />, {
+      wrapper: wrapper(newQueryClient()),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approve-plan-btn")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("approve-plan-btn"));
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    // Refetch resolved with the same hash: the button stays disabled.
+    await waitFor(() => {
+      expect(vi.mocked(getTasks).mock.calls.length).toBeGreaterThan(1);
+    });
+    expect(screen.getByTestId("approve-plan-btn")).toBeDisabled();
+    expect(approvePlan).toHaveBeenCalledTimes(1);
+    expect(onSendMessage).toHaveBeenCalledTimes(1);
   });
 
   it("on stale 409: refetches tasks, shows the stale notice, sends no message", async () => {

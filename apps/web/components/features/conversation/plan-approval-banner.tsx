@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Icon } from "@/components/icon";
 import { ApiError, approvePlan, extractDetail, getTasks } from "@/lib/api/endpoints";
@@ -8,7 +9,7 @@ import { queryKeys } from "@/lib/api/query-keys";
 import { useT } from "@/lib/i18n/provider";
 
 /**
- * Plan-approval control (lifecycle redesign P2).
+ * Plan-approval control (lifecycle redesign: snapshot-bound approval).
  *
  * Approval is an explicit user operation bound to a task-plan snapshot hash —
  * a chat reply no longer grants it.  Shown near the your-turn banner while
@@ -56,6 +57,20 @@ export function PlanApprovalBanner({
       });
     },
   });
+
+  // A NEW plan snapshot (different hash) is a new approval decision: drop the
+  // previous mutation result so the button re-arms. Without this, isSuccess
+  // from an earlier approval would keep the button dead after a re-plan until
+  // a full reload. Same-hash double-clicks stay blocked (hash unchanged → no
+  // reset → isPending/isSuccess still guard).
+  const planHash = tasksFile?.plan_hash;
+  const resetMutation = mutation.reset;
+  const prevHashRef = useRef(planHash);
+  useEffect(() => {
+    if (prevHashRef.current === planHash) return;
+    prevHashRef.current = planHash;
+    resetMutation();
+  }, [planHash, resetMutation]);
 
   // No plan yet (no tasks) or already approved → nothing to render.
   if (!tasksFile || tasksFile.plan_approved || (tasksFile.tasks ?? []).length === 0) {

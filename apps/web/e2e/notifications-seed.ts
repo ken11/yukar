@@ -21,7 +21,7 @@ export const NOTIF_SEED = {
 } as const;
 
 /**
- * Fake LLM script — the run does its work and parks in "waiting" (P3: no
+ * Fake LLM script — the run does its work and parks in "waiting" (no
  * run_completed for conversation runs; the badge source is run_started).
  * Equivalent to FAKE_SCRIPT in seed.ts (task_update → dispatch → report text).
  */

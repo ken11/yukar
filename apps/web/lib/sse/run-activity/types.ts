@@ -74,7 +74,7 @@ export interface ThreadTreeState {
 // ---- Store state types ----
 
 /**
- * Frontend run status (lifecycle redesign P3).
+ * Frontend run status (lifecycle redesign: collapsed vocabulary).
  *
  * - "waiting" is the single resting state = "your turn". A conversation run
  *   parks here after every turn; an epic that has never run is also waiting.
@@ -98,7 +98,7 @@ export interface ThreadLiveState {
 }
 
 /**
- * The conversation run currently riding on this epic (P4 attribution split).
+ * The conversation run currently riding on this epic (run-attribution split).
  * `threadId` is the conversation the run is bound to (SSE event.thread_id /
  * REST RunState.thread_id) and `role` says WHICH conversation agent it is
  * (REST RunState.role). `role: null` = not yet known (an SSE your-turn signal
@@ -120,10 +120,10 @@ export interface RunActivityState {
    * Parked-conversation marker: the run has actually parked in "waiting"
    * (your turn) on this thread. null = no parked conversation (never ran, or
    * a turn is executing). The question itself is NOT carried here — it is the
-   * agent's final message in the thread (the legacy ask_user tool was removed
-   * in P3). The threadId is the run's OWN conversation (a reviewer run parks
-   * on the reviewer thread) — never the active trial fallback (P4 attribution
-   * fix).
+   * agent's final message in the thread (the legacy ask_user tool was
+   * removed). The threadId is the run's OWN conversation (a reviewer run
+   * parks on the reviewer thread) — never the active trial fallback (the
+   * attribution fix).
    */
   yourTurn: { threadId: string } | null;
   /** Agent tree */
@@ -132,7 +132,7 @@ export interface RunActivityState {
   liveBuffers: Record<string, ThreadLiveState>;
   /**
    * thread_id of the ACTIVE MANAGER TRIAL — composer rights, tree scoping and
-   * topbar/controls links. Sourced from epic.active_thread_id only (P4 split:
+   * topbar/controls links. Sourced from epic.active_thread_id only (attribution split:
    * RunState.thread_id is no longer a fallback here — during a reviewer
    * run it points at the reviewer thread and would misattribute the trial).
    * null = not yet confirmed (consumers fall back to "manager").

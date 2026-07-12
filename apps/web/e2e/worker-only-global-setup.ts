@@ -1,5 +1,5 @@
 /**
- * Global setup for the worker-only dispatch E2E scenario (P6).
+ * Global setup for the worker-only dispatch E2E scenario.
  *
  * Prepares a temp dir dedicated to the worker-only scenario and initialises
  * the git repo.  Server start/stop is managed by the webServer setting in

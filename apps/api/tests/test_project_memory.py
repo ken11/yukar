@@ -919,7 +919,7 @@ class TestRememberTool:
 
 
 # ---------------------------------------------------------------------------
-# lesson learnings (remember is the only write path since P3)
+# lesson learnings (remember is the only write path since the lifecycle redesign)
 # ---------------------------------------------------------------------------
 
 

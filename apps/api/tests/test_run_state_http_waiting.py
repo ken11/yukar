@@ -1,4 +1,4 @@
-"""GET /run/state under P3 semantics: ``waiting`` is the single resting state.
+"""GET /run/state under lifecycle-redesign semantics: ``waiting`` is the single resting state.
 
 Successor of the pending_question HTTP restore test: the question text now
 lives in the conversation (the agent's last message), so the reload-restore
@@ -65,7 +65,7 @@ async def test_get_run_state_http_restores_waiting_after_restart(
     assert resp.status_code == 200, resp.text
     assert resp.json().get("status") == "waiting"
 
-    # Legacy on-disk shape (pre-P3 restart snapshot): must not 500 and must
+    # Legacy on-disk shape (pre-redesign restart snapshot): must not 500 and must
     # coerce to waiting; pending_question is gone from the response model.
     state_path = paths.state_yaml(root, pid, eid)
     state_path.write_text(

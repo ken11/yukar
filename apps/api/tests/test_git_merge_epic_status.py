@@ -359,3 +359,78 @@ class TestMergeFactIdempotent:
         await _finalize_epic_if_all_merged("unused-root", "proj-x", epic)
         assert epic.merged_at == recorded_at
 
+
+
+class TestRecordEpicMergedFreshRead:
+    """record_epic_merged re-reads the epic under a lock: no stale rollback,
+    no double publish."""
+
+    async def test_stale_caller_cannot_roll_back_concurrent_patch(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller holding a stale Epic must not roll back a concurrent
+        status change: only merged_at / updated_at are written, on the
+        freshest on-disk state."""
+        from yukar.models.epic import Epic
+        from yukar.runs.merge_facts import record_epic_merged
+        from yukar.storage.epic_repo import get_epic, save_epic
+
+        root = str(tmp_path / "ws")
+        pid, eid = "proj", "EP-1"
+        await save_epic(
+            root, pid, Epic(id=eid, slug="s", title="T", branch="yukar/ep-1-s")
+        )
+
+        # Simulate a PATCH that completes the epic while the merge caller
+        # still holds the pre-PATCH snapshot in memory.
+        fresh = await get_epic(root, pid, eid)
+        assert fresh is not None
+        fresh.status = "completed"
+        await save_epic(root, pid, fresh)
+
+        recorded = await record_epic_merged(root, pid, eid)
+        assert recorded is True
+
+        after = await get_epic(root, pid, eid)
+        assert after is not None
+        assert after.merged_at is not None
+        # The concurrent status change survived — no stale-object rollback.
+        assert after.status == "completed"
+
+    async def test_concurrent_recorders_publish_exactly_once(
+        self, tmp_path: Path
+    ) -> None:
+        """Two racing call sites (single-repo endpoint + arbiter) record the
+        fact once and publish exactly one EpicMergedEvent."""
+        import asyncio
+
+        from yukar.events import bus as event_bus
+        from yukar.models.epic import Epic
+        from yukar.models.events import EpicMergedEvent
+        from yukar.runs.merge_facts import record_epic_merged
+        from yukar.storage.epic_repo import save_epic
+
+        root = str(tmp_path / "ws")
+        pid, eid = "proj", "EP-2"
+        await save_epic(
+            root, pid, Epic(id=eid, slug="s2", title="T2", branch="yukar/ep-2-s2")
+        )
+
+        received: list[object] = []
+        async with event_bus.subscribe(pid, eid) as q:
+            results = await asyncio.gather(
+                record_epic_merged(root, pid, eid),
+                record_epic_merged(root, pid, eid, run_id="run-arb"),
+            )
+            while not q.empty():
+                received.append(q.get_nowait())
+
+        assert sorted(results) == [False, True], results
+        merged_events = [e for e in received if isinstance(e, EpicMergedEvent)]
+        assert len(merged_events) == 1, f"expected exactly one event, got {merged_events}"
+
+    async def test_missing_epic_is_a_noop(self, tmp_path: Path) -> None:
+        from yukar.runs.merge_facts import record_epic_merged
+
+        root = str(tmp_path / "ws")
+        assert await record_epic_merged(root, "proj", "EP-GONE") is False

@@ -27,7 +27,7 @@ import { useEventStream } from "./use-event-stream";
 
 /**
  * Union of all event types that can arrive via the project-level SSE.
- * your_turn / your_turn_ended are the "your turn" signals (P4):
+ * your_turn / your_turn_ended are the "your turn" signals:
  * a conversation run parked in "waiting" / left it — used for live board badges.
  */
 export type ProjectStreamEvent =

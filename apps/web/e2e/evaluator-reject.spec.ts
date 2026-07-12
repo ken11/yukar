@@ -21,7 +21,7 @@
  *   - Manager FakeScript: retries with feedback on the next dispatch turn
  *   - accepted=true → task.status="done", evaluator thread="resolved"
  *   (Worker/Evaluator resolved/failed are records of the trial verdict — they
- *   are kept under P3; only Manager/Reviewer conversations lost end-states.)
+ *   are kept; only Manager/Reviewer conversations lost end-states.)
  */
 
 import { expect, test } from "@playwright/test";

@@ -1,5 +1,5 @@
 /**
- * Standard wait conditions for the P3 lifecycle (conversations never end).
+ * Standard wait conditions for the redesigned lifecycle (conversations never end).
  *
  * - Turn end:  GET run/state reaches "waiting" — the single resting state
  *   ("your turn"). Pair with an assertion on the latest assistant text when

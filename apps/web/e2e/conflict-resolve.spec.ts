@@ -10,7 +10,7 @@
  *   4. Resolve with Agent button → POST /git/resolve → resolve run starts
  *      (Worker per_call[1]: writes conflict.txt with "RESOLVED" version, git_add → git_commit)
  *   5. Poll the API until the resolve run reaches completed (a resolve run is
- *      a JOB run — "completed" remains its terminal state under P3)
+ *      a JOB run — "completed" is still a job run's terminal state)
  *   6. Merge to default again → 200 + merge SHA (no conflict because already resolved)
  *   7. Verify via git that default(main) contains the resolved content (RESOLVED, no markers)
  *

@@ -13,7 +13,7 @@
  *   4. API: old trial=archived / new trial=active / epic.active_thread_id points to new trial
  *   5. List pane: both trials are listed (active + archived sections)
  *   6. Archiving the ACTIVE trial while a live run is parked in waiting is
- *      allowed (the parked run is shelved, not a 409) — P3 shelving semantics
+ *      allowed (the parked run is shelved, not a 409) — shelving semantics
  */
 
 import { expect, test } from "@playwright/test";
@@ -192,7 +192,7 @@ test.describe
       );
 
       // The archived banner should appear (the old trial was archived by the
-      // new-trial creation — conversations never "resolve" under P3, so the
+      // new-trial creation — conversations never "resolve" any more, so the
       // read-only presentation for a superseded trial is the archived state).
       const archivedBanner = page.getByTestId("thread-archived-banner");
       await expect(archivedBanner, "Old trial should show the archived banner").toBeVisible({
@@ -236,7 +236,7 @@ test.describe
         "There should be at least 2 threads with the manager role",
       ).toBeGreaterThanOrEqual(2);
 
-      // Old trial is archived. Under P3 a conversation never "resolves" — the
+      // Old trial is archived. A conversation never "resolves" — the
       // run parks in waiting and the trial stays active until the new-trial
       // creation (archive_active=true) archives it atomically.
       const old = managerThreads.find((t) => t.id === state.firstManagerId);
@@ -305,7 +305,7 @@ test.describe
     // -------------------------------------------------------------------------
     // 6. Archiving the ACTIVE trial is allowed while no turn is executing
     //
-    // P3 shelving semantics: only an EXECUTING turn (running/paused) holds the
+    // Shelving semantics: only an EXECUTING turn (running/paused) holds the
     // run slot and returns 409. A run parked in "waiting" never blocks trial
     // mutations (it is shelved). The old trial is already archived (test 2),
     // so we archive the active trial itself while viewing it and assert the

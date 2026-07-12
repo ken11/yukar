@@ -1,5 +1,5 @@
 /**
- * Seed constants and fake script for the worker-only dispatch scenario (P6).
+ * Seed constants and fake script for the worker-only dispatch scenario.
  *
  * Verification scenario:
  *   The Manager plans an investigation task whose deliverable is the report

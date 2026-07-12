@@ -51,7 +51,7 @@ export const CONFLICT_RESOLVE_FAKE_SCRIPT = JSON.stringify({
       tool_name: "dispatch",
       tool_input: { items: [{ task_id: "T1", repo: "myrepo" }] },
     },
-    // Report and end the turn — the conversation run parks in "waiting" (P3).
+    // Report and end the turn — the conversation run parks in "waiting".
     { type: "text", text: "Epic work is done." },
   ],
 

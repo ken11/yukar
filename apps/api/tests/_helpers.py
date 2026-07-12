@@ -3,7 +3,7 @@
 Promoted from the per-file copies that several test modules duplicated
 (many self-labelled "duplicated from test_orchestration.py").
 
-Lifecycle redesign P3: a conversation run (Manager / Reviewer) never
+Lifecycle redesign: a conversation run (Manager / Reviewer) never
 completes on its own — every ended turn parks the run in ``waiting`` and the
 run task stays alive for the next user message.  Tests that drive a scripted
 orchestrator therefore wait for the park (``wait_for_run_status``) and then
@@ -84,7 +84,7 @@ async def wait_for_run_status(
 ) -> Any:
     """Poll state.yaml until it reaches *status*; return the RunState.
 
-    The canonical way to detect "the scripted turn ended" under P3
+    The canonical way to detect "the scripted turn ended" under turn-end
     semantics: the run parks in ``waiting`` (it is the user's turn).
     """
     from yukar.storage import state_repo

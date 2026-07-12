@@ -13,11 +13,11 @@
  *   3. User asks for a revision (a plain chat reply — it does NOT approve) →
  *      Manager re-plans and re-asks.  [turn 1]
  *   4. User approves via the EXPLICIT approve-plan operation (approve-plan-btn
- *      → POST /plan/approval, snapshot-hash bound, P2) which also auto-posts
+ *      → POST /plan/approval, snapshot-hash bound) which also auto-posts
  *      the "plan approved" message that wakes the agent → Manager dispatches
  *      the Worker (the approval gate lets it through only now), the Evaluator
  *      accepts, the Manager self-checks the branch diff, then reports in body
- *      text → the run parks in "waiting" with every task done (P3: a
+ *      text → the run parks in "waiting" with every task done (a
  *      conversation run never "completes"; the epic stays open — only the
  *      user flips its status).  [turn 2]
  *

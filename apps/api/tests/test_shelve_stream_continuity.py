@@ -1,7 +1,7 @@
-"""Shelve → continuation events arrive on the SAME SSE stream (P5).
+"""Shelve → continuation events arrive on the SAME SSE stream (lifecycle redesign).
 
 A shelve (or server shutdown) cancels the run task WITHOUT the stop flag.
-Since P5 the orchestrator's finally block publishes the ``None`` sentinel
+Since the lifecycle redesign the orchestrator's finally block publishes the ``None`` sentinel
 only on stop / error / normal return — NOT on a not-stopped CancelledError.
 A conversation has no end, so shelving must not sever subscriber streams:
 one subscriber opened before the shelve keeps receiving the continuation

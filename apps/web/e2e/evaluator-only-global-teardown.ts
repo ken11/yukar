@@ -1,5 +1,5 @@
 /**
- * Global teardown for the evaluator-only dispatch E2E scenario (P6).
+ * Global teardown for the evaluator-only dispatch E2E scenario.
  * Removes the temp dir dedicated to the evaluator-only scenario.
  */
 import fs from "node:fs";

@@ -4,7 +4,7 @@
  * RunControls — group of UI components for epic run control.
  *
  * Epic side is a 1-bit user-owned status (open ⇄ completed); the run side is
- * the P3 vocabulary (preparing / running / paused / waiting / error, plus
+ * the collapsed run-status vocabulary (preparing / running / paused / waiting / error, plus
  * completed for JOB runs only). "waiting" = your turn — the normal resting
  * state, handled by the default open-epic branch.
  * Imported by EpicScopeHeader and EpicShell.

@@ -525,6 +525,61 @@ class TestSupervisorArbiter:
                 await fake_task
             sv._runs.pop((pid, eid), None)
 
+    async def test_start_merge_raises_when_parked_run_wakes_mid_shelve(
+        self, tmp_path: Path
+    ) -> None:
+        """A reply that lands between the busy check and the shelve wakes the
+        run: the failed shelve must abort the merge (RuntimeError → 409), not
+        proceed against an executing run."""
+        root = str(tmp_path / "ws")
+        pid, eid = "proj", "EP-1"
+
+        from yukar.runs.supervisor import MERGE_SENTINEL, RunSupervisor, _RunHandle
+
+        class _WakesDuringShelveRunner:
+            """is_parked=True at the busy check, False at the shelve re-check —
+            simulates a reply landing between the two."""
+
+            def __init__(self) -> None:
+                self._reads = 0
+
+            @property
+            def is_parked(self) -> bool:
+                self._reads += 1
+                return self._reads == 1
+
+        sv = RunSupervisor()
+
+        async def _never_finishes() -> None:
+            await asyncio.sleep(9999)
+
+        fake_task: asyncio.Task[None] = asyncio.create_task(_never_finishes())
+        try:
+            waking_runner: Any = _WakesDuringShelveRunner()
+            sv._runs[(pid, eid)] = _RunHandle(
+                run_id="run-fake",
+                runner=waking_runner,
+                task=fake_task,
+                root=root,
+                project_id=pid,
+                epic_id=eid,
+            )
+
+            with pytest.raises(RuntimeError, match="woke up"):
+                await sv.start_merge(root=root, project_id=pid, epic_ids=[eid])
+
+            # The merge did NOT start and the live run task was NOT cancelled.
+            assert not sv.is_arbiter_running(pid)
+            assert (pid, MERGE_SENTINEL) not in sv._runs
+            assert not fake_task.cancelled()
+        finally:
+            fake_task.cancel()
+            import contextlib
+
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await fake_task
+            sv._runs.pop((pid, eid), None)
+
     async def test_start_returns_409_when_arbiter_running(self, tmp_path: Path) -> None:
         """supervisor.start() raises RuntimeError when arbiter is running."""
         root = str(tmp_path / "ws")

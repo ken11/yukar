@@ -5,8 +5,8 @@ On lifespan startup, scan all epic state.yaml files.  Any run whose status is
 crash).  The turn died with the server, but the conversation itself is intact
 on disk, so we settle those runs into ``waiting`` — "your turn" — and the user
 simply continues by sending a message (start_or_inject → start_continuation).
-Surfacing "the previous run stopped abnormally" to the user is the inbox's job
-(P4); here we only log it.
+Surfacing "the previous run stopped abnormally" to the user is the your-turn
+inbox's job; here we only log it.
 
 Runs already in ``waiting`` are left untouched: a waiting run has no in-flight
 async work (the agent ended its turn and parked), and the Strands session,

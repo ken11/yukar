@@ -1,9 +1,9 @@
 /**
- * Your-turn banner (lifecycle redesign P3) tests:
+ * Your-turn banner (lifecycle redesign) tests:
  * - The banner shows when the run parked on this thread (isYourTurn) and
  *   uses the neutral wording — no hardcoded role name ("Manager …" is gone).
  * - No banner when it is not the user's turn, and the run-failed banner wins.
- * - No synthetic "__awaiting__" bubble is ever rendered (P3 removed it); the
+ * - No synthetic "__awaiting__" bubble is ever rendered (the redesign removed it); the
  *   question is simply the last persisted assistant message.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -77,13 +77,13 @@ beforeEach(() => {
   vi.stubGlobal("fetch", () => Promise.resolve({ ok: false, json: () => Promise.reject() }));
 });
 
-describe("your-turn banner (P3)", () => {
+describe("your-turn banner", () => {
   it("shows the neutral your-turn wording when the run parked on this thread", () => {
     renderChat({ isYourTurn: true });
     const banner = screen.getByText(ja.conversation.awaitingBanner);
     expect(banner).toBeTruthy();
-    // Neutral wording — the old "Manager があなたの承認・回答を待っています"
-    // role hardcode is gone.
+    // Neutral wording — the old banner hardcoded the role ("the Manager is
+    // waiting for your approval / answer"); that phrasing is gone.
     expect(ja.conversation.awaitingBanner).not.toContain("Manager");
   });
 
@@ -98,7 +98,7 @@ describe("your-turn banner (P3)", () => {
     expect(screen.getByText(`▲ ${ja.conversation.runFailedTitle}`)).toBeTruthy();
   });
 
-  it("shows the Reviewer wording when the parked run rides a reviewer thread (P4)", () => {
+  it("shows the Reviewer wording when the parked run rides a reviewer thread", () => {
     const reviewerThread: ThreadEntry = {
       id: "rev-1",
       title: "Reviewer",

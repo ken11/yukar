@@ -53,7 +53,7 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
     staleTime: 30_000,
   });
 
-  // Live "your turn" badges (P4): the project SSE streams the your-turn
+  // Live "your turn" badges: the project SSE streams the your-turn
   // signals (your_turn = a conversation run parked in "waiting",
   // your_turn_ended = the reply woke it). Patch the run_summary of the
   // affected epic in the list cache — badge only, no unread persistence.
@@ -336,7 +336,7 @@ function EpicBoardRow({
 
       {/* StatusBadge — pushed right on mobile (title is on its own line).
           The merged badge is a fact attribute shown alongside the status;
-          "your turn" (P4) is current run state from run_summary, live-updated
+          "your turn" is current run state from run_summary, live-updated
           via the project SSE your-turn signals. */}
       <span className="ml-auto flex items-center gap-2 md:ml-0">
         {isYourTurn && (

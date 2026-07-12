@@ -7,7 +7,7 @@
  *
  * Block 1 — Same-trial new session (also the basic-scenario regression):
  *   basic HITL (plan → user revises → re-plan → user approves via the explicit
- *   approve-plan operation (P2: snapshot-hash bound; a chat reply alone does
+ *   approve-plan operation (snapshot-hash bound; a chat reply alone does
  *   not approve) → gated dispatch → evaluate → manager self-check → run parks
  *   in "waiting" with all tasks done; the epic stays open) → user merges (merge fact recorded, epic
  *   still open) → user starts a NEW session on the SAME trial
@@ -31,7 +31,7 @@ import { getRunState, waitForRunWaiting, waitForWorkDone } from "./wait-helpers"
 const SHOTS = "playwright-report/full-scenario";
 
 // Your-turn banner wordings (ja locale). The neutral thread/epic texts are the
-// same string; the Reviewer variants (P4 role attribution) differ per surface.
+// same string; the Reviewer variants (role attribution) differ per surface.
 const NEUTRAL_TURN_BANNER = "あなたの番です — 返信するとエージェントが続けます";
 const REVIEWER_TURN_BANNER = "Reviewer の報告があります — 返信すると続けます";
 const REVIEWER_SHELL_BANNER = "Reviewer の報告があります — 会話を開いて確認してください";
@@ -122,9 +122,9 @@ async function replyOnThread(page: Page, replyText: string): Promise<void> {
  * presents a plan (Q_PLAN, body text — the turn end parks the run in
  * "waiting"), the user requests a revision (a plain reply — it does NOT
  * approve), it re-plans (Q_REVISED), the user approves via the explicit
- * approve-plan operation (P2: snapshot-hash bound), and only then does the
+ * approve-plan operation (snapshot-hash bound), and only then does the
  * gated dispatch run through; the run parks in "waiting" with every task done
- * (P3: a conversation run never "completes"; the epic itself stays open —
+ * (a conversation run never "completes"; the epic itself stays open —
  * finishing work never transitions the 1-bit epic status).
  *
  * `alreadyApproved` covers the continuation session: its re-plan reproduces a
@@ -283,7 +283,7 @@ test.describe
 
       // Post the additional request → the NEW session's Manager runs the basic
       // scenario again on the same branch. Its re-plan reproduces the snapshot
-      // approved in the first session, so no re-approval is needed (P2:
+      // approved in the first session, so no re-approval is needed (
       // approval is bound to the plan snapshot, not to a run or a session).
       await replyOnThread(page, "util.py も追加してください。");
       await approvePlanToWorkDone(page, s.projectId, s.epicId, { alreadyApproved: true });
@@ -342,9 +342,9 @@ test.describe
 
       // The Reviewer reports to the user in body text → its turn end parks the
       // run in "waiting", with the reviewer thread driving the run.
-      // P4 root-fixed the live attribution (activeTrialId vs currentRun), so
+      // The attribution split root-fixed the live attribution (activeTrialId vs currentRun), so
       // the SPA session we arrived on shows the report streaming in live —
-      // NO reload (this assertion was downgraded to a fresh load under P3).
+      // NO reload (this assertion was previously downgraded to a fresh load).
       await expect(
         page.getByText(Q_REVIEW),
         "Reviewer report streams live into the reviewer thread (no reload)",
@@ -405,7 +405,7 @@ test.describe
         "Manager thread stays writable for a fix instruction",
       ).toBeVisible({ timeout: 20_000 });
 
-      // Reload-misattribution regression guard (P4): the reviewer run is
+      // Reload-misattribution regression guard: the reviewer run is
       // parked in waiting, so a fresh load of the TRIAL thread must attribute
       // "your turn" to the reviewer conversation (epic-level Reviewer wording)
       // and show NO banner on the trial thread itself.

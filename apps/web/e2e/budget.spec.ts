@@ -222,7 +222,7 @@ test.describe
       // every active run (supervisor.stop on the live parked run = shelve:
       // task cancel, state stays "waiting"). The parked run is therefore
       // usually already gone and stop returns 404 ("nothing live to stop" is
-      // the normal resting state under P3). Issue a best-effort stop anyway
+      // the normal resting state). Issue a best-effort stop anyway
       // so this test is order-independent, accepting both outcomes.
       const stopRes = await page.request.post(
         `/api/projects/${state.projectId}/epics/${state.epicId}/run/stop`,

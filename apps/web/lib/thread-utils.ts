@@ -13,7 +13,7 @@
  *
  * The only path to showing the composer is through
  * `activityState.activeTrialId` in thread-page-client.tsx (`activeThreadId` → `SET_ACTIVE_TRIAL_ID` dispatch).
- * activeTrialId is sourced from epic.active_thread_id only (P4) — never from
+ * activeTrialId is sourced from epic.active_thread_id only (attribution split) — never from
  * RunState.thread_id, which is the run's own thread (currentRun).
  * The archived exclusion in `applyTreeInit` is a correction to tree display nodes and is unrelated to the composer.
  *

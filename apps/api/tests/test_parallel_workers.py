@@ -236,7 +236,7 @@ class TestParallelDifferentRepos:
         assert len(started) >= 2, "Expected at least 2 WorkerStartedEvents"
         assert len(completed) >= 2, "Expected at least 2 WorkerCompletedEvents"
 
-        # Both tasks should complete and the run should park (P3: a
+        # Both tasks should complete and the run should park (a
         # conversation run never emits run_completed).
         event_types = [getattr(e, "type", None) for e in events_received]
         assert "your_turn" in event_types

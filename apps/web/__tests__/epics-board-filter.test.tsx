@@ -249,10 +249,10 @@ describe("EpicsBoardClient filters (1-bit lifecycle)", () => {
 });
 
 // ============================================================
-// P4: "your turn" badge on the board — run_summary + live SSE update
+// "your turn" badge on the board — run_summary + live SSE update
 // ============================================================
 
-describe("EpicsBoardClient your-turn badge (P4)", () => {
+describe("EpicsBoardClient your-turn badge", () => {
   it("shows the badge when run_summary is waiting with a real run_id", () => {
     const epics = [
       makeEpic("EP-10", "open", {
@@ -281,7 +281,7 @@ describe("EpicsBoardClient your-turn badge (P4)", () => {
   });
 
   it("no badge on a completed epic — locked history is not an inbox item", () => {
-    // After P3 every conversation run settles in waiting, so without the
+    // Every conversation run settles in waiting now, so without the
     // open-status condition every epic that ever ran would keep the badge
     // forever after being completed.
     const epics = [

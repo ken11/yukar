@@ -6,7 +6,7 @@
  * running state causes the task to receive CancelledError and
  * state.status to stay "waiting" (the user-stop path).
  *
- * P3 turn-end semantics note: EVERY ended turn parks the run in "waiting"
+ * Turn-end semantics note: EVERY ended turn parks the run in "waiting"
  * (a text/end_turn response yields to the user).  A long "running" window
  * therefore has to come from WITHIN a single manager turn: consecutive
  * tool_use turns make Strands recurse inside the same orchestrator turn, so

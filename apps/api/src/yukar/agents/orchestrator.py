@@ -288,7 +288,7 @@ class EpicOrchestrator:
         self._stopped: bool = False
 
         # Cooperative turn slot (max_parallel_epics semaphore, injected by the
-        # supervisor via set_turn_slot).  P3 rule: only an EXECUTING turn
+        # supervisor via set_turn_slot).  Slot rule: only an EXECUTING turn
         # holds a slot — the orchestrator acquires it before turn work and
         # releases it while parked in waiting, so long-parked conversations
         # cannot starve other epics' runs.  None → no slot management (tests
@@ -335,6 +335,13 @@ class EpicOrchestrator:
         # HITL: pending messages queued from threads router.
         # Maps thread_id → list of text strings.
         self._pending_messages: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+
+        # Number of non-manager messages _wait_for_user_input has taken off
+        # the queue and is holding in its local ``deferred`` list.  While
+        # non-zero, ``is_parked`` must stay False: those messages exist only
+        # in the wait loop's local state, so a shelve at that instant would
+        # cancel the task and silently drop them.
+        self._deferred_inflight: int = 0
 
         # Lock protecting shared mutable state (tasks_file, completed_ids,
         # state.active_workers, threads.yaml) accessed from parallel worker tasks.
@@ -397,7 +404,7 @@ class EpicOrchestrator:
             event_bus.publish(project_id, epic_id, event)
 
         # Update state.yaml → running.  ``role`` records which conversation
-        # agent this run belongs to (P4) — fresh AND continuation runs both
+        # agent this run belongs to (run attribution) — fresh AND continuation runs both
         # pass through here, so the role survives every later save of this
         # same state object (park / stop / error).
         state = RunState(
@@ -414,7 +421,7 @@ class EpicOrchestrator:
         # Flipped False for a not-stopped CancelledError (shelve / server
         # shutdown): the conversation is not over, so the stream stays open and
         # a continuation run's events arrive on the SAME stream — no forced
-        # EventSource reconnect on every shelve (P5).
+        # EventSource reconnect on every shelve (lifecycle redesign).
         close_sse_stream = True
 
         try:
@@ -599,14 +606,22 @@ class EpicOrchestrator:
         the run is about to wake, and shelving it would cancel the task
         before the message is consumed — silently losing user speech (the
         message exists only in this in-memory queue).  Guards treat this
-        about-to-wake state as executing.
+        about-to-wake state as executing.  The same applies to non-manager
+        messages the wait loop has taken off the queue and holds in its
+        local deferred list (``_deferred_inflight``): they too exist only in
+        this task's memory and must block a shelve.
 
         Invariant (park/wake ordering): whenever this property is True, the
         on-disk state.yaml already says ``waiting`` and no message has been
-        consumed from the queue — so a shelve at any parked moment preserves
-        a consistent, resumable conversation.
+        consumed from the queue (nor is deferred in the wait loop) — so a
+        shelve at any parked moment preserves a consistent, resumable
+        conversation.
         """
-        return self._awaiting_user and self._pending_messages.empty()
+        return (
+            self._awaiting_user
+            and self._pending_messages.empty()
+            and self._deferred_inflight == 0
+        )
 
     async def pause(self) -> None:
         # While parked in waiting the run is already suspended waiting for
@@ -995,7 +1010,7 @@ class EpicOrchestrator:
 
         # --- Manager turn loop ---
         #
-        # Shape (lifecycle redesign P3): turn-0 initialisation → run one turn →
+        # Shape (lifecycle redesign): turn-0 initialisation → run one turn →
         # park in ``waiting`` → block for the next user input → run one turn →
         # park → …  EVERY ended turn parks; the ONLY prompts the host authors
         # are turn-0 initialisation (fresh run) and the explicit-restart resume
@@ -1105,6 +1120,13 @@ class EpicOrchestrator:
                             "(Approve plan) in the UI; a chat reply alone does not "
                             "approve the plan."
                         )
+                # Unsolicited HITL text(s) drained above must not be lost:
+                # append the raw human text(s) to whichever continuation
+                # prompt was built — same rule as the fresh turn-0
+                # hitl_prefix.  Only human text is appended (no boilerplate
+                # is mixed into a human-authored seed).
+                if hitl_texts:
+                    prompt = prompt + "\n\n" + "\n\n".join(hitl_texts)
             else:
                 # Unreachable by construction: every ended turn parks, so any
                 # turn after 0 starts from a user input (user_answer or HITL).
@@ -1172,7 +1194,7 @@ class EpicOrchestrator:
             # turn already parked the run in ``waiting``, so the conversation
             # is intact and resumes as a continuation run on the next user
             # message.  Log for the operator; user notification is the
-            # inbox's job (P4).
+            # your-turn inbox's job.
             if not self._stopped:
                 logger.warning(
                     "Manager turn limit (%d) reached for epic %s; run task ends with "
@@ -1821,6 +1843,7 @@ class EpicOrchestrator:
                 # not permanently lost.
                 for item in deferred:
                     self._pending_messages.put_nowait(item)
+                self._deferred_inflight = 0
                 logger.info("Run %s received stop signal while waiting", run_id)
                 return ""
 
@@ -1830,26 +1853,36 @@ class EpicOrchestrator:
                 # so they are available in subsequent _drain_pending() calls.
                 for item in deferred:
                     self._pending_messages.put_nowait(item)
+                self._deferred_inflight = 0
                 break
 
-            # Non-manager thread message — defer it and keep waiting.
+            # Non-manager thread message — defer it and keep waiting.  While
+            # deferred, the message lives only in this local list: mirror the
+            # count into _deferred_inflight so is_parked stays False and a
+            # shelve cannot cancel this task and drop it.
             logger.debug(
                 "Run %s received message for thread %r while awaiting manager input; deferring",
                 run_id,
                 thread_id,
             )
             deferred.append((thread_id, text))
+            self._deferred_inflight = len(deferred)
 
         # The reply is consumed: leave the parked state IMMEDIATELY (same
         # event-loop step as the get() return — no await in between), so a
         # concurrent shelve can never cancel the task after the message was
         # taken off the queue (that would silently lose user speech).  Only
         # then re-acquire the turn slot and persist running: a cancellation
-        # while waiting for the slot leaves disk = waiting (consistent), and
-        # the queued message was never consumed-and-dropped because the flag
-        # flip happens before any await.
+        # while waiting for the slot leaves disk = waiting (consistent).  The
+        # reply HAS already been consumed at that point, so on cancellation
+        # we put it back on the queue (best-effort) before re-raising rather
+        # than letting it die with the task.
         self._awaiting_user = False
-        await self._acquire_turn_slot()
+        try:
+            await self._acquire_turn_slot()
+        except asyncio.CancelledError:
+            self._pending_messages.put_nowait((thread_id, text))
+            raise
 
         # Restore running status — the user's reply starts the next turn.
         state.status = "running"

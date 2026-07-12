@@ -1,4 +1,4 @@
-"""Tests for the Manager's read-only ``read_branch_diff`` verification tool (P3).
+"""Tests for the Manager's read-only ``read_branch_diff`` verification tool.
 
 The Manager can independently inspect the full branch diff (epic branch vs the
 default branch) before reporting to the user, rather than relying solely on

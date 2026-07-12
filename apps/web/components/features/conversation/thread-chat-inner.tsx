@@ -227,7 +227,7 @@ export function ThreadChatInner({
         )}
 
         {/* Your-turn banner — the run parked on THIS thread (reply to continue).
-            Role-aware wording (P4): the banner only shows on the run's own
+            Role-aware wording: the banner only shows on the run's own
             conversation, so thread.role IS the waiting agent's role. */}
         {!runFailed && isYourTurn && (
           <div
@@ -251,7 +251,7 @@ export function ThreadChatInner({
           </div>
         )}
 
-        {/* Plan approval (P2) — explicit, snapshot-bound. Rendered next to the
+        {/* Plan approval — explicit, snapshot-bound. Rendered next to the
             awaiting banner; only the active trial can approve (composer owner). */}
         {isActiveTrial && projectId && epicId && (
           <PlanApprovalBanner projectId={projectId} epicId={epicId} onSendMessage={onSendMessage} />

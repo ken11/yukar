@@ -5,7 +5,7 @@ Invariants:
   - max_parallel_epics is enforced via a semaphore.
   - pause/resume/stop are forwarded to the underlying runner.
 
-Run slot (lifecycle redesign P3):
+Run slot (lifecycle redesign):
   - The epic's run slot is held only while a turn is actually EXECUTING
     (``is_executing``: running / paused).  A conversation run parked in
     ``waiting`` keeps its asyncio task alive for instant reply injection, but
@@ -384,7 +384,7 @@ class RunSupervisor:
         same lock, so the flip either happens before the re-check (run is
         rejected) or after the run registered (the PATCH sees ``is_executing``
         and 409s).  This closes the millisecond TOCTOU window carried over
-        from the old close endpoint (P2 leftover).
+        from the old close endpoint.
 
         Lock order: callers must NOT hold ``epic_thread_lock`` when entering
         (run-start paths acquire epic_thread_lock → _start_lock; acquiring
@@ -608,7 +608,7 @@ class RunSupervisor:
                 return True
 
             async def _run_with_semaphore() -> None:
-                # P3 slot rule: a conversation runner (EpicOrchestrator) manages
+                # Slot rule: a conversation runner (EpicOrchestrator) manages
                 # the max_parallel_epics permit itself — held only while a turn
                 # is EXECUTING, released while parked in waiting — so parked
                 # conversations cannot starve other epics' runs.  Job runners
@@ -739,7 +739,7 @@ class RunSupervisor:
                     ),
                 )
                 # A user stop closes the SSE stream.  The shelve cancel itself
-                # no longer publishes the sentinel (P5 — a plain shelve keeps
+                # no longer publishes the sentinel (a plain shelve keeps
                 # the stream open for the continuation run), so the stop path
                 # publishes it here, AFTER RunStoppedEvent — live subscribers
                 # see the stop before the stream closes (correct ordering).
@@ -939,7 +939,16 @@ class RunSupervisor:
                     f"The following epics have executing runs and cannot be merged: {busy}"
                 )
             for eid in epic_ids:
-                await self.shelve_waiting(project_id, eid)
+                shelved = await self.shelve_waiting(project_id, eid)
+                if not shelved and self.is_running(project_id, eid):
+                    # The run woke up (a reply arrived) between the busy check
+                    # above and the shelve — it is executing now.  Merging under
+                    # an executing turn would race it, so refuse instead.
+                    raise RuntimeError(
+                        f"The run for epic {eid} woke up (a reply arrived) while "
+                        "the merge was starting — it is executing now. Retry "
+                        "once the turn ends."
+                    )
 
             if self._usage_tracker is not None and self._usage_tracker.is_over_budget():
                 raise RuntimeError("Budget limit reached")
@@ -1161,7 +1170,7 @@ class RunSupervisor:
                 return True
 
             async def _run_with_semaphore() -> None:
-                # Same P3 slot rule as start(): conversation runners manage the
+                # Same slot rule as start(): conversation runners manage the
                 # permit themselves (held only while executing a turn).
                 _set_slot = getattr(runner, "set_turn_slot", None)
                 if callable(_set_slot):

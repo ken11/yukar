@@ -294,7 +294,7 @@ function FeaturedEpicBlock({
 
       {/* status + CTA */}
       <div className="mt-8 flex items-center gap-4">
-        {/* your turn (P4): the conversation run parked in "waiting" — from
+        {/* your turn: the conversation run parked in "waiting" — from
             run_summary embedded in the epic list (static RSC render) */}
         {hasYourTurn(epic) && (
           <span data-testid={`your-turn-${epic.id}`} className="contents">
@@ -428,7 +428,7 @@ function EpicStructureRow({
         {epic.title}
       </span>
 
-      {/* your turn (P4) + StatusBadge */}
+      {/* your turn + StatusBadge */}
       {hasYourTurn(epic) && (
         <span data-testid={`your-turn-${epic.id}`} className="contents">
           <StatusBadge status="awaiting" />

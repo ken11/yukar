@@ -473,15 +473,15 @@ describe("Evaluator lifecycle", () => {
 });
 
 // ============================================================
-// 4b. P6 agent composition — nodes appear only for started agents
+// 4b. Agent composition — nodes appear only for started agents
 // ============================================================
 //
-// P6 (task-composition freedom) lets a dispatch item run worker-only or
+// Task-composition freedom lets a dispatch item run worker-only or
 // evaluator-only. The tree must reflect exactly the agents that actually
 // started: nodes are created solely by worker_started / evaluator_started
 // events, so an agent that never starts never appears.
 
-describe("P6 agent composition (worker-only / evaluator-only dispatch)", () => {
+describe("agent composition (worker-only / evaluator-only dispatch)", () => {
   it('worker-only dispatch (agents=["worker"]): no evaluator_started → no Evaluator node', () => {
     const startEv: WorkerStartedEvent = {
       ...BASE_EVENT,
@@ -559,9 +559,7 @@ describe("P6 agent composition (worker-only / evaluator-only dispatch)", () => {
     // Live node survives an INIT that re-reads the thread list.
     state = runActivityReducer(state, {
       type: "INIT",
-      threads: [
-        { id: "trial-1", title: "Trial 1", role: "manager", status: "active" },
-      ] as never,
+      threads: [{ id: "trial-1", title: "Trial 1", role: "manager", status: "active" }] as never,
     });
     expect(state.treeState.evaluators["eval-1"]).toBeDefined();
 
@@ -1680,14 +1678,17 @@ describe("YOUR_TURN — the run parks in waiting (your turn)", () => {
     expect(state.yourTurn).toEqual({ threadId: "manager" });
   });
 
-  it("RUN_STOPPED clears the parked marker and stays waiting", () => {
+  it("RUN_STOPPED keeps the parked marker (stopped run is still your turn)", () => {
+    // Regression: RUN_STOPPED used to clear yourTurn, but the REST restore
+    // path (waiting + run_id) re-synthesizes the marker on reload — the live
+    // view and a reload must agree. Thread attribution is preserved too.
     const state = applyActions([
       { type: "RUN_STARTED" },
       { type: "YOUR_TURN", threadId: "manager" },
       { type: "RUN_STOPPED" },
     ]);
     expect(state.runStatus).toBe("waiting");
-    expect(state.yourTurn).toBeNull();
+    expect(state.yourTurn).toEqual({ threadId: "manager" });
   });
 
   it("RESET returns the parked marker to null", () => {
@@ -1764,6 +1765,45 @@ describe("applyRunCachePatch — your_turn: runState becomes waiting", () => {
     };
     applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
     expect(getRunStateCache()).toBeUndefined();
+  });
+
+  it("your_turn on a DIFFERENT thread resets the stale role to the default", () => {
+    // A park on another thread is another run — the previous run's role must
+    // not stick to it (a stale "reviewer" would mislabel a manager park until
+    // the REST refresh lands).
+    seedRunState(
+      makeRunState({
+        status: "waiting",
+        run_id: "run-rev",
+        thread_id: "rev-1",
+        role: "reviewer",
+      }),
+    );
+
+    const event: YourTurnEvent = {
+      ...BASE_EVENT,
+      type: "your_turn",
+      run_id: "run-2",
+      thread_id: "trial-1",
+    };
+    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
+
+    const cached = getRunStateCache();
+    expect(cached?.thread_id).toBe("trial-1");
+    expect(cached?.role).toBe("manager");
+  });
+
+  it("your_turn on the SAME thread keeps the known role", () => {
+    seedRunState(makeRunState({ status: "running", thread_id: "rev-1", role: "reviewer" }));
+
+    const event: YourTurnEvent = {
+      ...BASE_EVENT,
+      type: "your_turn",
+      thread_id: "rev-1",
+    };
+    applyRunCachePatch(qc, PROJECT_ID, EPIC_ID, event);
+
+    expect(getRunStateCache()?.role).toBe("reviewer");
   });
 
   it("your_turn_ended returns a waiting cache to running", () => {
@@ -2101,12 +2141,15 @@ describe("YOUR_TURN_ENDED — does not overwrite terminal/stopped state with run
     expect(state.yourTurn).toBeNull();
   });
 
-  it("YOUR_TURN_ENDED arriving after stopped stays waiting (marker already cleared)", () => {
-    // RUN_STOPPED settles into waiting WITHOUT the parked marker; a delayed
-    // resolved replay must not fake "running" out of that resting state.
+  it("a replayed YOUR_TURN_ENDED after a marker-less stop stays waiting", () => {
+    // In stream order the wake (your_turn_ended) precedes the stop, so at
+    // RUN_STOPPED the marker is already null — and stays null (RUN_STOPPED
+    // preserves it as-is). A duplicate resolved replay against that resting
+    // state must not fake "running" (the guard needs waiting AND a marker).
     const state = applyActions([
       { type: "RUN_STARTED" },
       { type: "YOUR_TURN", threadId: "manager" },
+      { type: "YOUR_TURN_ENDED", threadId: "manager" },
       { type: "RUN_STOPPED" },
       { type: "YOUR_TURN_ENDED", threadId: "manager" },
     ]);
@@ -2497,7 +2540,7 @@ describe("useRunActivity — SSE: user_message_committed is immediately reflecte
 // 33. Reload scenario integration test — your-turn (waiting) restore
 // ============================================================
 //
-// P3 semantics:
+// Turn-end semantics:
 //   - A parked run persists status="waiting" with a real run_id. On reload the
 //     REST RunState alone restores the parked marker (yourTurn) — the
 //     question needs no restore path because it is the agent's final message
@@ -2711,7 +2754,7 @@ describe("M1: Multi-trial — manager node threadId is unified to the real id", 
 });
 
 // ============================================================
-// 35. activeTrialId resolution (P4 split) — epic.active_thread_id is the sole authority;
+// 35. activeTrialId resolution (attribution split) — epic.active_thread_id is the sole authority;
 //     RunState.thread_id never feeds the trial (it is the run's own thread → currentRun)
 //
 // Regression verification for the fix:
@@ -2752,7 +2795,7 @@ describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id
     expect(result.current.state.activeTrialId).toBe("th-new-active");
   });
 
-  it("when activeThreadId is not specified, thread_id feeds currentRun — NOT activeTrialId (P4 split)", async () => {
+  it("when activeThreadId is not specified, thread_id feeds currentRun — NOT activeTrialId (attribution split)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -2776,7 +2819,7 @@ describe("35: activeTrialId resolution — activeThreadId (epic.active_thread_id
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
-    // P4: RunState.thread_id is the RUN's own thread. It is captured as
+    // RunState.thread_id is the RUN's own thread. It is captured as
     // currentRun (banner attribution) and never becomes the active trial
     // (during a reviewer run it would point at the reviewer thread).
     expect(result.current.state.activeTrialId).toBeNull();
@@ -3014,7 +3057,7 @@ describe("RUN_PREPARING — preparing phase before Manager starts", () => {
 });
 
 // ============================================================
-// 15. Agent-state tree is scoped to the active trial (P2)
+// 15. Agent-state tree is scoped to the active trial
 //     Archived / inactive trials' workers + evaluators must not linger.
 // ============================================================
 
@@ -3118,6 +3161,33 @@ describe("Agent-state tree scoping to active trial", () => {
     expect(Object.keys(after.treeState.workers)).toHaveLength(0);
   });
 
+  it("binds a live direct evaluator to the active trial and prunes it on trial switch", () => {
+    // Evaluator-only dispatch: live events carry worker_id "". A bare ""
+    // survives scoping under ANY trial, so the node used to linger after a
+    // trial switch — EVALUATOR_STARTED now binds it to the active trial.
+    const startEv: EvaluatorStartedEvent = {
+      ...BASE_EVENT,
+      type: "evaluator_started",
+      eval_id: "eval-A",
+      worker_id: "",
+      task_id: "T1",
+      repo: "r",
+    };
+    let state = applyActions([
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: "mgr-A" },
+      { type: "EVALUATOR_STARTED", event: startEv },
+    ]);
+    expect(state.treeState.evaluators["eval-A"].workerId).toBe("mgr-A");
+
+    // Re-confirming the SAME trial keeps the node (it belongs here).
+    state = runActivityReducer(state, { type: "SET_ACTIVE_TRIAL_ID", threadId: "mgr-A" });
+    expect(state.treeState.evaluators["eval-A"]).toBeDefined();
+
+    // Switching to trial B prunes it — no lingering direct evaluator.
+    state = runActivityReducer(state, { type: "SET_ACTIVE_TRIAL_ID", threadId: "mgr-B" });
+    expect(state.treeState.evaluators["eval-A"]).toBeUndefined();
+  });
+
   it("clears the tree on SET_ACTIVE_TRIAL_ID(null) with no following INIT", () => {
     // Trial A is active with a live worker, then it is archived mid-session:
     // active_thread_id → null arrives via SET_ACTIVE_TRIAL_ID(null) with no
@@ -3144,10 +3214,10 @@ describe("Agent-state tree scoping to active trial", () => {
 });
 
 // ============================================================
-// P4: attribution split — activeTrialId (composer) vs currentRun (your-turn banner)
+// Attribution split — activeTrialId (composer) vs currentRun (your-turn banner)
 // ============================================================
 
-describe("P4: reviewer run attribution — marker on the reviewer thread, composer on the trial", () => {
+describe("reviewer run attribution — marker on the reviewer thread, composer on the trial", () => {
   it("REST restore of a parked reviewer run: marker + currentRun on the reviewer thread, activeTrialId on the trial", () => {
     const initialRunState: RunState = makeRunState({
       status: "waiting",
@@ -3240,5 +3310,115 @@ describe("P4: reviewer run attribution — marker on the reviewer thread, compos
     expect(result.current.state.currentRun).toEqual({ threadId: "rev-1", role: "reviewer" });
     // The composer never migrates to the reviewer thread.
     expect(result.current.state.activeTrialId).toBe("trial-1");
+  });
+});
+
+// ============================================================
+// Mount-time getRunState vs live SSE — the stream is authoritative
+// ============================================================
+//
+// The mount effect fetches RunState once to fill in state before the SSE
+// stream catches up. If that response is slow, the stream may already have
+// advanced the run (run_started / run_paused) — the late response must not
+// roll the reducer or the runState cache back to its stale snapshot.
+
+describe("mount-time getRunState — a delayed response does not roll back live SSE state", () => {
+  it("keeps 'running' when the delayed fetch resolves with a stale waiting snapshot", async () => {
+    seedRunState(makeRunState({ status: "waiting", run_id: "run-0" }));
+    let resolveFetch!: (v: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockReturnValue(
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+      ),
+    );
+
+    const { result } = renderHook(
+      () => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }),
+      { wrapper },
+    );
+
+    // SSE advances the run while the mount fetch is still in flight.
+    const es = MockEventSource.instances[0];
+    act(() => {
+      es.emit(
+        "run_started",
+        JSON.stringify({
+          type: "run_started",
+          project_id: PROJECT_ID,
+          epic_id: EPIC_ID,
+          run_id: "run-1",
+        }),
+      );
+    });
+    expect(result.current.state.runStatus).toBe("running");
+
+    // The stale snapshot (parked waiting from before the run) lands late.
+    await act(async () => {
+      resolveFetch({
+        ok: true,
+        json: () => Promise.resolve(makeRunState({ status: "waiting", run_id: "run-0" })),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    // Reducer AND cache both stay on the live state — no phantom your-turn.
+    expect(result.current.state.runStatus).toBe("running");
+    expect(result.current.state.yourTurn).toBeNull();
+    expect(getRunStateCache()?.status).toBe("running");
+  });
+
+  it("keeps 'paused' when the delayed fetch resolves with a stale snapshot", async () => {
+    seedRunState(makeRunState({ status: "waiting", run_id: "run-0" }));
+    let resolveFetch!: (v: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockReturnValue(
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+      ),
+    );
+
+    const { result } = renderHook(
+      () => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }),
+      { wrapper },
+    );
+
+    const es = MockEventSource.instances[0];
+    act(() => {
+      es.emit(
+        "run_started",
+        JSON.stringify({
+          type: "run_started",
+          project_id: PROJECT_ID,
+          epic_id: EPIC_ID,
+          run_id: "run-1",
+        }),
+      );
+      es.emit(
+        "run_paused",
+        JSON.stringify({
+          type: "run_paused",
+          project_id: PROJECT_ID,
+          epic_id: EPIC_ID,
+          run_id: "run-1",
+        }),
+      );
+    });
+    expect(result.current.state.runStatus).toBe("paused");
+
+    await act(async () => {
+      resolveFetch({
+        ok: true,
+        json: () => Promise.resolve(makeRunState({ status: "completed", run_id: "run-0" })),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    expect(result.current.state.runStatus).toBe("paused");
+    expect(getRunStateCache()?.status).toBe("paused");
   });
 });

@@ -3,7 +3,7 @@
  *
  * Scenario:
  *   - Create 2 Epics in 1 project and run each until its work is done with a
- *     Fake run (the run parks in "waiting" with all tasks done — P3).
+ *     Fake run (the run parks in "waiting" with all tasks done).
  *   - Each Epic's Worker writes to a separate file (epic1.py / epic2.py) to
  *     ensure no merge conflict can occur.
  *     (Same file would also be conflict-free because worktrees are separate,

@@ -260,7 +260,7 @@ export function ThreadTreePanel({ treeState, projectId, epicId, className }: Thr
   const { manager, workers, evaluators } = treeState;
 
   // Map workerId → evaluator[].  Evaluators whose worker id does not resolve
-  // to a live worker node are DIRECT evaluators (P6 evaluator-only dispatch:
+  // to a live worker node are DIRECT evaluators (evaluator-only dispatch:
   // no worker ran — live events carry worker_id "", the REST ThreadEntry is
   // parented to the manager trial) and render as the manager's direct
   // children, siblings of the workers.

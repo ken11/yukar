@@ -1,5 +1,5 @@
 """End-to-end: a run parked in ``waiting`` survives a server restart and
-resumes when the user replies (lifecycle redesign P3).
+resumes when the user replies (lifecycle redesign).
 
 This is the empirical proof for the recovery.py contract (a waiting run is
 preserved as-is) + the continuation-resume path.  It drives a real
@@ -164,7 +164,7 @@ async def test_waiting_survives_restart_and_resumes_on_reply(tmp_path: Path) -> 
         ),
     )
 
-    # A shutdown cancel does NOT publish the SSE sentinel (P5: the
+    # A shutdown cancel does NOT publish the SSE sentinel (the
     # conversation is not over), so the first collector is still alive —
     # close it explicitly and use a fresh one for the continuation run so
     # the two phases' assertions stay separate.
@@ -221,7 +221,7 @@ async def test_waiting_survives_restart_and_resumes_on_reply(tmp_path: Path) -> 
     t1 = next(t for t in tf.tasks if t.id == "T1")
     assert t1.status == "done", f"continuation should finish T1, got {t1.status!r}"
 
-    # A conversation run never emits run_completed (P3).  Filter by run_id:
+    # A conversation run never emits run_completed.  Filter by run_id:
     # any RunCompletedEvent here would be a regression.
     assert not any(
         isinstance(e, RunCompletedEvent) and e.run_id == "run-2" for e in events2

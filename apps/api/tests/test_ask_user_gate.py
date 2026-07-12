@@ -1,6 +1,6 @@
 """Tests for the Manager planning + approval gate (waiting / park HITL).
 
-Lifecycle redesign P3: there is no ask_user tool.  The Manager presents its
+Lifecycle redesign: there is no ask_user tool.  The Manager presents its
 plan (or question) in the message body and ends its turn — the run parks in
 ``waiting`` (the user's turn).  Approval is an explicit user operation
 recorded in plan_approval.yaml; a chat reply never opens the dispatch gate.
@@ -629,7 +629,7 @@ class TestPlanGateE2E:
 
         # A conversation run never emits run_completed.
         assert "run_completed" not in event_types, (
-            "Conversation runs must not emit run_completed (P3 principle 2)"
+            "Conversation runs must not emit run_completed (lifecycle principle 2)"
         )
 
         # Workers should have run after approval.
@@ -796,7 +796,7 @@ class TestPlanGateE2E:
                 await run_task
 
         # A not-stopped cancel (shelve / shutdown) does not publish the SSE
-        # sentinel (P5 — the conversation is not over), so close the
+        # sentinel (the conversation is not over), so close the
         # collector explicitly instead of waiting for stream end.
         collector.cancel()
         await asyncio.gather(collector, return_exceptions=True)
@@ -866,7 +866,7 @@ class TestWaitingRecovery:
         """Old state.yaml files (awaiting_input + pending_question) load as waiting.
 
         The BeforeValidator coerces legacy statuses and pydantic ignores the
-        removed pending_question key, so pre-P3 workspaces stay loadable.
+        removed pending_question key, so pre-redesign workspaces stay loadable.
         """
         from yukar.config import paths
         from yukar.models.epic import Epic
@@ -883,7 +883,7 @@ class TestWaitingRecovery:
         await save_project(root, Project(id=project_id, name=project_id))
         await save_epic(root, project_id, Epic(id=epic_id, slug="ep-l", title="Ep L"))
 
-        # Write a pre-P3 state.yaml verbatim (no model round-trip).
+        # Write a pre-redesign state.yaml verbatim (no model round-trip).
         yaml_path = paths.state_yaml(root, project_id, epic_id)
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
         yaml_path.write_text(

@@ -273,7 +273,7 @@ export function buildYukarAdapter(
 
   // Do not concatenate stream bubbles after turn completion (done=true).
   // Explicitly guarding done=true here ensures structural prevention of double rendering.
-  // P3: no synthetic "__awaiting__" bubble any more — the agent's question is
+  // No synthetic "__awaiting__" bubble any more — the agent's question is
   // its final (persisted) assistant message and renders like any other.
   let allMessages: readonly ThreadMessageLike[];
   if (streamState.done) {

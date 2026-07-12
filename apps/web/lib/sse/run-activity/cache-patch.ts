@@ -210,7 +210,7 @@ export function applyRunCachePatch(
       // cache is otherwise "mount-time snapshot + status patches", so
       // run_id / thread_id freeze at mount and a later re-dispatch from
       // this cache (dispatchForRunStatus on epic/trial change) would attribute
-      // the parked marker to a long-gone run — reviving the pre-P4
+      // the parked marker to a long-gone run — reviving the old reviewer
       // misattribution. role is unknown here; the coalesced parked-thread
       // sync (use-run-activity) refreshes it from REST, and the parked
       // thread's messages are merged there as well (no invalidation — see
@@ -222,6 +222,11 @@ export function applyRunCachePatch(
               status: "waiting",
               run_id: event.run_id ?? prev.run_id,
               thread_id: event.thread_id || prev.thread_id,
+              // A DIFFERENT thread means a different run parked — the previous
+              // run's role must not stick to it (e.g. a stale "reviewer" on a
+              // manager park). Reset to the default; the coalesced REST
+              // refresh right after this event overwrites it with the truth.
+              role: event.thread_id && event.thread_id !== prev.thread_id ? "manager" : prev.role,
             }
           : prev,
       );

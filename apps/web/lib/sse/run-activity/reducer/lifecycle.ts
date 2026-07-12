@@ -82,6 +82,10 @@ export function handleLifecycle(
     // User-initiated stop. The run settles back into "waiting" (your turn) —
     // the conversation is intact and re-runnable. Not a completion/failure,
     // but finalize the tree's streaming/thinking display to stop it.
+    // The parked marker (yourTurn) is KEPT: after a stop the conversation is
+    // still the user's turn, and the REST restore path (waiting + run_id)
+    // re-synthesizes the marker anyway — clearing it here would make the live
+    // view disagree with a reload. Thread attribution is preserved as-is.
     case "RUN_STOPPED": {
       const tree = state.treeState;
       const { manager, workers } = finalizeTree(tree);
@@ -90,7 +94,6 @@ export function handleLifecycle(
         runStatus: "waiting",
         pausePending: false,
         runError: null,
-        yourTurn: null,
         treeState: { ...tree, manager, workers },
       };
     }
