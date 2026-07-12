@@ -1,7 +1,8 @@
 """Dispatch layer — Worker+Evaluator scheduling for the Epic orchestrator.
 
 ``run_dispatch`` is the host-side implementation of the Manager's ``dispatch``
-effector tool.  One Worker+Evaluator cycle is delegated to
+effector tool.  One attempt (worker+evaluator by default; worker-only or
+evaluator-only via the item's ``agents`` argument) is delegated to
 ``dispatch_attempt.run_one_attempt``.  ``ensure_worktree_for_repo`` lives in
 ``dispatch_attempt`` and is re-exported here for backwards compatibility.
 
@@ -105,6 +106,48 @@ class DispatchContext:
 
 
 # ---------------------------------------------------------------------------
+# Agents-argument helper
+# ---------------------------------------------------------------------------
+
+# Valid entries for a dispatch item's ``agents`` argument.
+_ALLOWED_AGENTS = ("worker", "evaluator")
+
+
+def _parse_agents(item: dict[str, Any]) -> tuple[bool, bool] | str:
+    """Parse and validate a dispatch item's ``agents`` argument.
+
+    Returns ``(include_worker, include_evaluator)`` on success, or an error
+    message string when the value is invalid (the caller rejects the item).
+
+    Allowed values: ``["worker", "evaluator"]`` (the default when omitted),
+    ``["worker"]`` and ``["evaluator"]``.  Anything else — an empty list, a
+    non-list, or unknown entries — is rejected.  The order of entries is
+    irrelevant: execution order is always worker → evaluator.
+    """
+    raw = item.get("agents")
+    if raw is None:
+        return (True, True)
+    if not isinstance(raw, list) or not all(isinstance(a, str) for a in raw):
+        return (
+            f'invalid "agents" value {raw!r}: expected a list of strings — '
+            '["worker", "evaluator"] (default), ["worker"], or ["evaluator"]'
+        )
+    if not raw:
+        return (
+            'invalid "agents" value []: the list must not be empty — use '
+            '["worker", "evaluator"] (default), ["worker"], or ["evaluator"]'
+        )
+    unknown = [a for a in raw if a not in _ALLOWED_AGENTS]
+    if unknown:
+        return (
+            f'invalid "agents" value {raw!r}: unknown entries {unknown!r} — '
+            'the only allowed entries are "worker" and "evaluator"'
+        )
+    chosen = set(raw)
+    return ("worker" in chosen, "evaluator" in chosen)
+
+
+# ---------------------------------------------------------------------------
 # Verdict helper
 # ---------------------------------------------------------------------------
 
@@ -190,7 +233,10 @@ async def _handle_dispatch_item(
     completed_ids: set[str],
     results: list[dict[str, Any]],
 ) -> None:
-    """Validate and execute a single dispatch item (one Worker+Evaluator cycle).
+    """Validate and execute a single dispatch item (one attempt).
+
+    The item's ``agents`` argument selects the composition (worker+evaluator
+    by default, worker-only, or evaluator-only — always worker → evaluator).
 
     Mutates ``results[idx]`` in place with the item verdict.
     ``completed_ids`` is mutated when a task is accepted so that sibling
@@ -199,6 +245,18 @@ async def _handle_dispatch_item(
     task_id: str = item.get("task_id", "")
     feedback: str = item.get("feedback", "")
     repo_override: str | None = item.get("repo")
+
+    # Validate: agents composition (empty / unknown values reject the item).
+    parsed_agents = _parse_agents(item)
+    if isinstance(parsed_agents, str):
+        results[idx] = _verdict(
+            task_id,
+            accepted=False,
+            status="rejected",
+            reason=parsed_agents,
+        )
+        return
+    include_worker, include_evaluator = parsed_agents
 
     # Stop check — use is_stopped() (live callable) so that a stop() issued
     # after DispatchContext was constructed is detected here too.
@@ -259,6 +317,30 @@ async def _handle_dispatch_item(
         )
         return
 
+    # Evaluator-only pre-check: there must BE something to evaluate.  The
+    # worktree is created lazily by worker-bearing attempts; if it does not
+    # exist yet, an evaluator-only item has no evaluation subject — reject
+    # instead of creating an empty worktree.  Checked before the attempt
+    # counter so a rejected item consumes no attempt.
+    if not include_worker:
+        from yukar.config import paths as p
+
+        worktree_probe = p.worktree_dir(
+            ctx_d.root, ctx_d.project_id, ctx_d.epic_id, ctx_d.manager_trial_id, repo_name
+        )
+        if not worktree_probe.exists():
+            results[idx] = _verdict(
+                task_id,
+                accepted=False,
+                status="rejected",
+                reason=(
+                    f'agents=["evaluator"] rejected: no worktree exists yet for repo '
+                    f"{repo_name!r}, so there is nothing to evaluate. Run a worker "
+                    "attempt first (it creates the worktree and produces the changes)."
+                ),
+            )
+            return
+
     # Host safety: attempt counter upper bound.
     # Read-check-increment under state_lock to prevent double-dispatch
     # races when the same task_id appears in parallel coroutines.
@@ -304,7 +386,8 @@ async def _handle_dispatch_item(
     # run does not hold the semaphore/repo-lock indefinitely.
     await ctx_d.hooks.checkpoint()
 
-    # Run one Worker+Evaluator attempt inside the scheduler slot.
+    # Run one attempt (worker → evaluator, per the item's agents composition)
+    # inside the scheduler slot.
     async with ctx_d.scheduler.slot(repo_name):
         if ctx_d.is_stopped():
             async with ctx_d.state_lock:
@@ -340,6 +423,8 @@ async def _handle_dispatch_item(
             repo_name=repo_name,
             worktree_path=worktree_path,
             feedback=feedback,
+            include_worker=include_worker,
+            include_evaluator=include_evaluator,
         )
 
     # attempt_result: (accepted, worker_id, eval_id, feedback_out, files_changed, worker_finalized)
@@ -415,8 +500,9 @@ async def run_dispatch(
 ) -> list[dict[str, Any]]:
     """Host-side implementation of the dispatch effector tool.
 
-    Validates each item, enforces attempt limits, runs Worker+Evaluator
-    via scheduler.slot, and returns per-item verdicts.
+    Validates each item (including its ``agents`` composition), enforces
+    attempt limits, runs the attempt via scheduler.slot, and returns
+    per-item verdicts.
     """
     tf = ctx_d.tasks_holder[0]
     completed_ids = {t.id for t in tf.tasks if t.status == "done"}

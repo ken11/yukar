@@ -1212,11 +1212,35 @@ class EpicOrchestrator:
         async def dispatch(
             items: list[dict[str, Any]],
         ) -> list[dict[str, Any]]:
-            """Execute Worker+Evaluator for one or more tasks in parallel.
+            """Execute agents for one or more tasks in parallel.
 
             Each item must have at least a ``task_id``.  Optional fields:
             - ``repo``: override the task's repo (falls back to task.repo then first project repo).
             - ``feedback``: previous Evaluator feedback to pass to the Worker.
+            - ``agents``: which agents to run for this item.  Allowed values
+              (execution order is always worker → evaluator; anything else is
+              rejected):
+              - ``["worker", "evaluator"]`` (default when omitted): the full
+                cycle — the host commits ONLY when the Evaluator accepts.
+                Use this for every change that must remain in the code.
+              - ``["worker"]``: work without evaluation — no Evaluator, no
+                commit.  Use for research / verification / analysis tasks whose
+                deliverable is the report text itself: the Worker's final
+                report is returned as the item's ``feedback`` and the task is
+                marked done.  Files written in a worker-only attempt are NOT
+                committed and are wiped by the reset at the start of the next
+                worker-bearing attempt.
+              - ``["evaluator"]``: evaluate the CURRENT worktree contents
+                against the task's contract without running a Worker; on
+                acceptance the host commits them (the way to confirm changes
+                accumulated by earlier worker-only attempts).  Rejected when
+                no worktree exists yet.  Do NOT mix an evaluator-only item
+                with worker items for the same repo in the same dispatch
+                call — items run concurrently, so what the evaluator would
+                see is undefined; dispatch it in a LATER call instead.
+                Note the evaluator judges the WHOLE uncommitted diff: stray
+                leftovers from earlier attempts will be part of the commit,
+                so make the contract cover exactly what should land.
 
             Items assigned to *different* repos run in parallel; items assigned
             to the *same* repo are serialised by the host scheduler.

@@ -34,6 +34,8 @@ export default defineConfig({
     "**/pause-resume-stop.spec.ts",
     "**/hitl-reply.spec.ts",
     "**/evaluator-reject.spec.ts",
+    "**/worker-only.spec.ts",
+    "**/evaluator-only.spec.ts",
     "**/arbiter-merge.spec.ts",
     "**/conflict-resolve.spec.ts",
     "**/docs.spec.ts",

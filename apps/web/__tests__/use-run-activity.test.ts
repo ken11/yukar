@@ -473,6 +473,123 @@ describe("Evaluator lifecycle", () => {
 });
 
 // ============================================================
+// 4b. P6 agent composition — nodes appear only for started agents
+// ============================================================
+//
+// P6 (task-composition freedom) lets a dispatch item run worker-only or
+// evaluator-only. The tree must reflect exactly the agents that actually
+// started: nodes are created solely by worker_started / evaluator_started
+// events, so an agent that never starts never appears.
+
+describe("P6 agent composition (worker-only / evaluator-only dispatch)", () => {
+  it('worker-only dispatch (agents=["worker"]): no evaluator_started → no Evaluator node', () => {
+    const startEv: WorkerStartedEvent = {
+      ...BASE_EVENT,
+      type: "worker_started",
+      worker_id: "w1",
+      task_id: "T1",
+      repo: "r",
+    };
+    const completedEv: WorkerCompletedEvent = {
+      ...BASE_EVENT,
+      type: "worker_completed",
+      worker_id: "w1",
+      task_id: "T1",
+      repo: "r",
+    };
+    const state = applyActions([
+      { type: "WORKER_STARTED", event: startEv },
+      { type: "WORKER_COMPLETED", event: completedEv },
+    ]);
+    expect(state.treeState.workers.w1).toBeDefined();
+    expect(state.treeState.workers.w1.status).toBe("completed");
+    // No evaluator ran for this attempt → no Evaluator node in the tree.
+    expect(state.treeState.evaluators).toEqual({});
+  });
+
+  it('evaluator-only dispatch (agents=["evaluator"]): no worker_started → no Worker node', () => {
+    // Backend publishes evaluator_started with worker_id="" when no Worker ran.
+    const startEv: EvaluatorStartedEvent = {
+      ...BASE_EVENT,
+      type: "evaluator_started",
+      eval_id: "eval-1",
+      worker_id: "",
+      task_id: "T1",
+      repo: "r",
+    };
+    const resultEv: EvalResultEvent = {
+      ...BASE_EVENT,
+      type: "eval_result",
+      eval_id: "eval-1",
+      worker_id: "",
+      accepted: true,
+      feedback: "LGTM",
+    };
+    let state = applyActions([{ type: "EVALUATOR_STARTED", event: startEv }]);
+    // No worker ran for this attempt → no Worker node in the tree.
+    expect(state.treeState.workers).toEqual({});
+    expect(state.treeState.taskToWorker).toEqual({});
+    expect(state.treeState.evaluators["eval-1"]).toBeDefined();
+    expect(state.treeState.evaluators["eval-1"].status).toBe("evaluating");
+    expect(state.treeState.evaluators["eval-1"].workerId).toBe("");
+
+    state = runActivityReducer(state, { type: "EVAL_RESULT", event: resultEv });
+    expect(state.treeState.evaluators["eval-1"].status).toBe("accepted");
+    expect(state.treeState.workers).toEqual({});
+  });
+
+  it("direct evaluator survives INIT reconciliation (live worker_id='' AND REST parent=manager)", () => {
+    // eval_result triggers a threads.list refetch → INIT. The scoping rule
+    // "keep an evaluator only if its parent worker survived" would silently
+    // cull a direct (evaluator-only) node both live (workerId "") and after
+    // a reload (REST parent_thread_id = the manager trial, not a worker).
+    const startEv: EvaluatorStartedEvent = {
+      ...BASE_EVENT,
+      type: "evaluator_started",
+      eval_id: "eval-1",
+      worker_id: "",
+      task_id: "T1",
+      repo: "r",
+    };
+    let state = applyActions([
+      { type: "SET_ACTIVE_TRIAL_ID", threadId: "trial-1" },
+      { type: "EVALUATOR_STARTED", event: startEv },
+    ]);
+
+    // Live node survives an INIT that re-reads the thread list.
+    state = runActivityReducer(state, {
+      type: "INIT",
+      threads: [
+        { id: "trial-1", title: "Trial 1", role: "manager", status: "active" },
+      ] as never,
+    });
+    expect(state.treeState.evaluators["eval-1"]).toBeDefined();
+
+    // Reload path: the node is rebuilt from the REST ThreadEntry, whose
+    // parent_thread_id is the manager trial (no worker exists) — it must be
+    // kept as a direct evaluator, not culled for lacking a parent worker.
+    let fresh = applyActions([{ type: "SET_ACTIVE_TRIAL_ID", threadId: "trial-1" }]);
+    fresh = runActivityReducer(fresh, {
+      type: "INIT",
+      threads: [
+        { id: "trial-1", title: "Trial 1", role: "manager", status: "active" },
+        {
+          id: "eval-9",
+          title: "Evaluate T1",
+          role: "evaluator",
+          status: "resolved",
+          task: "T1",
+          repo: "r",
+          parent_thread_id: "trial-1",
+        },
+      ] as never,
+    });
+    expect(fresh.treeState.evaluators["eval-9"]).toBeDefined();
+    expect(fresh.treeState.evaluators["eval-9"].status).toBe("accepted");
+  });
+});
+
+// ============================================================
 // 5. pause / resume state transitions
 // ============================================================
 

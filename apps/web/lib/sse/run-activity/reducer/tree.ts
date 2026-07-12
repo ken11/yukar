@@ -41,7 +41,10 @@ import type {
  *   - Otherwise a worker is kept iff its `parentManagerId` matches the active
  *     trial, or is `null` (just added live under the active trial, parent not
  *     yet resolved — kept optimistically).
- *   - An evaluator is kept iff its parent worker survived.
+ *   - An evaluator is kept iff its parent worker survived, OR it is a DIRECT
+ *     evaluator (P6 evaluator-only dispatch: no worker ran, so its live
+ *     events carry worker_id "" and its ThreadEntry is parented to the
+ *     manager trial itself).
  */
 export function scopeTreeToManager(
   tree: ThreadTreeState,
@@ -56,7 +59,9 @@ export function scopeTreeToManager(
   }
   const evaluators: Record<string, EvaluatorNodeState> = {};
   for (const [id, e] of Object.entries(tree.evaluators)) {
-    if (workers[e.workerId]) evaluators[id] = e;
+    if (activeManagerId === null) continue; // no active trial → drop all
+    const isDirect = e.workerId === "" || e.workerId === activeManagerId;
+    if (isDirect || workers[e.workerId]) evaluators[id] = e;
   }
   const taskToWorker: Record<string, string> = {};
   for (const [task, wid] of Object.entries(tree.taskToWorker)) {

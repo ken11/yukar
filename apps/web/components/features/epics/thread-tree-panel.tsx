@@ -259,15 +259,24 @@ export function ThreadTreePanel({ treeState, projectId, epicId, className }: Thr
   const t = useT();
   const { manager, workers, evaluators } = treeState;
 
-  // Map workerId → evaluator[]
+  // Map workerId → evaluator[].  Evaluators whose worker id does not resolve
+  // to a live worker node are DIRECT evaluators (P6 evaluator-only dispatch:
+  // no worker ran — live events carry worker_id "", the REST ThreadEntry is
+  // parented to the manager trial) and render as the manager's direct
+  // children, siblings of the workers.
   const evalsByWorker: Record<string, EvaluatorNodeState[]> = {};
+  const directEvals: EvaluatorNodeState[] = [];
   for (const ev of Object.values(evaluators)) {
-    if (!evalsByWorker[ev.workerId]) evalsByWorker[ev.workerId] = [];
-    evalsByWorker[ev.workerId].push(ev);
+    if (ev.workerId && workers[ev.workerId]) {
+      if (!evalsByWorker[ev.workerId]) evalsByWorker[ev.workerId] = [];
+      evalsByWorker[ev.workerId].push(ev);
+    } else {
+      directEvals.push(ev);
+    }
   }
 
   const workerList = Object.values(workers);
-  const hasContent = manager || workerList.length > 0;
+  const hasContent = manager || workerList.length > 0 || directEvals.length > 0;
 
   if (!hasContent) return null;
 
@@ -281,8 +290,8 @@ export function ThreadTreePanel({ treeState, projectId, epicId, className }: Thr
         {/* Manager root */}
         {manager && <ManagerNode node={manager} projectId={projectId} epicId={epicId} />}
 
-        {/* Workers (per task) */}
-        {workerList.length > 0 && (
+        {/* Workers (per task) + direct evaluators (evaluator-only dispatch) */}
+        {(workerList.length > 0 || directEvals.length > 0) && (
           <div
             className="ml-4 space-y-0.5 pl-3"
             style={{ borderLeft: "1px solid var(--color-outline-variant)" }}
@@ -293,6 +302,9 @@ export function ThreadTreePanel({ treeState, projectId, epicId, className }: Thr
                   <EvaluatorNode key={ev.evalId} node={ev} projectId={projectId} epicId={epicId} />
                 ))}
               </WorkerNode>
+            ))}
+            {directEvals.map((ev) => (
+              <EvaluatorNode key={ev.evalId} node={ev} projectId={projectId} epicId={epicId} />
             ))}
           </div>
         )}

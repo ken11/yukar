@@ -1,8 +1,10 @@
-"""Dispatch attempt layer — worktree setup and one Worker+Evaluator cycle.
+"""Dispatch attempt layer — worktree setup and one dispatch attempt.
 
 Contains:
 - ``ensure_worktree_for_repo``: lazily create git worktree, update epic.touched_repos.
-- ``run_one_attempt``: execute exactly one Worker + one Evaluator cycle.
+- ``run_one_attempt``: execute one attempt with the requested agent composition
+  (worker+evaluator by default; worker-only or evaluator-only via the dispatch
+  item's ``agents`` argument — execution order is always worker → evaluator).
 
 Both functions operate on the explicit ``DispatchContext`` defined in
 ``dispatch.py``; they carry no hidden ``self`` reference.
@@ -155,8 +157,24 @@ async def run_one_attempt(
     repo_name: str,
     worktree_path: Path,
     feedback: str,
+    *,
+    include_worker: bool = True,
+    include_evaluator: bool = True,
 ) -> tuple[bool, str | None, str | None, str, int, bool]:
-    """Run exactly one Worker + one Evaluator for a task.
+    """Run one attempt for a task with the requested agent composition.
+
+    The composition comes from the dispatch item's ``agents`` argument
+    (validated by the caller).  Execution order is always worker → evaluator:
+
+    - worker + evaluator (default): the classic full cycle — the host commits
+      only when the Evaluator accepts.
+    - worker only: no evaluation, no host commit.  The Worker's final report
+      text is returned as ``feedback_out`` and ``accepted`` is ``True`` (the
+      report itself is the deliverable).
+    - evaluator only: no Worker and — crucially — NO hermetic reset (the
+      uncommitted worktree contents ARE the evaluation subject).  The current
+      worktree is staged and evaluated against the task contract; acceptance
+      triggers the usual host commit.
 
     Returns:
         ``(accepted, worker_id, eval_id, feedback_out, files_changed, worker_finalized)``
@@ -171,169 +189,205 @@ async def run_one_attempt(
     run_id = ctx_d.run_id
     state = ctx_d.state
 
-    worker_id = f"worker-{uuid.uuid4().hex[:8]}"
-
-    # Register worker thread (parent = active manager trial in the tree).
-    await register_agent_thread(
-        root,
-        project_id,
-        epic_id,
-        thread_id=worker_id,
-        role="worker",
-        repo=repo_name,
-        task_id=task.id,
-        parent_thread_id=ctx_d.manager_thread_id,
-    )
-
-    # Update state.yaml active_workers — append this worker.
-    async with ctx_d.state_lock:
-        state.active_workers.append(
-            ActiveWorker(
-                worker_id=worker_id,
-                task_id=task.id,
-                repo=repo_name,
-            )
-        )
-        state.status = ctx_d.run_status
-        state.last_event_at = datetime.now(UTC)
-        await state_repo.save_state(root, project_id, epic_id, state)
-
-    ctx_d.pub(
-        WorkerStartedEvent(
-            project_id=project_id,
-            epic_id=epic_id,
-            run_id=run_id,
-            worker_id=worker_id,
-            task_id=task.id,
-            repo=repo_name,
-        )
-    )
-
-    # Resolve agent profile once for this attempt (BE-B).
-    # base_role must match "worker"; mismatch or missing → all 4 dimensions ignored.
-    resolved_profile = _resolve_profile(root, project_id, task, expected_role="worker")
-
-    # Build AgentContext for this worker.
+    # Repo-level command allow/deny — resolved once, shared by the Worker's and
+    # the Evaluator's AgentContexts (fresh copies each, never aliased).
     repo_obj = await get_repo(root, project_id, repo_name)
     repo_allow = list(repo_obj.commands.allow) if repo_obj else []
     repo_deny = list(repo_obj.commands.deny) if repo_obj else []
 
-    # Command permissions come solely from the repo-level allow/deny list; a
-    # profile never narrows or grants commands.  Fresh copies so this worker's
-    # AgentContext never aliases the list reused for the Evaluator below.
-    allow_cmds, deny_cmds = list(repo_allow), list(repo_deny)
-
-    ctx = await AgentContext.create(
-        project_id=project_id,
-        epic_id=epic_id,
-        repo_name=repo_name,
-        worktree_path=worktree_path,
-        workspace_root=root,
-        allow=allow_cmds,
-        deny=deny_cmds,
-    )
-
-    # Drain HITL for this worker.
-    pending = ctx_d.hooks.drain_pending()
-    hitl_msgs = [text for (tid, text) in pending if tid == worker_id]
-    hitl_prefix = "\n".join(f"[User]: {m}" for m in hitl_msgs)
-    if hitl_prefix:
-        hitl_prefix = "\n" + hitl_prefix + "\n"
-
-    # Hermetic attempt: the worktree is shared across all tasks/attempts of this
-    # (epic, repo).  Because the host now commits only on accept (not the Worker),
-    # a rejected or abandoned prior attempt leaves uncommitted residue in the tree.
-    # Reset to HEAD (= accepted work, which is committed and preserved) and clean
-    # untracked-but-not-ignored files so the Evaluator's --cached diff and the
-    # host commit are scoped to THIS attempt only — preventing cross-task
-    # contamination (a later task committing a previous task's leftovers).
-    # Runs only on the per-epic worktree; the scheduler serialises same-repo slots
-    # so no concurrent attempt is touching this tree.
-    await run_git("reset", "--hard", "HEAD", cwd=worktree_path, check=False)
-    await run_git("clean", "-fd", cwd=worktree_path, check=False)
-
-    # Run Worker — pass the resolved profile so orchestrator avoids a second
-    # get_profile call.  Wrap in try/except so that Worker exceptions (e.g.
-    # MaxTokensReachedException, ContextWindowOverflowException) are caught,
-    # the worker thread is marked failed, and a WorkerFailedEvent is published.
-    # asyncio.CancelledError is always re-raised (pause/stop path).
+    worker_id: str | None = None
     worker_summary: str = ""
-    try:
-        worker_result = await ctx_d.hooks.run_worker(
-            project_id=project_id,
-            epic_id=epic_id,
-            run_id=run_id,
-            worker_id=worker_id,
-            task=task,
-            ctx=ctx,
-            feedback=feedback,
-            hitl_prefix=hitl_prefix,
-            resolved_profile=resolved_profile,
-        )
-        worker_summary = (
-            worker_result.get("result", "")
-            if isinstance(worker_result, dict)
-            else ""
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as worker_exc:
-        exc_name = type(worker_exc).__name__
-        if exc_name == "MaxTokensReachedException":
-            reason = "max_tokens"
-        elif exc_name == "ContextWindowOverflowException":
-            reason = "context_overflow"
-        else:
-            reason = exc_name
-        logger.warning("worker %s failed with %s: %s", worker_id, exc_name, worker_exc)
 
-        # Remove from active_workers and persist state (mirrors normal completion path).
+    if include_worker:
+        worker_id = f"worker-{uuid.uuid4().hex[:8]}"
+
+        # Register worker thread (parent = active manager trial in the tree).
+        await register_agent_thread(
+            root,
+            project_id,
+            epic_id,
+            thread_id=worker_id,
+            role="worker",
+            repo=repo_name,
+            task_id=task.id,
+            parent_thread_id=ctx_d.manager_thread_id,
+        )
+
+        # Update state.yaml active_workers — append this worker.
         async with ctx_d.state_lock:
-            state.active_workers = [w for w in state.active_workers if w.worker_id != worker_id]
+            state.active_workers.append(
+                ActiveWorker(
+                    worker_id=worker_id,
+                    task_id=task.id,
+                    repo=repo_name,
+                )
+            )
             state.status = ctx_d.run_status
             state.last_event_at = datetime.now(UTC)
             await state_repo.save_state(root, project_id, epic_id, state)
 
-        await threads_repo.update_thread_status(root, project_id, epic_id, worker_id, "failed")
         ctx_d.pub(
-            WorkerFailedEvent(
+            WorkerStartedEvent(
                 project_id=project_id,
                 epic_id=epic_id,
                 run_id=run_id,
                 worker_id=worker_id,
                 task_id=task.id,
                 repo=repo_name,
-                reason=reason,
             )
         )
-        return (False, worker_id, None, f"worker failed: {reason}", 0, True)
 
-    ctx_d.pub(
-        WorkerCompletedEvent(
+        # Resolve agent profile once for this attempt (BE-B).
+        # base_role must match "worker"; mismatch or missing → all 4 dimensions ignored.
+        resolved_profile = _resolve_profile(root, project_id, task, expected_role="worker")
+
+        # Command permissions come solely from the repo-level allow/deny list; a
+        # profile never narrows or grants commands.  Fresh copies so this worker's
+        # AgentContext never aliases the list reused for the Evaluator below.
+        allow_cmds, deny_cmds = list(repo_allow), list(repo_deny)
+
+        ctx = await AgentContext.create(
             project_id=project_id,
             epic_id=epic_id,
-            run_id=run_id,
-            worker_id=worker_id,
-            task_id=task.id,
-            repo=repo_name,
+            repo_name=repo_name,
+            worktree_path=worktree_path,
+            workspace_root=root,
+            allow=allow_cmds,
+            deny=deny_cmds,
         )
-    )
 
-    # Remove this worker from active_workers.
-    async with ctx_d.state_lock:
-        state.active_workers = [w for w in state.active_workers if w.worker_id != worker_id]
-        state.status = ctx_d.run_status
-        state.last_event_at = datetime.now(UTC)
-        await state_repo.save_state(root, project_id, epic_id, state)
+        # Drain HITL for this worker.
+        pending = ctx_d.hooks.drain_pending()
+        hitl_msgs = [text for (tid, text) in pending if tid == worker_id]
+        hitl_prefix = "\n".join(f"[User]: {m}" for m in hitl_msgs)
+        if hitl_prefix:
+            hitl_prefix = "\n" + hitl_prefix + "\n"
 
-    # Host stage: git add -A to stage all Worker changes (including new files)
-    # so the Evaluator's read_diff (--cached) sees the complete diff.
+        # Hermetic attempt: the worktree is shared across all tasks/attempts of this
+        # (epic, repo).  Because the host now commits only on accept (not the Worker),
+        # a rejected or abandoned prior attempt leaves uncommitted residue in the tree.
+        # Reset to HEAD (= accepted work, which is committed and preserved) and clean
+        # untracked-but-not-ignored files so the Evaluator's --cached diff and the
+        # host commit are scoped to THIS attempt only — preventing cross-task
+        # contamination (a later task committing a previous task's leftovers).
+        # Runs only on the per-epic worktree; the scheduler serialises same-repo slots
+        # so no concurrent attempt is touching this tree.
+        # NOTE: this reset runs only when the attempt INCLUDES a worker — an
+        # evaluator-only attempt evaluates the current (uncommitted) worktree
+        # contents, which the reset would destroy.  It also means files written
+        # by a previous worker-only attempt (never committed) are discarded here.
+        await run_git("reset", "--hard", "HEAD", cwd=worktree_path, check=False)
+        await run_git("clean", "-fd", cwd=worktree_path, check=False)
+
+        # Run Worker — pass the resolved profile so orchestrator avoids a second
+        # get_profile call.  Wrap in try/except so that Worker exceptions (e.g.
+        # MaxTokensReachedException, ContextWindowOverflowException) are caught,
+        # the worker thread is marked failed, and a WorkerFailedEvent is published.
+        # asyncio.CancelledError is always re-raised (pause/stop path).
+        try:
+            worker_result = await ctx_d.hooks.run_worker(
+                project_id=project_id,
+                epic_id=epic_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                task=task,
+                ctx=ctx,
+                feedback=feedback,
+                hitl_prefix=hitl_prefix,
+                resolved_profile=resolved_profile,
+            )
+            worker_summary = (
+                worker_result.get("result", "")
+                if isinstance(worker_result, dict)
+                else ""
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as worker_exc:
+            exc_name = type(worker_exc).__name__
+            if exc_name == "MaxTokensReachedException":
+                reason = "max_tokens"
+            elif exc_name == "ContextWindowOverflowException":
+                reason = "context_overflow"
+            else:
+                reason = exc_name
+            logger.warning("worker %s failed with %s: %s", worker_id, exc_name, worker_exc)
+
+            # Remove from active_workers and persist state (mirrors normal completion path).
+            async with ctx_d.state_lock:
+                state.active_workers = [
+                    w for w in state.active_workers if w.worker_id != worker_id
+                ]
+                state.status = ctx_d.run_status
+                state.last_event_at = datetime.now(UTC)
+                await state_repo.save_state(root, project_id, epic_id, state)
+
+            await threads_repo.update_thread_status(root, project_id, epic_id, worker_id, "failed")
+            ctx_d.pub(
+                WorkerFailedEvent(
+                    project_id=project_id,
+                    epic_id=epic_id,
+                    run_id=run_id,
+                    worker_id=worker_id,
+                    task_id=task.id,
+                    repo=repo_name,
+                    reason=reason,
+                )
+            )
+            return (False, worker_id, None, f"worker failed: {reason}", 0, True)
+
+        ctx_d.pub(
+            WorkerCompletedEvent(
+                project_id=project_id,
+                epic_id=epic_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                task_id=task.id,
+                repo=repo_name,
+            )
+        )
+
+        # Remove this worker from active_workers.
+        async with ctx_d.state_lock:
+            state.active_workers = [w for w in state.active_workers if w.worker_id != worker_id]
+            state.status = ctx_d.run_status
+            state.last_event_at = datetime.now(UTC)
+            await state_repo.save_state(root, project_id, epic_id, state)
+
+    # Host stage: git add -A to stage the changes to be evaluated (including new
+    # files) so the Evaluator's read_diff (--cached) sees the complete diff.
+    # In the worker+evaluator cycle this stages what the Worker just produced;
+    # in an evaluator-only attempt it stages the current worktree contents
+    # (e.g. the output of earlier worker-only attempts).  A worker-only attempt
+    # also stages so the diff signal reflects the produced files — but nothing
+    # is committed (no Evaluator acceptance → no host commit).
     await run_git("add", "-A", cwd=worktree_path, check=False)
 
     # Publish diff update using the staged diff (see dispatch_helpers).
     files_changed = await publish_diff_update(
         project_id, epic_id, run_id, repo_name, worktree_path, ctx_d.pub
     )
+
+    if not include_evaluator:
+        # Worker-only attempt: no evaluation and no host commit.  The Worker's
+        # final report text is the deliverable — return it as feedback and
+        # report the attempt as accepted so the caller marks the task done.
+        # A silent Worker has produced NO deliverable: reject instead of
+        # silently marking the task done with an empty report (the Manager
+        # decides whether to retry or replan).
+        if not worker_summary.strip():
+            return (
+                False,
+                worker_id,
+                None,
+                "Worker-only attempt produced no report text — the report IS the "
+                "deliverable of a worker-only dispatch, so the task was not marked "
+                "done. Retry, or dispatch with an evaluator if the deliverable is "
+                "a code change.",
+                files_changed,
+                False,
+            )
+        return (True, worker_id, None, worker_summary, files_changed, False)
 
     # Run Evaluator.
     eval_id = f"eval-{uuid.uuid4().hex[:8]}"
@@ -345,16 +399,17 @@ async def run_one_attempt(
         role="evaluator",
         repo=repo_name,
         task_id=task.id,
-        parent_thread_id=worker_id,
+        parent_thread_id=worker_id if worker_id is not None else ctx_d.manager_thread_id,
     )
 
+    # worker_id is "" for an evaluator-only attempt (no Worker ran).
     ctx_d.pub(
         EvaluatorStartedEvent(
             project_id=project_id,
             epic_id=epic_id,
             run_id=run_id,
             eval_id=eval_id,
-            worker_id=worker_id,
+            worker_id=worker_id or "",
             task_id=task.id,
             repo=repo_name,
         )
@@ -387,7 +442,7 @@ async def run_one_attempt(
         eval_id=eval_id,
         task=task,
         ctx=eval_ctx,
-        worker_id=worker_id,
+        worker_id=worker_id or "",
         resolved_profile=resolved_eval_profile,
     )
 
@@ -409,7 +464,9 @@ async def run_one_attempt(
             logger.info("host commit skipped for task %s: no staged changes", task.id)
         else:
             subject = f"{task.id}: {task.title}"
-            body = worker_summary
+            # Evaluator-only attempts have no worker summary — use the
+            # evaluator's verdict feedback so the commit body is not empty.
+            body = worker_summary or feedback_out
             commit_res = await run_git(
                 "commit",
                 "-m",
@@ -441,7 +498,7 @@ async def run_one_attempt(
             project_id=project_id,
             epic_id=epic_id,
             run_id=run_id,
-            worker_id=worker_id,
+            worker_id=worker_id or "",
             eval_id=eval_id,
             accepted=accepted,
             feedback=feedback_out,
