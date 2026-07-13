@@ -45,6 +45,7 @@ const en = {
       error: "Error",
     },
     actionsToggle: "Show epic actions",
+    moreActions: "More actions",
     reopen: "Reopen",
     complete: "Complete",
     completeTitle: "Mark this epic as completed (also used to finish with unfinished work)",
@@ -176,6 +177,7 @@ const en = {
     statusRejected: "Rejected",
     toolInput: "Input",
     toolResult: "Result",
+    showFullPrompt: "Show full prompt",
     streamingLive: "Running…",
     openThreadList: "Open thread list",
     closeThreadList: "Close thread list",
@@ -524,8 +526,6 @@ const en = {
   },
   epicShell: {
     runFailed: "▲ Run failed",
-    awaitingInput: "Your turn — reply and the agent continues",
-    awaitingInputReviewer: "The Reviewer has reported — open the conversation to review it",
   },
   usage: {
     heading: "Usage",

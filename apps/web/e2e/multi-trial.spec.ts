@@ -91,6 +91,8 @@ test.describe
       );
       // New trial button — target the button inside the left pane (nav[aria-label="Threads"])
       // The header also has a button with the same name, so narrow down to avoid strict mode errors
+      // P3: the thread list lives in the trial switcher's popover — open it first.
+      await page.getByTestId("trial-switcher-btn").click();
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
       await threadsNav.getByTestId("new-thread-btn").click();
@@ -278,6 +280,8 @@ test.describe
       );
 
       // Verify the left pane is present (always shown at md width)
+      // P3: the thread list lives in the trial switcher's popover — open it first.
+      await page.getByTestId("trial-switcher-btn").click();
       const nav = page.locator('nav[aria-label="Threads"]');
       await expect(nav).toBeVisible({ timeout: 10_000 });
 
@@ -319,6 +323,8 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.newTrialId}`,
       );
+      // P3: the thread list lives in the trial switcher's popover — open it first.
+      await page.getByTestId("trial-switcher-btn").click();
       const nav = page.locator('nav[aria-label="Threads"]');
       await expect(nav).toBeVisible({ timeout: 10_000 });
 

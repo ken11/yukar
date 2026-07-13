@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { useEpicRun } from "@/components/chrome/epic-run-context";
 import { Icon } from "@/components/icon";
 import type { Message, ThreadEntry } from "@/lib/api/endpoints";
-import { cn } from "@/lib/cn";
 import { useThreadMessages } from "@/lib/hooks/use-thread-messages";
 import { useT } from "@/lib/i18n/provider";
 import { isAgentActive, selectThreadLiveState } from "@/lib/sse/use-run-activity";
@@ -89,41 +88,33 @@ export function ThreadPageClient({
   return (
     <div className="flex h-full overflow-hidden">
       {/*
-       * Left pane: thread list
-       * PC (md and above): always visible (flex)
-       * Mobile: shown as overlay only when mobileListOpen is true
+       * Thread list (P3): no persistent pane on desktop — the list lives in the
+       * conversation strip's TrialSwitcher popover (inside ThreadChatInner).
+       * Mobile keeps its drawer overlay, unchanged.
        */}
-
-      {/* Mobile: overlay backdrop */}
       {mobileListOpen && (
-        <div
-          className="fixed inset-0 z-20 bg-black/50 md:hidden"
-          onClick={() => setMobileListOpen(false)}
-          aria-hidden="true"
-        />
+        <>
+          <div
+            className="fixed inset-0 z-20 bg-black/50 md:hidden"
+            onClick={() => setMobileListOpen(false)}
+            aria-hidden="true"
+          />
+          <div
+            className="fixed inset-x-0 bottom-0 top-0 z-30 flex md:hidden"
+            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+          >
+            <ThreadListPane
+              projectId={projectId}
+              epicId={epicId}
+              currentThreadId={threadId}
+              initialThreads={initialThreads}
+              onClose={() => setMobileListOpen(false)}
+            />
+          </div>
+        </>
       )}
 
-      {/* Thread list panel */}
-      <div
-        className={cn(
-          // PC: always shown as a normal flex item
-          "hidden md:flex",
-          // Mobile: fixed overlay sliding in from the left (the mobile top bar is
-          // hidden on epic detail routes, so the overlay starts at the very top)
-          mobileListOpen && "fixed inset-x-0 bottom-0 top-0 z-30 flex",
-        )}
-        style={mobileListOpen ? { paddingBottom: "env(safe-area-inset-bottom)" } : undefined}
-      >
-        <ThreadListPane
-          projectId={projectId}
-          epicId={epicId}
-          currentThreadId={threadId}
-          initialThreads={initialThreads}
-          onClose={() => setMobileListOpen(false)}
-        />
-      </div>
-
-      {/* Right pane: chat (full width on mobile) */}
+      {/* Chat (full width) */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/*
          * Mobile thread-list toggle: rendered INSIDE ThreadChatInner's role bar
@@ -162,6 +153,7 @@ export function ThreadPageClient({
           isArchived={isArchived}
           projectId={projectId}
           epicId={epicId}
+          initialThreads={initialThreads}
         />
       </div>
     </div>

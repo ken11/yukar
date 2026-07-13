@@ -11,10 +11,35 @@ import {
   streamStateIsEmpty,
   streamStateTextLength,
 } from "@/lib/assistant-ui/runtime";
+import { cn } from "@/lib/cn";
+import { parseKickoff } from "@/lib/conversation/kickoff";
+import { buildStreamItems } from "@/lib/conversation/stream-items";
 import { useT } from "@/lib/i18n/provider";
+import { AgentChips } from "./agent-chips";
+import { ToolRunGroup } from "./docs-fold";
 import { ManagerEffortControl } from "./manager-effort-control";
-import { MessageRow, roleIcon } from "./message-row";
+import { formatTime, MessageRow, RoleAttribution, roleIcon } from "./message-row";
 import { PlanApprovalBanner } from "./plan-approval-banner";
+import { TrialSwitcher } from "./trial-switcher";
+
+/**
+ * TurnHorizon — the boundary line drawn where a new human turn begins.
+ * Desktop-only terrain (the mobile layout stays untouched). When the item
+ * arrives live (.msg-enter on the wrapper), the line sweeps itself in.
+ */
+function TurnHorizon() {
+  return (
+    <div aria-hidden className="hidden h-px md:block">
+      <div
+        className="turn-horizon-line h-px w-full"
+        style={{
+          background:
+            "linear-gradient(to right, color-mix(in oklab, var(--color-light) 30%, var(--color-outline-variant)), var(--color-outline-variant) 35%, transparent 80%)",
+        }}
+      />
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Right pane: chat
@@ -34,6 +59,7 @@ export function ThreadChatInner({
   isArchived,
   projectId,
   epicId,
+  initialThreads = [],
   threadListToggle,
 }: {
   thread: ThreadEntry | null;
@@ -52,6 +78,8 @@ export function ThreadChatInner({
   isArchived?: boolean;
   projectId?: string;
   epicId?: string;
+  /** Thread list for the trial switcher's popover (SSR seed). */
+  initialThreads?: ThreadEntry[];
   /** Mobile-only thread-list toggle button, rendered at the head of the role bar (md:hidden inside) */
   threadListToggle?: React.ReactNode;
 }) {
@@ -62,7 +90,8 @@ export function ThreadChatInner({
 
   // Mobile reading mode: scrolling down the history collapses the epic header +
   // tab bar (EpicShell applies the classes below md only); scrolling up restores them.
-  const { setMobileChromeHidden } = useEpicRun();
+  // activityState feeds the strip's agent chips (single SSE subscription in EpicShell).
+  const { setMobileChromeHidden, activityState } = useEpicRun();
   const lastScrollTopRef = useRef(0);
   // Programmatic scrolls (auto-scroll to the latest message) must not collapse
   // the chrome — only user gestures should. The auto-scroll effect bumps this
@@ -135,6 +164,64 @@ export function ThreadChatInner({
 
   const allMessages = adapter.messages ?? [];
 
+  // Render plan: same-named tool runs fold, attribution renders once per role
+  // run, human turns mark horizons, older turns settle (desktop terrain).
+  const streamItems = useMemo(() => buildStreamItems(allMessages), [allMessages]);
+
+  // Motion (C: 気配): only items that ARRIVE live get the entrance animation —
+  // the initial history renders still. A key's verdict is decided once, when
+  // first seen, so re-renders never replay the animation.
+  const seenKeysRef = useRef<Map<string, boolean>>(new Map());
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+  }, []);
+  const enterClass = (key: string): string | undefined => {
+    const seen = seenKeysRef.current;
+    if (!seen.has(key)) seen.set(key, mountedRef.current);
+    return seen.get(key) ? "msg-enter" : undefined;
+  };
+
+  // The axis light rides the newest activity; when the run parks it descends
+  // to the bottom of the stream and fades — the lit composer takes over.
+  const axisColRef = useRef<HTMLDivElement>(null);
+  const axisLightRef = useRef<HTMLSpanElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: streamItems is the re-measure trigger (the effect reads the DOM it just rendered)
+  useEffect(() => {
+    const col = axisColRef.current;
+    const light = axisLightRef.current;
+    if (!col || !light) return;
+    const items = col.querySelectorAll<HTMLElement>("[data-stream-item]");
+    const last = items[items.length - 1];
+    // NEVER derive the target from scrollHeight: the absolutely-positioned
+    // light itself extends the scrollable overflow, which would compound on
+    // every measurement. Anchor to the last item's real box instead.
+    const top = !last
+      ? 4
+      : isYourTurn && !isRunning
+        ? last.offsetTop + last.offsetHeight - 10
+        : last.offsetTop + 4;
+    light.style.top = `${top}px`;
+    light.style.opacity = isRunning ? "1" : "0";
+  }, [streamItems, isRunning, isYourTurn]);
+
+  // Turn-0 host prompt → structured kickoff (boilerplate folded). Defensive:
+  // unknown formats render as a plain message.
+  const kickoffView = useMemo(() => {
+    const first = allMessages[0];
+    if (first?.role !== "user") return null;
+    const raw =
+      typeof first.content === "string"
+        ? first.content
+        : first.content
+            .filter((p) => p.type === "text")
+            .map((p) => (p as { type: "text"; text: string }).text)
+            .join("\n");
+    if (!raw.trim()) return null;
+    const view = parseKickoff(raw);
+    return view ? { view, raw } : null;
+  }, [allMessages]);
+
   const roleLabel: Record<string, string> = {
     manager: t("conversation.manager"),
     worker: `${t("conversation.worker")}${thread?.repo ? ` · ${thread.repo}` : ""}`,
@@ -148,6 +235,10 @@ export function ThreadChatInner({
   // The composer is shown for the active manager trial OR a (non-archived) reviewer
   // conversation — both are threads the user can reply to (backend post_message).
   const canCompose = isActiveTrial || (thread?.role === "reviewer" && !isArchived);
+
+  // Your-turn state lives IN the composer (lit edge + one state line) — the
+  // run parked on this thread and a reply continues it. The failure banner wins.
+  const showTurnState = !!isYourTurn && !runFailed;
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -170,18 +261,39 @@ export function ThreadChatInner({
             the role LABEL is hidden there because the toggle already shows the trial title. */}
         {thread && (
           <div
-            className="flex shrink-0 items-center gap-2 px-2 py-1 md:gap-3 md:px-6 md:py-2"
+            className="flex shrink-0 items-center gap-2 px-2 py-1 md:gap-3 md:px-6 md:py-1"
             style={{ borderBottom: "1px solid var(--color-outline-variant)" }}
           >
             {threadListToggle}
-            <Icon
-              name={roleIcon[thread.role] ?? "chat"}
-              className="shrink-0 text-[14px] text-on-surface-variant"
-              aria-hidden
-            />
-            <span className="address hidden text-on-surface-variant md:inline">
-              {roleLabel[thread.role] ?? thread.role}
+            {/* Mobile keeps the compact role glyph (the toggle already names the
+                thread); desktop replaces glyph+label with the trial switcher.
+                md:hidden sits on the wrapper — the external Material Symbols CSS
+                loads after the compiled utilities and would override it on the
+                icon itself. */}
+            <span className="shrink-0 md:hidden" aria-hidden>
+              <Icon
+                name={roleIcon[thread.role] ?? "chat"}
+                className="shrink-0 text-[14px] text-on-surface-variant"
+              />
             </span>
+            {projectId && epicId && (
+              <TrialSwitcher
+                projectId={projectId}
+                epicId={epicId}
+                currentThreadId={thread.id}
+                currentLabel={thread.title ?? roleLabel[thread.role] ?? thread.role}
+                currentRole={thread.role}
+                initialThreads={initialThreads}
+              />
+            )}
+            {projectId && epicId && (
+              <AgentChips
+                treeState={activityState.treeState}
+                projectId={projectId}
+                epicId={epicId}
+                currentThreadId={thread.id}
+              />
+            )}
             <div className="ml-auto flex items-center gap-3">
               {isArchived && <span className="font-mono text-[10px] text-outline">archived</span>}
               {isRunning && !isArchived && (
@@ -226,59 +338,82 @@ export function ThreadChatInner({
           </div>
         )}
 
-        {/* Your-turn banner — the run parked on THIS thread (reply to continue).
-            Role-aware wording: the banner only shows on the run's own
-            conversation, so thread.role IS the waiting agent's role. */}
-        {!runFailed && isYourTurn && (
-          <div
-            className="shrink-0 flex items-center gap-2 px-6 py-2"
-            role="status"
-            aria-live="polite"
-            style={{
-              borderBottom: "1px solid color-mix(in oklab, var(--color-light) 20%, transparent)",
-            }}
-          >
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: "var(--color-light)" }}
-              aria-hidden
-            />
-            <p className="font-mono text-[11px]" style={{ color: "var(--color-light)" }}>
-              {threadRole === "reviewer"
-                ? t("conversation.awaitingBannerReviewer")
-                : t("conversation.awaitingBanner")}
-            </p>
-          </div>
-        )}
-
-        {/* Plan approval — explicit, snapshot-bound. Rendered next to the
-            awaiting banner; only the active trial can approve (composer owner). */}
-        {isActiveTrial && projectId && epicId && (
-          <PlanApprovalBanner projectId={projectId} epicId={epicId} onSendMessage={onSendMessage} />
-        )}
+        {/* Your-turn state lives in the composer (the lit edge + state line) —
+            no banner. See the composer block below. */}
 
         {/* Chat history */}
         <div
-          className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-6"
+          className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:pb-6 md:pt-3"
           onScroll={handleHistoryScroll}
           role="log"
           aria-live="polite"
           aria-label="Conversation"
         >
-          <div className="mx-auto max-w-[var(--measure-read)] space-y-3 md:space-y-8">
-            {allMessages.map((msg, i) => {
-              // Mobile groups consecutive same-role messages under one attribution
-              // header (desktop keeps a header per bubble — see MessageRow).
-              const prev = i > 0 ? allMessages[i - 1] : undefined;
-              const grouped = !!prev && prev.role === msg.role;
+          <div
+            ref={axisColRef}
+            className="axis-col mx-auto max-w-[var(--measure-read)] space-y-3 md:space-y-6"
+          >
+            {/* The single point of light — rides the newest activity (JS sets top) */}
+            <span
+              ref={axisLightRef}
+              className="axis-light-dot"
+              style={{ top: 4, opacity: 0 }}
+              aria-hidden
+            />
+            {streamItems.map((item, i) => {
+              // History before the latest human turn recedes on desktop
+              // (restored on hover); mobile keeps full opacity.
+              const settledCls = item.settled
+                ? "md:opacity-55 md:transition-opacity md:duration-500 md:hover:opacity-100"
+                : undefined;
+
+              if (item.kind === "tool-run") {
+                // Index-composed key: the same toolCallId can transiently appear
+                // in two non-adjacent items while a stream is being persisted;
+                // items are append-only so the index is stable.
+                const key = `run:${i}:${item.id}`;
+                return (
+                  <div
+                    key={key}
+                    data-testid="agent-message"
+                    data-stream-item
+                    data-node={item.grouped ? undefined : "1"}
+                    className={cn("stream-item", settledCls, enterClass(key))}
+                  >
+                    {!item.grouped && (
+                      <RoleAttribution
+                        agentRole={threadRole}
+                        label={roleLabel[threadRole] ?? threadRole}
+                        time={formatTime(item.createdAt)}
+                      />
+                    )}
+                    <ToolRunGroup toolName={item.toolName} calls={item.calls} />
+                  </div>
+                );
+              }
+
+              const isLastItem = i === streamItems.length - 1;
+              const peak =
+                isLastItem && !runFailed && !!isYourTurn && item.msg.role === "assistant";
+              const kickoff = i === 0 && item.msg.role === "user" ? kickoffView : null;
+              const key = String(item.msg.id ?? `msg:${i}`);
               return (
-                <MessageRow
-                  key={msg.id ?? i}
-                  msg={msg}
-                  roleLabel={roleLabel[threadRole] ?? threadRole}
-                  role={threadRole}
-                  grouped={grouped}
-                />
+                <div
+                  key={key}
+                  data-stream-item
+                  data-node={item.grouped ? undefined : "1"}
+                  className={cn("stream-item space-y-3 md:space-y-6", settledCls, enterClass(key))}
+                >
+                  {item.turnStart && i > 0 && <TurnHorizon />}
+                  <MessageRow
+                    msg={item.msg}
+                    roleLabel={roleLabel[threadRole] ?? threadRole}
+                    role={threadRole}
+                    grouped={item.grouped}
+                    peak={peak}
+                    kickoff={kickoff}
+                  />
+                </div>
               );
             })}
 
@@ -344,45 +479,82 @@ export function ThreadChatInner({
         ) : canCompose ? (
           <div className="shrink-0" style={{ borderTop: "1px solid var(--color-outline-variant)" }}>
             <div className="mx-auto max-w-[var(--measure-read)] px-4 py-2.5 md:px-6 md:py-4">
-              {/* Recess surface + shadow datum.
+              {/* Plan approval — explicit, snapshot-bound. Docked where the user
+                  acts (above the composer); only the composer owner can approve. */}
+              {isActiveTrial && projectId && epicId && (
+                <PlanApprovalBanner
+                  projectId={projectId}
+                  epicId={epicId}
+                  onSendMessage={onSendMessage}
+                />
+              )}
+              {/* Recess surface + shadow datum. When the run parked on this
+                  thread it is YOUR TURN — the composer itself carries the
+                  state: the point of light on its edge + one state line.
                   Mobile: single row (auto-growing textarea + icon send button).
                   Desktop (md:): column layout with the labelled send button below. */}
               <div
-                className="flex items-end md:flex-col md:items-stretch"
+                className={cn(
+                  "flex flex-col",
+                  showTurnState && "light-v light-live composer-bloom",
+                )}
                 style={{
                   backgroundColor: "var(--color-surface-container-lowest)",
-                  border: "1px solid var(--color-outline-variant)",
+                  border: showTurnState
+                    ? "1px solid color-mix(in oklab, var(--color-light) 30%, var(--color-outline-variant))"
+                    : "1px solid var(--color-outline-variant)",
                   borderRadius: "4px",
                 }}
               >
-                <textarea
-                  ref={composerRef}
-                  data-testid="thread-composer"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={t("conversation.composerPlaceholder")}
-                  rows={1}
-                  className="max-h-40 min-w-0 flex-1 resize-none bg-transparent px-3 pt-2.5 pb-2 text-body-md text-on-surface placeholder:text-outline focus:outline-none md:px-4 md:pt-3 md:min-h-[80px]"
-                  aria-label={t("conversation.composerPlaceholder")}
-                />
-                <div className="flex shrink-0 items-center justify-end gap-3 p-1.5 md:px-3 md:pb-3 md:pt-0">
-                  <button
-                    type="button"
-                    onClick={handleSend}
-                    disabled={!value.trim() || isSending}
-                    aria-label={isSending ? t("conversation.sending") : t("conversation.send")}
-                    className="flex min-h-[40px] min-w-[40px] items-center justify-center gap-1.5 rounded px-2 py-2 text-body-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-40 md:min-h-[32px] md:min-w-0 md:px-3 md:py-1.5"
-                    style={{
-                      backgroundColor: "var(--color-primary)",
-                      color: "var(--color-on-primary)",
-                    }}
+                {showTurnState && (
+                  <div
+                    className="flex items-center gap-2 px-3 pt-2 md:px-4"
+                    role="status"
+                    aria-live="polite"
+                    data-testid="composer-turn-state"
                   >
-                    <Icon name="send" className="text-[18px] md:text-[15px]" aria-hidden />
-                    <span className="hidden md:inline">
-                      {isSending ? t("conversation.sending") : t("conversation.send")}
-                    </span>
-                  </button>
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: "var(--color-light)" }}
+                      aria-hidden
+                    />
+                    <p className="font-mono text-[11px]" style={{ color: "var(--color-light)" }}>
+                      {threadRole === "reviewer"
+                        ? t("conversation.awaitingBannerReviewer")
+                        : t("conversation.awaitingBanner")}
+                    </p>
+                  </div>
+                )}
+                <div className="flex items-end md:flex-col md:items-stretch">
+                  <textarea
+                    ref={composerRef}
+                    data-testid="thread-composer"
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={t("conversation.composerPlaceholder")}
+                    rows={1}
+                    className="max-h-40 min-w-0 flex-1 resize-none bg-transparent px-3 pt-2.5 pb-2 text-body-md text-on-surface placeholder:text-outline focus:outline-none md:px-4 md:pt-3 md:min-h-[80px]"
+                    aria-label={t("conversation.composerPlaceholder")}
+                  />
+                  <div className="flex shrink-0 items-center justify-end gap-3 p-1.5 md:px-3 md:pb-3 md:pt-0">
+                    <button
+                      type="button"
+                      onClick={handleSend}
+                      disabled={!value.trim() || isSending}
+                      aria-label={isSending ? t("conversation.sending") : t("conversation.send")}
+                      className="flex min-h-[40px] min-w-[40px] items-center justify-center gap-1.5 rounded px-2 py-2 text-body-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-40 md:min-h-[32px] md:min-w-0 md:px-3 md:py-1.5"
+                      style={{
+                        backgroundColor: "var(--color-primary)",
+                        color: "var(--color-on-primary)",
+                      }}
+                    >
+                      <Icon name="send" className="text-[18px] md:text-[15px]" aria-hidden />
+                      <span className="hidden md:inline">
+                        {isSending ? t("conversation.sending") : t("conversation.send")}
+                      </span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

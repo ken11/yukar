@@ -12,8 +12,8 @@ import { useT } from "@/lib/i18n/provider";
  * Plan-approval control (lifecycle redesign: snapshot-bound approval).
  *
  * Approval is an explicit user operation bound to a task-plan snapshot hash —
- * a chat reply no longer grants it.  Shown near the your-turn banner while
- * the active trial is displayed and the current plan is unapproved.  The click
+ * a chat reply no longer grants it.  Docked directly above the composer (where
+ * the user acts) while the current plan is unapproved.  The click
  * records the approval (POST /plan/approval with the backend-computed hash we
  * merely echo) and then posts a short i18n user message through the existing
  * send path — that message is what wakes the parked agent.  A 409 means the
@@ -79,10 +79,11 @@ export function PlanApprovalBanner({
 
   return (
     <div
-      className="shrink-0 flex items-center gap-3 px-6 py-2"
+      className="mb-2 flex items-center gap-3 rounded px-3 py-2"
       role="status"
       style={{
-        borderBottom: "1px solid color-mix(in oklab, var(--color-light) 20%, transparent)",
+        border: "1px solid color-mix(in oklab, var(--color-light) 30%, transparent)",
+        backgroundColor: "color-mix(in oklab, var(--color-light) 4%, transparent)",
       }}
     >
       <span

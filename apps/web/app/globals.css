@@ -270,3 +270,79 @@ body {
 ::selection {
   background: color-mix(in srgb, var(--color-secondary-container) 35%, transparent);
 }
+
+/* ---------------------------------------------------------------------------
+   Conversation axis (A: 紙面の構造) — desktop only.
+   One hairline down the reading column; group heads sit on it as nodes; a
+   single point of light rides the newest activity and hands off to the
+   composer when the run parks ("your turn").
+   --------------------------------------------------------------------------- */
+@media (min-width: 768px) {
+  .axis-col { position: relative; padding-left: 2.25rem; }
+  .axis-col::before {
+    content: "";
+    position: absolute; left: 8px; top: 4px; bottom: 0;
+    width: 1px;
+    background: var(--color-outline-variant);
+  }
+  .stream-item { position: relative; }
+  .stream-item[data-node="1"]::before {
+    content: "";
+    position: absolute; top: 5px; left: -28px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--color-surface);
+    border: 1px solid var(--color-outline);
+  }
+  .axis-light-dot {
+    position: absolute; left: 5px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--color-light);
+    box-shadow: 0 0 10px color-mix(in oklab, var(--color-light) 65%, transparent);
+    pointer-events: none;
+  }
+}
+@media (max-width: 767.98px) {
+  .axis-light-dot { display: none; }
+}
+
+/* ---------------------------------------------------------------------------
+   Conversation motion (C: 気配) — every animation visualizes a real event
+   (token stream / turn end / park). None of it runs under reduced motion.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  /* a message ARRIVED (live insert only — initial history renders still) */
+  .msg-enter { animation: msg-enter 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes msg-enter {
+    from { opacity: 0; transform: translateY(14px) scale(0.995); }
+    to { opacity: 1; transform: none; }
+  }
+
+  /* the turn ENDED — the horizon draws itself where the human turn begins */
+  .msg-enter .turn-horizon-line { transform-origin: left; animation: horizon-sweep 0.9s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes horizon-sweep { from { transform: scaleX(0); } }
+
+  /* the run PARKED — the closing question comes into focus (terrain peak) */
+  .peak-in { animation: peak-in 0.7s cubic-bezier(0.22, 1, 0.36, 1); }
+  @keyframes peak-in {
+    from { opacity: 0.35; filter: blur(5px); }
+    to { opacity: 1; filter: blur(0); }
+  }
+
+  /* tokens are FLOWING — the streaming bubble breathes */
+  .msg-breathe { animation: msg-breathe 2.2s ease-in-out infinite; }
+  @keyframes msg-breathe {
+    0%, 100% { box-shadow: inset 0 0 0 0 transparent; }
+    50% { box-shadow: inset 0 0 20px 0 color-mix(in oklab, var(--color-light) 7%, transparent); }
+  }
+
+  /* YOUR TURN — the composer lights up with one bloom, then rests */
+  .composer-bloom { animation: composer-bloom 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
+  @keyframes composer-bloom {
+    0% { box-shadow: 0 0 0 0 transparent; }
+    40% { box-shadow: 0 0 36px -4px color-mix(in oklab, var(--color-light) 45%, transparent); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  /* the light travels; it fades only after it has arrived */
+  .axis-light-dot { transition: top 0.9s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.5s ease 0.5s; }
+}

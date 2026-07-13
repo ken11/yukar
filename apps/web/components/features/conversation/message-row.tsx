@@ -2,7 +2,9 @@
 
 import { Icon } from "@/components/icon";
 import { cn } from "@/lib/cn";
+import type { KickoffView } from "@/lib/conversation/kickoff";
 import { useT } from "@/lib/i18n/provider";
+import { KickoffBlock } from "./kickoff-block";
 import { MessageContent } from "./message-content";
 
 // ---------------------------------------------------------------------------
@@ -43,22 +45,33 @@ export function RoleAttribution({
   );
 }
 
+/** HH:MM — seconds are noise in a conversation. */
+export function formatTime(d: Date | undefined): string {
+  if (!d) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 // ---------------------------------------------------------------------------
 // Message rows
 // ---------------------------------------------------------------------------
 
 /**
  * UserMessage — bordered block (minimal border, subtle rounding). Left-aligned, within reading width.
+ * The turn-0 kickoff renders structured (title / criteria / contract) with the
+ * host boilerplate folded.
  */
 export function UserMessage({
   msg,
   time,
   grouped,
+  kickoff,
 }: {
   msg: import("@assistant-ui/react").ThreadMessageLike;
   time: string;
-  /** Same role as the previous message — mobile hides the attribution header (desktop keeps it) */
+  /** Same role as the previous item — the attribution header renders once per role run. */
   grouped?: boolean;
+  /** Parsed kickoff view (turn-0 host prompt) + its raw text for the fold. */
+  kickoff?: { view: KickoffView; raw: string } | null;
 }) {
   const t = useT();
   return (
@@ -67,7 +80,7 @@ export function UserMessage({
         agentRole="user"
         label={t("conversation.userRole")}
         time={time}
-        className={grouped ? "hidden md:flex" : undefined}
+        className={grouped ? "hidden" : undefined}
       />
       <div
         className="rounded px-3 py-2.5 md:px-4 md:py-3"
@@ -76,7 +89,11 @@ export function UserMessage({
           backgroundColor: "transparent",
         }}
       >
-        <MessageContent content={msg.content} />
+        {kickoff ? (
+          <KickoffBlock view={kickoff.view} raw={kickoff.raw} />
+        ) : (
+          <MessageContent content={msg.content} isUser />
+        )}
       </div>
     </div>
   );
@@ -85,6 +102,8 @@ export function UserMessage({
 /**
  * AgentMessage — understated block on the surface-container surface. Subtle rounding.
  * While streaming, shows a leading token caret (1px cyan, blinking).
+ * `peak` is the terrain's high ground: the parked question/report addressed to
+ * the user sheds the container surface and gets the larger composed setting.
  */
 export function AgentMessage({
   msg,
@@ -93,14 +112,16 @@ export function AgentMessage({
   time,
   isStreaming,
   grouped,
+  peak,
 }: {
   msg: import("@assistant-ui/react").ThreadMessageLike;
   roleLabel: string;
   role: string;
   time: string;
-  isStreaming: boolean;
-  /** Same role as the previous message — mobile hides the attribution header (desktop keeps it) */
+  /** Same role as the previous item — the attribution header renders once per role run. */
   grouped?: boolean;
+  isStreaming: boolean;
+  peak?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-1" data-testid="agent-message">
@@ -108,13 +129,17 @@ export function AgentMessage({
         agentRole={role}
         label={roleLabel}
         time={time}
-        className={grouped ? "hidden md:flex" : undefined}
+        className={grouped ? "hidden" : undefined}
       />
       <div
-        className="rounded px-3 py-2.5 md:px-4 md:py-3"
-        style={{ backgroundColor: "var(--color-surface-container)" }}
+        className={cn(
+          peak ? "peak-in rounded px-0 py-1" : "rounded px-3 py-2.5 md:px-4 md:py-3",
+          // Tokens are flowing — the streaming bubble breathes (reduced-motion: off)
+          isStreaming && "msg-breathe",
+        )}
+        style={peak ? undefined : { backgroundColor: "var(--color-surface-container)" }}
       >
-        <MessageContent content={msg.content} />
+        <MessageContent content={msg.content} peak={peak} />
         {isStreaming && (
           <span
             className="ml-0.5 mt-1 inline-block h-[1em] w-px align-text-bottom"
@@ -139,19 +164,25 @@ export function MessageRow({
   roleLabel,
   role,
   grouped,
+  peak,
+  kickoff,
 }: {
   msg: import("@assistant-ui/react").ThreadMessageLike;
   roleLabel: string;
   role: string;
-  /** Same role as the previous message — mobile hides the attribution header (desktop keeps it) */
+  /** Same role as the previous item — the attribution header renders once per role run. */
   grouped?: boolean;
+  /** Terrain high ground — parked question/report addressed to the user. */
+  peak?: boolean;
+  /** Structured turn-0 kickoff (user messages only). */
+  kickoff?: { view: KickoffView; raw: string } | null;
 }) {
   const isUser = msg.role === "user";
   const isStreaming = msg.status?.type === "running";
-  const time = msg.createdAt ? msg.createdAt.toLocaleTimeString() : "";
+  const time = formatTime(msg.createdAt);
 
   if (isUser) {
-    return <UserMessage msg={msg} time={time} grouped={grouped} />;
+    return <UserMessage msg={msg} time={time} grouped={grouped} kickoff={kickoff} />;
   }
   return (
     <AgentMessage
@@ -161,6 +192,7 @@ export function MessageRow({
       time={time}
       isStreaming={isStreaming}
       grouped={grouped}
+      peak={peak}
     />
   );
 }

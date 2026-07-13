@@ -168,6 +168,11 @@ test.describe
 
     test("#1: completing the epic flips the controls to Reopen", async ({ page }) => {
       await page.goto(`/projects/${state.projectId}/epics/${state.epicId}/threads/manager`);
+      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
+      // only rendered when the controls are in an idle branch (readiness wait).
+      const actionsBtn = page.getByTestId("epic-actions-btn");
+      await expect(actionsBtn).toBeVisible({ timeout: 20_000 });
+      await actionsBtn.click();
       const completeBtn = page.getByTestId("complete-epic-btn");
       await expect(completeBtn).toBeVisible({ timeout: 20_000 });
       await completeBtn.click();

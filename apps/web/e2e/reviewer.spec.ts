@@ -38,7 +38,6 @@ const SHOTS = "playwright-report";
 // are identical strings; the Reviewer variants differ per surface.
 const NEUTRAL_TURN_BANNER = "あなたの番です — 返信するとエージェントが続けます";
 const REVIEWER_TURN_BANNER = "Reviewer の報告があります — 返信すると続けます";
-const REVIEWER_SHELL_BANNER = "Reviewer の報告があります — 会話を開いて確認してください";
 
 test.describe
   .serial("reviewer fake smoke", () => {
@@ -94,6 +93,11 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
       );
+      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
+      // only rendered when the controls are in an idle branch (readiness wait).
+      const actionsBtn = page.getByTestId("epic-actions-btn");
+      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
+      await actionsBtn.click();
       await expect(page.getByTestId("start-review-btn")).toBeVisible({ timeout: 15_000 });
 
       // Stream continuity: starting the Reviewer shelves the parked
@@ -145,17 +149,19 @@ test.describe
       // REST role refresh triggered by the your-turn signal).
       await expect(
         page.getByText(REVIEWER_TURN_BANNER),
-        "Thread-level banner names the Reviewer",
+        "Composer state names the Reviewer",
       ).toBeVisible({ timeout: 30_000 });
       await expect(
-        page.getByText(REVIEWER_SHELL_BANNER),
-        "Epic-level banner names the Reviewer",
+        page.getByText("あなたの番", { exact: true }),
+        "Header status chip shows the your-turn state",
       ).toBeVisible({ timeout: 15_000 });
 
       // SPA transition to the Trial thread (sidebar link — still no reload):
       // the banner must NOT follow. The parked marker belongs to the reviewer
       // conversation; showing it on the Trial thread was the old
       // misattribution bug (managerThreadId doubling as run attribution).
+      // P3: the thread list lives in the trial switcher's popover — open it first.
+      await page.getByTestId("trial-switcher-btn").click();
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
       // .first(): the sidebar has two links to the trial (the thread row and
@@ -176,9 +182,9 @@ test.describe
         page.getByText(REVIEWER_TURN_BANNER),
         "No reviewer reply banner on the Trial thread",
       ).toHaveCount(0);
-      // The epic-level notification stays visible — it points at the reviewer
-      // conversation (correct attribution, not suppression).
-      await expect(page.getByText(REVIEWER_SHELL_BANNER)).toBeVisible();
+      // The passive your-turn indicator stays visible in the header — the
+      // state is real, just attributed to the reviewer conversation.
+      await expect(page.getByText("あなたの番", { exact: true })).toBeVisible();
 
       // Stream continuity: the whole shelve → reviewer-run → park → SPA-navigation window
       // above ran on the ORIGINAL EventSource — no reconnect was needed
@@ -256,8 +262,8 @@ test.describe
         "Fresh load restores the Reviewer-worded banner from REST",
       ).toBeVisible({ timeout: 15_000 });
       await expect(
-        page.getByText(REVIEWER_SHELL_BANNER),
-        "Fresh load restores the epic-level Reviewer banner from REST",
+        page.getByText("あなたの番", { exact: true }),
+        "Fresh load restores the header your-turn chip from REST",
       ).toBeVisible({ timeout: 15_000 });
 
       await page.screenshot({ path: `${SHOTS}/reviewer-awaiting.png`, fullPage: true });
@@ -270,6 +276,8 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.reviewerId}`,
       );
+      // P3: the thread list lives in the trial switcher's popover — open it first.
+      await page.getByTestId("trial-switcher-btn").click();
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
       await expect(
@@ -294,8 +302,8 @@ test.describe
       // the reviewer conversation (REST restore uses RunState.thread_id,
       // never the active-trial fallback).
       await expect(
-        page.getByText(REVIEWER_SHELL_BANNER),
-        "Epic-level banner still names the Reviewer on the trial page",
+        page.getByText("あなたの番", { exact: true }),
+        "Header your-turn chip stays on the trial page",
       ).toBeVisible({ timeout: 15_000 });
       await expect(
         page.getByText(NEUTRAL_TURN_BANNER),
@@ -425,6 +433,11 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
       );
+      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
+      // only rendered when the controls are in an idle branch (readiness wait).
+      const actionsBtn = page.getByTestId("epic-actions-btn");
+      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
+      await actionsBtn.click();
       await page.getByTestId("complete-epic-btn").click();
       await expect
         .poll(
@@ -446,7 +459,12 @@ test.describe
       );
 
       // The reviewer button remains available on a completed epic (read-only
-      // inspection never requires reopening).
+      // inspection never requires reopening) — behind the ⋯ menu.
+      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
+      // only rendered when the controls are in an idle branch (readiness wait).
+      const actionsBtn = page.getByTestId("epic-actions-btn");
+      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
+      await actionsBtn.click();
       await expect(
         page.getByTestId("start-review-btn"),
         "Ask Reviewer is shown on a completed epic",

@@ -134,7 +134,9 @@ export function EpicShell({
             desktop is pinned open via md:max-h-none. */}
         <div
           className={cn(
-            "shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 md:max-h-none md:opacity-100",
+            // overflow-hidden only below md (the collapse animation) — the
+            // desktop ⋯ actions menu must not be clipped by this wrapper.
+            "shrink-0 transition-[max-height,opacity] duration-200 max-md:overflow-hidden md:max-h-none md:opacity-100",
             mobileChromeHidden ? "max-md:max-h-0 max-md:opacity-0" : "max-md:max-h-32",
           )}
         >
@@ -184,34 +186,9 @@ export function EpicShell({
           </div>
         )}
 
-        {/* your turn: cyan dot + concise text (datum language). Shown only when a
-            run actually parked (yourTurn marker) — a never-run epic is
-            "waiting" too but carries no marker, so no banner. Role-aware:
-            currentRun.role says WHICH agent is waiting (Reviewer report vs the
-            neutral manager wording). */}
-        {!runFailed && activityState.yourTurn != null && (
-          <div
-            className="shrink-0 flex items-center gap-2 px-6 py-2"
-            style={{
-              borderBottom: "1px solid color-mix(in oklab, var(--color-light) 20%, transparent)",
-            }}
-          >
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: "var(--color-light)" }}
-              aria-hidden
-            />
-            <p className="font-mono text-[11px]" style={{ color: "var(--color-light)" }}>
-              {/* Role wording only when currentRun matches the parked marker —
-                  a late role-refresh response describing an older (reviewer)
-                  run must not label a newer manager park. */}
-              {activityState.currentRun?.role === "reviewer" &&
-              activityState.currentRun.threadId === activityState.yourTurn?.threadId
-                ? t("epicShell.awaitingInputReviewer")
-                : t("epicShell.awaitingInput")}
-            </p>
-          </div>
-        )}
+        {/* Your-turn state is NOT a banner: the passive indicator is the header
+            StatusBadge, the active one is the lit composer on the parked
+            thread (ThreadChatInner). One voice per state. */}
 
         {/* tab bar (shrink-0, no top dependency needed) — collapses with the header on mobile */}
         <div
@@ -223,8 +200,9 @@ export function EpicShell({
           <EpicTabBar />
         </div>
 
-        {/* void — design-language §spacing/grid (reduced on mobile) */}
-        <div aria-hidden className="shrink-0 h-4 md:h-[var(--spacing-void,40px)]" />
+        {/* void — a breath, not a band: the tab bar's edge-h already draws the
+            horizon, so desktop keeps only 8px here (mobile unchanged). */}
+        <div aria-hidden className="shrink-0 h-4 md:h-2" />
 
         {/*
          * content area — flex-1 min-h-0 overflow-y-auto

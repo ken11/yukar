@@ -101,6 +101,91 @@ export function ToolCallRow({
 }
 
 // ---------------------------------------------------------------------------
+// Tool run group — a run of same-named calls folded into one instrument row
+// ---------------------------------------------------------------------------
+
+/**
+ * ToolRunGroup — consecutive tool-only messages with the SAME tool name
+ * ("task_update ×3") fold into one row; expanding shows each call as a
+ * ToolCallRow. Cyan only while a call is still running.
+ */
+export function ToolRunGroup({
+  toolName,
+  calls,
+}: {
+  toolName: string;
+  calls: Array<{
+    toolCallId?: string;
+    args?: Record<string, unknown>;
+    result?: string;
+  }>;
+}) {
+  const t = useT();
+  const [expanded, setExpanded] = useState(false);
+  const isDone = calls.every((c) => c.result !== undefined);
+  const hasFailed = calls.some((c) => typeof c.result === "string" && c.result.startsWith("Error"));
+
+  return (
+    <div
+      className="my-1.5"
+      data-testid="tool-run-group"
+      style={{
+        borderLeft: isDone
+          ? "1px solid var(--color-outline-variant)"
+          : "1px solid var(--color-light)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white focus-visible:ring-inset hover:bg-surface-container-high"
+      >
+        {isDone ? (
+          <Icon
+            name={hasFailed ? "warning" : "check"}
+            className={`shrink-0 text-[13px] ${hasFailed ? "text-error" : "text-on-surface-variant"}`}
+            aria-hidden
+          />
+        ) : (
+          <span
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ backgroundColor: "var(--color-light)" }}
+            aria-hidden
+          />
+        )}
+        <span className="data truncate">{toolName}</span>
+        {calls.length > 1 && (
+          <span className="data shrink-0" style={{ color: "var(--color-outline)" }}>
+            ×{calls.length}
+          </span>
+        )}
+        <span className="data ml-auto shrink-0 opacity-60">
+          {isDone ? (hasFailed ? "▲ error" : "✓") : t("conversation.streamingLive")}
+        </span>
+        <Icon
+          name={expanded ? "expand_less" : "expand_more"}
+          className="shrink-0 text-[14px] text-on-surface-variant"
+          aria-hidden
+        />
+      </button>
+      {expanded && (
+        <div className="pl-2">
+          {calls.map((c, i) => (
+            <ToolCallRow
+              key={c.toolCallId ?? i}
+              toolName={toolName}
+              args={c.args ?? {}}
+              result={c.result}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Docs fold section
 // ---------------------------------------------------------------------------
 

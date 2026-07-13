@@ -4,28 +4,21 @@
  * EpicScopeHeader — scope header in the axis language
  *
  * Structure (lines, spacing, and text instead of cards):
- *   Top row    — address (datum label): yukar / {project} / {EP-id}
- *                only the last segment (EP-id or epic) has .address-active (white)
- *   datum line — .edge-h (full-field-width horizontal rule)
- *   Bottom row — ‹back + epicId (mono) + vertical rule + epic title (text-title, 2-line wrap)
- *                right cluster: status + RunControlsBar + NewThread
+ *   One row — ‹back + project crumb + epicId (mono) + vertical rule + epic
+ *             title (EpicSwitcher); right cluster: status + RunControlsBar
+ *             (primary run action inline, secondary actions behind ⋯ on desktop)
  *   Running only: single cyan point at the left edge (.light-v + .light-live)
  *
  * Maintain the planned/blocked mapping in resolveStatus.
  * Do not break the sticky/flex structure (fix 1 already applied).
  */
 
-import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState } from "react";
 import { RunControlsBar } from "@/components/features/epics/run-controls";
-import { NewThreadModal } from "@/components/features/threads/new-thread-modal";
 import { Icon } from "@/components/icon";
-import { AddressLine } from "@/components/ui/address-line";
 import type { StatusValue } from "@/components/ui/status-badge";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { getTasks } from "@/lib/api/endpoints";
-import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
 import { useT } from "@/lib/i18n/provider";
 import { useEpicRun } from "./epic-run-context";
@@ -78,39 +71,6 @@ const MOBILE_STATUS_GLYPH: Record<string, { icon: string; color?: string; labelK
   idle: { icon: "circle", labelKey: "epic.status.idle" },
 };
 
-/** Telemetry instrument — task progress displayed in .data mono */
-function TelemetryInstrument({ tasksDone, tasksTotal }: { tasksDone: number; tasksTotal: number }) {
-  const t = useT();
-  if (tasksTotal === 0) return null;
-  const label = t("a11y.tasksDoneOf")
-    .replace("{done}", String(tasksDone))
-    .replace("{total}", String(tasksTotal));
-  return (
-    <span
-      className="hidden items-center gap-1 sm:inline-flex"
-      title={label}
-      role="status"
-      aria-label={label}
-    >
-      <span className="data">
-        {tasksDone}
-        <span style={{ color: "var(--color-outline-variant)" }}>/</span>
-        {tasksTotal}
-      </span>
-      <span
-        className="font-mono uppercase"
-        style={{
-          fontSize: "10px",
-          color: "var(--color-outline)",
-          letterSpacing: "0.04em",
-        }}
-      >
-        tasks
-      </span>
-    </span>
-  );
-}
-
 export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }) {
   const t = useT();
   const { projectId, epicId, project, epic, activityState, setPausePending } = useEpicRun();
@@ -128,16 +88,6 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
     activityState.yourTurn != null,
   );
 
-  // Task progress — same query key as EpicTabBar, so this will be a cache hit
-  const { data: tasksFile } = useQuery({
-    queryKey: queryKeys.tasks.get(projectId, epicId),
-    queryFn: () => getTasks(projectId, epicId),
-    staleTime: 30_000,
-  });
-  const tasksDone =
-    tasksFile?.progress?.done ?? tasksFile?.tasks?.filter((t) => t.status === "done").length ?? 0;
-  const tasksTotal = tasksFile?.progress?.total ?? tasksFile?.tasks?.length ?? 0;
-
   return (
     <div
       className={cn(
@@ -151,28 +101,14 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
         paddingTop: "env(safe-area-inset-top)",
       }}
     >
-      {/* Top row: datum address band — desktop only. On mobile the global top bar
-          already shows the location and the back chevron covers navigation, so
-          this row is dropped to reclaim vertical space for the conversation. */}
-      <div className="edge-h hidden min-w-0 items-center overflow-hidden px-4 pt-2 pb-1.5 md:flex md:px-6">
-        {/* AddressLine: min-w-0 + truncate prevents long paths from overflowing */}
-        <div className="min-w-0 truncate">
-          <AddressLine
-            segments={[
-              { label: "yukar", href: "/projects" },
-              { label: project?.name ?? projectId, href: `/projects/${projectId}` },
-              { label: epicId, active: true },
-            ]}
-          />
-        </div>
-      </div>
-
-      {/* Bottom row: back + title + right cluster
+      {/* Single line: back + project crumb + Epic switcher + right cluster.
+       * The old address band (yukar / project / EP-id) merged into this row —
+       * the project crumb keeps the way up, the switcher already names the epic.
        * Mobile: flex-col (vertical stack) — row 1 = title row, row 2 = controls
        * Desktop (md:): flex-row, single-line layout as before
        */}
-      <div className="flex flex-col gap-2 px-4 py-1.5 md:flex-row md:items-center md:gap-x-4 md:px-6 md:py-2 md:min-h-[52px]">
-        {/* Row 1: back chevron + Epic switcher */}
+      <div className="flex flex-col gap-2 px-4 py-1.5 md:min-h-[44px] md:flex-row md:items-center md:gap-x-4 md:px-6 md:py-1">
+        {/* Row 1: back chevron + project crumb + Epic switcher */}
         <div className="flex min-w-0 items-center gap-x-2 md:flex-1">
           {/* Back chevron — shrink-0 keeps it always visible */}
           <Link
@@ -182,6 +118,21 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
           >
             <Icon name="chevron_left" className="text-[22px]" />
           </Link>
+
+          {/* Project crumb — desktop only (mobile: the back chevron suffices) */}
+          <Link
+            href={`/projects/${projectId}`}
+            className="address hidden shrink-0 max-w-[16ch] truncate transition-colors hover:text-on-surface md:inline"
+          >
+            {project?.name ?? projectId}
+          </Link>
+          <span
+            aria-hidden
+            className="address hidden shrink-0 md:inline"
+            style={{ color: "var(--color-outline-variant)" }}
+          >
+            ／
+          </span>
 
           {/* Epic switcher: [EP-id │ title ∨] click opens sibling Epic dropdown */}
           {/* min-w-0: allows truncate to work inside flex-1 */}
@@ -228,7 +179,7 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
             mobileActionsOpen ? "flex" : "hidden",
           )}
         >
-          <TelemetryInstrument tasksDone={tasksDone} tasksTotal={tasksTotal} />
+          {/* Task progress lives on the tab bar alone (タスク 1/3) — not repeated here. */}
           {/* Merge fact badge (epic.merged_at) — an attribute, independent of the status */}
           {epic?.merged_at && <StatusBadge status="merged" />}
           <StatusBadge status={status} />
@@ -240,7 +191,7 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
             setPausePending={setPausePending}
             onStopRequest={onStopRequest}
           />
-          <NewThreadModal projectId={projectId} epicId={epicId} />
+          {/* New trial / continue-on-branch live in the thread-list pane alone — not repeated here. */}
         </div>
       </div>
     </div>

@@ -16,6 +16,8 @@ export interface TabItem {
 interface TabBarProps {
   items: TabItem[];
   className?: string;
+  /** Desktop-dense: 36px tall at md+ (mobile keeps the 44px touch target). */
+  dense?: boolean;
 }
 
 /**
@@ -30,7 +32,7 @@ interface TabBarProps {
  * - Each tab uses `shrink-0` to prevent collapsing.
  * - On desktop (md:) the traditional `flex` layout is used.
  */
-export function TabBar({ items, className }: TabBarProps) {
+export function TabBar({ items, className, dense = false }: TabBarProps) {
   const pathname = usePathname();
   const tabRefs = useRef<(HTMLAnchorElement | null)[]>([]);
 
@@ -62,6 +64,7 @@ export function TabBar({ items, className }: TabBarProps) {
         // Mobile: horizontal scroll enabled, scrollbar hidden
         // shrink-0: keep the 44px height when placed inside a column flex that overflows
         "flex h-11 shrink-0 items-end edge-h",
+        dense && "md:h-9",
         "overflow-x-auto",
         "[&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]",
         className,
@@ -82,6 +85,7 @@ export function TabBar({ items, className }: TabBarProps) {
             className={cn(
               // shrink-0: prevent tabs from collapsing on mobile
               "inline-flex h-11 shrink-0 items-center gap-1.5 whitespace-nowrap px-4 text-label font-medium uppercase tracking-[0.05em] transition-colors",
+              dense && "md:h-9",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]",
               // active: white text + white 2px under-tick (current location = white)
               active ? "text-on-surface" : "text-on-surface-variant hover:text-on-surface",

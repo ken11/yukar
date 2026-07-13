@@ -37,6 +37,7 @@ const ja = {
       error: "エラー",
     },
     actionsToggle: "エピック操作を表示",
+    moreActions: "その他の操作",
     reopen: "再オープン",
     complete: "完了にする",
     completeTitle: "このエピックを完了にします（未完のまま終える場合もこの操作です）",
@@ -169,6 +170,7 @@ const ja = {
     statusRejected: "却下",
     toolInput: "入力",
     toolResult: "結果",
+    showFullPrompt: "指示プロンプト全文を表示",
     streamingLive: "実行中…",
     openThreadList: "スレッド一覧を開く",
     closeThreadList: "スレッド一覧を閉じる",
@@ -513,8 +515,6 @@ const ja = {
   },
   epicShell: {
     runFailed: "▲ 実行が失敗しました",
-    awaitingInput: "あなたの番です — 返信するとエージェントが続けます",
-    awaitingInputReviewer: "Reviewer の報告があります — 会話を開いて確認してください",
   },
   usage: {
     heading: "使用状況",

@@ -1,8 +1,9 @@
 /**
- * Your-turn banner (lifecycle redesign) tests:
- * - The banner shows when the run parked on this thread (isYourTurn) and
- *   uses the neutral wording — no hardcoded role name ("Manager …" is gone).
- * - No banner when it is not the user's turn, and the run-failed banner wins.
+ * Your-turn state tests (lifecycle redesign; chrome unification moved the
+ * state from banners into the composer):
+ * - The composer state line shows when the run parked on this thread
+ *   (isYourTurn) and uses the neutral wording — no hardcoded role name.
+ * - No state line when it is not the user's turn, and the run-failed banner wins.
  * - No synthetic "__awaiting__" bubble is ever rendered (the redesign removed it); the
  *   question is simply the last persisted assistant message.
  */
@@ -77,9 +78,10 @@ beforeEach(() => {
   vi.stubGlobal("fetch", () => Promise.resolve({ ok: false, json: () => Promise.reject() }));
 });
 
-describe("your-turn banner", () => {
+describe("your-turn composer state", () => {
   it("shows the neutral your-turn wording when the run parked on this thread", () => {
-    renderChat({ isYourTurn: true });
+    // The state lives in the composer, so the thread must be composable.
+    renderChat({ isYourTurn: true, isActiveTrial: true });
     const banner = screen.getByText(ja.conversation.awaitingBanner);
     expect(banner).toBeTruthy();
     // Neutral wording — the old banner hardcoded the role ("the Manager is
@@ -87,13 +89,13 @@ describe("your-turn banner", () => {
     expect(ja.conversation.awaitingBanner).not.toContain("Manager");
   });
 
-  it("does not show the banner when it is not the user's turn", () => {
-    renderChat({ isYourTurn: false });
+  it("does not show the state line when it is not the user's turn", () => {
+    renderChat({ isYourTurn: false, isActiveTrial: true });
     expect(screen.queryByText(ja.conversation.awaitingBanner)).toBeNull();
   });
 
-  it("the run-failed banner wins over the your-turn banner", () => {
-    renderChat({ isYourTurn: true, runFailed: true, runError: "boom" });
+  it("the run-failed banner wins over the your-turn state", () => {
+    renderChat({ isYourTurn: true, isActiveTrial: true, runFailed: true, runError: "boom" });
     expect(screen.queryByText(ja.conversation.awaitingBanner)).toBeNull();
     expect(screen.getByText(`▲ ${ja.conversation.runFailedTitle}`)).toBeTruthy();
   });

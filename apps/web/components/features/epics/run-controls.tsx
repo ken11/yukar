@@ -12,13 +12,77 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icon";
 import { runAction, startReview, startRun } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
+import { cn } from "@/lib/cn";
 import { useT } from "@/lib/i18n/provider";
 import type { useRunActivity } from "@/lib/sse/use-run-activity";
 import { extractCompleteError, useCompleteEpic, useReopenEpic } from "./use-close-epic";
+
+// ---------------------------------------------------------------------------
+// ActionsMenu — secondary epic actions behind ⋯ (desktop only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Desktop: a ⋯ trigger with a popover holding the secondary actions
+ * (Ask Reviewer / Request Fix / Complete …) — the header keeps one primary
+ * run action inline. Mobile: `display: contents` lets the same children flow
+ * flat into the collapsed controls row exactly as before (no duplicate nodes,
+ * no duplicate testids).
+ */
+function ActionsMenu({ children }: { children: React.ReactNode }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="contents md:relative md:block">
+      <button
+        type="button"
+        data-testid="epic-actions-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t("epic.moreActions")}
+        title={t("epic.moreActions")}
+        onClick={() => setOpen((v) => !v)}
+        className="hidden items-center rounded border border-outline-variant px-2 py-1.5 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white md:flex"
+      >
+        <Icon name="more_horiz" className="text-[16px]" />
+      </button>
+      <div
+        role="menu"
+        onClickCapture={() => setOpen(false)}
+        className={cn(
+          "contents md:absolute md:right-0 md:top-[calc(100%+4px)] md:z-30 md:min-w-[200px] md:flex-col md:items-stretch md:gap-1 md:rounded md:border md:border-outline-variant md:bg-surface-container md:p-1 md:shadow-lg",
+          open ? "md:flex" : "md:hidden",
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Shared class for buttons that double as chips (mobile) and menu rows (desktop). */
+const MENU_ITEM_CLS = "md:w-full md:justify-start md:border-transparent";
 
 // ---------------------------------------------------------------------------
 // StopConfirmDialog
@@ -142,7 +206,10 @@ export function RunControlsBar({
           });
         }}
         disabled={completeMutation.isPending}
-        className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+        className={cn(
+          "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50",
+          MENU_ITEM_CLS,
+        )}
         title={t("epic.completeTitle")}
       >
         <Icon name="check_circle" className="text-[16px]" />
@@ -217,7 +284,10 @@ export function RunControlsBar({
         reviewMutation.mutate();
       }}
       disabled={reviewMutation.isPending}
-      className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+      className={cn(
+        "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50",
+        MENU_ITEM_CLS,
+      )}
       title={t("epic.reviewCheckTitle")}
     >
       <Icon name="fact_check" className="text-[16px]" />
@@ -234,7 +304,10 @@ export function RunControlsBar({
       onClick={() =>
         router.push(`/projects/${projectId}/epics/${epicId}/threads/${managerThreadId}`)
       }
-      className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface"
+      className={cn(
+        "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface",
+        MENU_ITEM_CLS,
+      )}
       title={t("common.requestFix")}
     >
       <Icon name="forum" className="text-[16px]" />
@@ -259,7 +332,7 @@ export function RunControlsBar({
           <Icon name="lock_open" className="text-[16px]" />
           <span className="hidden sm:inline">{t("epic.reopen")}</span>
         </button>
-        {renderReviewerButton()}
+        <ActionsMenu>{renderReviewerButton()}</ActionsMenu>
       </>
     );
   }
@@ -364,9 +437,11 @@ export function RunControlsBar({
             {runMutation.isPending ? t("common.starting") : t("common.rerun")}
           </span>
         </button>
-        {renderReviewerButton()}
-        {renderRequestFixButton()}
-        {renderCompleteButton()}
+        <ActionsMenu>
+          {renderReviewerButton()}
+          {renderRequestFixButton()}
+          {renderCompleteButton()}
+        </ActionsMenu>
       </>
     );
   }
@@ -391,9 +466,11 @@ export function RunControlsBar({
           {runMutation.isPending ? t("common.starting") : t("run.startRun")}
         </span>
       </button>
-      {renderReviewerButton()}
-      {renderRequestFixButton()}
-      {renderCompleteButton()}
+      <ActionsMenu>
+        {renderReviewerButton()}
+        {renderRequestFixButton()}
+        {renderCompleteButton()}
+      </ActionsMenu>
     </>
   );
 }

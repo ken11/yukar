@@ -86,7 +86,7 @@ export function EpicTabBar() {
 
   return (
     <div className="bg-surface">
-      <TabBar items={items} />
+      <TabBar items={items} dense />
     </div>
   );
 }
