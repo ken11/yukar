@@ -8,6 +8,8 @@ effective.  The model is passed in as an argument.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -18,13 +20,16 @@ from strands.types.agent import Limits
 from yukar.agents.context import AgentContext
 from yukar.agents.prompts import _WORKER_SYSTEM_PROMPT, _build_worker_prompt
 from yukar.agents.streaming import AgentUsageRecorder, StreamTranslator, extract_final_text
+from yukar.agents.tools.browser_tools import make_browser_tools_if_configured
 from yukar.agents.tools.command import make_command_tools
 from yukar.agents.tools.fs import make_fs_tools
 from yukar.agents.tools.fs_edit import make_fs_edit_tools
 from yukar.agents.tools.git_tools import make_git_tools
 from yukar.agents.tools.grep_tools import make_grep_tools
 from yukar.agents.tools.repo_tools import make_repo_tools
+from yukar.config import paths
 from yukar.models.task import Task
+from yukar.preview.browser import SessionKey, get_browser_session_manager
 from yukar.storage import session_store
 
 logger = logging.getLogger(__name__)
@@ -98,6 +103,10 @@ async def run_worker(
 
     grep_tools_list = make_grep_tools(ctx)
 
+    # Browser verification bundle — present only when the assigned repo
+    # declares a dev_server config (empty list otherwise).
+    browser_tools_list = await make_browser_tools_if_configured(ctx, worker_id)
+
     worker_agent = Agent(
         model=worker_model,
         agent_id=worker_id,
@@ -109,6 +118,7 @@ async def run_worker(
             *git_tools_list,
             *grep_tools_list,
             *worker_repo_tools,
+            *browser_tools_list,
             *_extra,
         ],
         callback_handler=translator.callback,
@@ -132,6 +142,24 @@ async def run_worker(
         async for _ in worker_agent.stream_async(prompt, limits=limits):
             pass
     finally:
+        # Close this worker's browser page (if it opened one) — the trial's
+        # dev servers stay up for later attempts; run-end stops them.
+        _browser_sessions = get_browser_session_manager()
+        if browser_tools_list and _browser_sessions is not None:
+            # CancelledError included: a cancel arriving during this shielded
+            # close must not skip the flush/persist below (the shield lets the
+            # close finish; asyncio re-delivers the cancel at the next await).
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(
+                    _browser_sessions.close(
+                        SessionKey(
+                            project_id=project_id,
+                            epic_id=epic_id,
+                            trial_id=paths.trial_id_of_worktree(ctx.worktree_path),
+                            owner_id=worker_id,
+                        )
+                    )
+                )
         await usage_recorder.flush()
         # Persist the Worker's full conversation (handoff prompt + tool-use
         # activity + final reply) so the thread retains its activity log on

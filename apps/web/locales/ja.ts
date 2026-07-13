@@ -296,6 +296,45 @@ const ja = {
     deleting: "削除中…",
     deleteFailed: "リポジトリの削除に失敗しました",
     removeLabel: "リポジトリ {repo} を外す",
+    devServer: {
+      sectionLabel: "開発サーバー",
+      configure: "開発サーバーを設定",
+      remove: "設定を外す",
+      serviceName: "サービス名",
+      serviceCommand: "起動コマンド",
+      serviceCwd: "作業ディレクトリ",
+      servicePort: "基準ポート",
+      serviceReadinessPath: "起動確認パス",
+      serviceReadinessTimeout: "起動待ちタイムアウト（秒）",
+      serviceEnv: "環境変数",
+      portNote:
+        "コマンドや環境変数の中の {port} は、トライアルごとにホストが割り当てた実ポートに置き換わります。{port:名前} と書くと別サービスのポートを参照します。",
+      readinessEmptyNote: "空欄のときはポートが開くのを待つだけで起動完了とみなします。",
+      envFormatNote: "1行につき KEY=VALUE の形式で書きます。",
+      addService: "サービスを追加",
+      removeService: "このサービスを削除",
+      allowedOrigins: "許可するオリジン",
+      allowedOriginsNote: "1行に1つずつ書きます。トライアル自身のサービスは常に許可されます。",
+      allowCommonCdns: "よく使われる CDN を許可",
+      allowCommonCdnsNote: "既知の CDN のみ・GET だけが通ります。",
+      save: "保存",
+      saving: "保存中…",
+      saved: "保存しました",
+      errors: {
+        noServices: "サービスを少なくとも1つ追加してください。",
+        serviceNameRequired: "サービス {service} に名前を入力してください。",
+        invalidServiceName:
+          "サービス {service} の名前は英数字で始め、英数字・ハイフン・アンダースコアだけで入力してください。",
+        duplicateServiceName:
+          "サービス名 {service} が重複しています。名前はサービスごとに一意にしてください。",
+        commandRequired: "サービス {service} に起動コマンドを入力してください。",
+        invalidPort: "サービス {service} のポートは 1〜65535 の整数で入力してください。",
+        invalidTimeout:
+          "サービス {service} のタイムアウトは 0 より大きく 600 以下の数値で入力してください。",
+        invalidEnvLine:
+          "サービス {service} の環境変数「{line}」が KEY=VALUE の形式になっていません。",
+      },
+    },
   },
   indexer: {
     noReposIndexed: "まだリポジトリがインデックスされていません",

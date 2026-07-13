@@ -1062,6 +1062,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/repos/{repo_name}/dev-server": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Repo Dev Server
+         * @description Replace the dev server launch config for a repo.
+         *
+         *     The config is declarative: the host (never the agents) launches the
+         *     services from it when browser verification is requested for a trial.
+         */
+        put: operations["put_repo_dev_server_api_projects__project_id__repos__repo_name__dev_server_put"];
+        post?: never;
+        /**
+         * Delete Repo Dev Server
+         * @description Clear the dev server launch config (disables browser verification).
+         */
+        delete: operations["delete_repo_dev_server_api_projects__project_id__repos__repo_name__dev_server_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/repos/{repo_name}": {
         parameters: {
             query?: never;
@@ -1551,6 +1578,60 @@ export interface components {
             repo?: string | null;
             /** Title */
             title?: string | null;
+        };
+        /**
+         * DevServerBrowser
+         * @description Browser egress config for agent verification of this repo's services.
+         *
+         *     Navigation and every subresource request are fail-closed to the trial's
+         *     own service origins; ``allowed_origins`` adds explicit exceptions and
+         *     ``allow_common_cdns`` enables the built-in well-known CDN preset
+         *     (GET only, no credentials).
+         */
+        DevServerBrowser: {
+            /** Allowed Origins */
+            allowed_origins?: string[];
+            /**
+             * Allow Common Cdns
+             * @default true
+             */
+            allow_common_cdns: boolean;
+        };
+        /**
+         * DevServerConfig
+         * @description User-declared dev server launch config (services start in list order).
+         */
+        DevServerConfig: {
+            /** Services */
+            services: components["schemas"]["DevService"][];
+            browser?: components["schemas"]["DevServerBrowser"];
+        };
+        /**
+         * DevService
+         * @description One long-running dev process, launched by the host inside a trial worktree.
+         *
+         *     ``command`` is exec tokens (never a shell line). Tokens and ``env`` values
+         *     may contain ``{port}`` (this service's assigned port) and ``{port:name}``
+         *     (a sibling service's port). ``base_port`` is a preference — the host
+         *     assigns a free port per trial so parallel worktrees never collide.
+         */
+        DevService: {
+            /** Name */
+            name: string;
+            /** Command */
+            command: string[];
+            /**
+             * Cwd
+             * @default .
+             */
+            cwd: string;
+            /** Base Port */
+            base_port: number;
+            readiness?: components["schemas"]["ServiceReadiness"];
+            /** Env */
+            env?: {
+                [key: string]: string;
+            };
         };
         /** DiffResult */
         DiffResult: {
@@ -2520,6 +2601,7 @@ export interface components {
             default_branch: string;
             commands?: components["schemas"]["RepoCommands"];
             index?: components["schemas"]["RepoIndex"];
+            dev_server?: components["schemas"]["DevServerConfig"] | null;
         };
         /** RepoCommands */
         RepoCommands: {
@@ -3009,6 +3091,22 @@ export interface components {
             kind: "agent_config" | "skill" | "agent_profile" | "memory";
             /** Name */
             name: string;
+        };
+        /**
+         * ServiceReadiness
+         * @description When to consider a dev service booted.
+         *
+         *     ``path`` is probed with HTTP GET on 127.0.0.1:{port}; None means waiting
+         *     for the port to accept connections is enough.
+         */
+        ServiceReadiness: {
+            /** Path */
+            path?: string | null;
+            /**
+             * Timeout Seconds
+             * @default 60
+             */
+            timeout_seconds: number;
         };
         /** Settings */
         Settings: {
@@ -5795,6 +5893,74 @@ export interface operations {
                 "application/json": components["schemas"]["RepoCommands"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Repo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_repo_dev_server_api_projects__project_id__repos__repo_name__dev_server_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DevServerConfig"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Repo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_repo_dev_server_api_projects__project_id__repos__repo_name__dev_server_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

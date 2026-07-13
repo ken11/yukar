@@ -169,9 +169,29 @@ async def _remove_trial_worktrees(
 ) -> None:
     """Best-effort removal of every repo worktree for *trial_id* (keyed by trial)."""
     from yukar.config import paths as p
+    from yukar.preview import get_dev_server_manager
     from yukar.storage.project_repo import get_repo
 
     _log = logging.getLogger(__name__)
+
+    # Stop any dev servers still running inside these worktrees first — a live
+    # child process would keep the directory busy and outlive its trial.
+    # Browser sessions pointing at them close first.
+    from yukar.preview.browser import get_browser_session_manager
+
+    _browser_sessions = get_browser_session_manager()
+    if _browser_sessions is not None:
+        try:
+            await _browser_sessions.close_for_trial(project_id, epic_id, trial_id)
+        except Exception:
+            _log.warning("%s: browser session close failed for trial %s", log_prefix, trial_id)
+    _dev_manager = get_dev_server_manager()
+    if _dev_manager is not None:
+        try:
+            await _dev_manager.stop_for_trial(project_id, epic_id, trial_id)
+        except Exception:
+            _log.warning("%s: dev server stop failed for trial %s", log_prefix, trial_id)
+
     for repo_name in list(touched_repos):
         wt_path = p.worktree_dir(root, project_id, epic_id, trial_id, repo_name)
         if not wt_path.exists():

@@ -9,6 +9,8 @@ passed in as an argument.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,10 +21,13 @@ from strands.types.agent import Limits
 from yukar.agents.context import AgentContext
 from yukar.agents.prompts import _EVALUATOR_SYSTEM_PROMPT, _build_evaluator_prompt
 from yukar.agents.streaming import AgentUsageRecorder, StreamTranslator
+from yukar.agents.tools.browser_tools import make_browser_tools_if_configured
 from yukar.agents.tools.evaluator_tools import make_evaluator_tools
 from yukar.agents.tools.grep_tools import make_grep_tools
+from yukar.config import paths
 from yukar.models.epic import Epic
 from yukar.models.task import Task
+from yukar.preview.browser import SessionKey, get_browser_session_manager
 from yukar.storage import session_store
 
 logger = logging.getLogger(__name__)
@@ -103,6 +108,12 @@ async def run_evaluator(
         )
         eval_tools = [*eval_tools, *eval_repo_tools]
 
+    # Browser verification bundle (only when the repo declares dev_server).
+    # Interaction included by design: the Evaluator's read-only invariant is
+    # about the repository, and browser use never writes the worktree.
+    browser_tools_list = await make_browser_tools_if_configured(ctx, eval_id)
+    eval_tools = [*eval_tools, *browser_tools_list]
+
     translator = StreamTranslator(
         project_id=project_id,
         epic_id=epic_id,
@@ -143,6 +154,24 @@ async def run_evaluator(
         async for _ in eval_agent.stream_async(prompt, limits=limits):
             pass
     finally:
+        # Close this evaluator's browser page (if it opened one); the trial's
+        # dev servers stay up for later attempts.
+        _browser_sessions = get_browser_session_manager()
+        if browser_tools_list and _browser_sessions is not None:
+            # CancelledError included: a cancel arriving during this shielded
+            # close must not skip the flush/persist below (the shield lets the
+            # close finish; asyncio re-delivers the cancel at the next await).
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(
+                    _browser_sessions.close(
+                        SessionKey(
+                            project_id=project_id,
+                            epic_id=epic_id,
+                            trial_id=paths.trial_id_of_worktree(ctx.worktree_path),
+                            owner_id=eval_id,
+                        )
+                    )
+                )
         await usage_recorder.flush()
         # Persist the Evaluator's full conversation (handoff prompt + read_diff /
         # run_tests / submit_verdict tool activity + final reply) so the thread

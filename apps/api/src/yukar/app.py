@@ -192,7 +192,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     app.state.watcher = watcher
 
+    # Dev server manager + browser sessions — host-launched per-trial dev
+    # servers for agent browser verification.  Lazy: nothing starts until a
+    # browser tool asks.
+    from yukar.preview import DevServerManager, init_dev_server_manager
+    from yukar.preview.browser import BrowserSessionManager, init_browser_session_manager
+
+    dev_server_manager = DevServerManager()
+    init_dev_server_manager(dev_server_manager)
+    app.state.dev_server_manager = dev_server_manager
+    browser_session_manager = BrowserSessionManager()
+    init_browser_session_manager(browser_session_manager)
+    app.state.browser_session_manager = browser_session_manager
+
     yield
+
+    # Shutdown: close browser sessions, then stop all dev server processes,
+    # before anything else so child process groups never outlive the host.
+    try:
+        await browser_session_manager.close_all()
+    except Exception:
+        logger.warning("Shutdown: browser session close_all failed", exc_info=True)
+    try:
+        await dev_server_manager.stop_all()
+    except Exception:
+        logger.warning("Shutdown: dev server manager stop_all failed", exc_info=True)
+    # Clear the module singletons so a later in-process lifespan (e.g. a
+    # subsequent test) does not inherit these shut-down managers.
+    init_dev_server_manager(None)
+    init_browser_session_manager(None)
 
     # Shutdown: stop watcher.
     if watcher is not None:

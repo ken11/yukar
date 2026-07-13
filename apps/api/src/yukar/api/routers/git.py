@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Literal
@@ -349,6 +350,33 @@ async def git_prune(
         raise HTTPException(status_code=409, detail="A run is active — prune is not allowed")
 
     epic = await get_epic_or_404(root, project_id, epic_id)
+
+    # Prune removes only the ACTIVE manager trial's worktree, so scope the
+    # belt-and-braces dev-server stop to that same trial — stopping the whole
+    # epic would kill servers belonging to other (non-pruned) trials.  Run-end
+    # already stopped them; this only reaps a leaked child that would block
+    # worktree removal.
+    from yukar.agents.trials import resolve_active_trial_id
+    from yukar.preview import get_dev_server_manager
+    from yukar.preview.browser import get_browser_session_manager
+
+    _active_trial = await resolve_active_trial_id(root, project_id, epic_id, epic)
+    if _active_trial is not None:
+        _browser_sessions = get_browser_session_manager()
+        if _browser_sessions is not None:
+            with contextlib.suppress(Exception):
+                await _browser_sessions.close_for_trial(project_id, epic_id, _active_trial)
+        _dev_manager = get_dev_server_manager()
+        if _dev_manager is not None:
+            try:
+                await _dev_manager.stop_for_trial(project_id, epic_id, _active_trial)
+            except Exception:
+                logger.warning(
+                    "Prune: dev server stop failed for %s/%s trial %s",
+                    project_id,
+                    epic_id,
+                    _active_trial,
+                )
 
     target_repos = body.repos if body.repos is not None else epic.touched_repos
     if not target_repos:

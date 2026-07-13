@@ -36,6 +36,11 @@ jobs:
         working-directory: apps/api
         run: uv run ty check
 
+      # Browser-verification tests launch a headless Chromium via Playwright.
+      - name: Install Playwright Chromium
+        working-directory: apps/api
+        run: uv run playwright install chromium --with-deps
+
       - name: Test (pytest)
         working-directory: apps/api
         env:

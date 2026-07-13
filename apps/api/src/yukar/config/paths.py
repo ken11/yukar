@@ -229,6 +229,17 @@ def worktree_dir(
     return manager_worktrees_dir(root, project_id, epic_id, trial_id) / repo_name
 
 
+def trial_id_of_worktree(worktree_path: Path) -> str:
+    """Inverse of :func:`worktree_dir` — the trial segment of a worktree path.
+
+    Layout: .../worktrees/{trial_id}/{repo_name}; only config/paths.py knows
+    this layout, so consumers that hold a worktree path but not the trial id
+    (e.g. AgentContext-scoped tools) recover it here rather than hard-coding
+    the parent-directory convention.
+    """
+    return worktree_path.parent.name
+
+
 # ---------------------------------------------------------------------------
 # Project-level agent config / skills / MCP (Wave 4a)
 # ---------------------------------------------------------------------------

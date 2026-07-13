@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from yukar.config import paths
-from yukar.models.project import Project, Repo, RepoCommands
+from yukar.models.project import DevServerConfig, Project, Repo, RepoCommands
 from yukar.storage.yaml_io import (
     load_model_async,
     load_validated_dir_async,
@@ -111,6 +111,24 @@ async def update_repo_commands(
     if repo is None:
         return None
     repo.commands = commands
+    await save_repo(root, project_id, repo)
+    return repo
+
+
+async def update_repo_dev_server(
+    root: str,
+    project_id: str,
+    repo_name: str,
+    dev_server: DevServerConfig | None,
+) -> Repo | None:
+    """Replace (or clear, with None) the dev server launch config for a repo.
+
+    Returns the updated Repo, or None if the repo does not exist.
+    """
+    repo = await get_repo(root, project_id, repo_name)
+    if repo is None:
+        return None
+    repo.dev_server = dev_server
     await save_repo(root, project_id, repo)
     return repo
 

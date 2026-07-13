@@ -26,6 +26,8 @@ Endpoints:
     GET    /api/projects/{pid}/repos
     POST   /api/projects/{pid}/repos
     PUT    /api/projects/{pid}/repos/{repo}/commands
+    PUT    /api/projects/{pid}/repos/{repo}/dev-server
+    DELETE /api/projects/{pid}/repos/{repo}/dev-server
     DELETE /api/projects/{pid}/repos/{repo}
 
 All routes validate project existence (404) before delegating to storage.
@@ -51,7 +53,7 @@ from yukar.deps import IndexerServiceDep, WorkspaceRootDep
 from yukar.models.agent_config import AgentConfig
 from yukar.models.agent_profile import AgentProfile
 from yukar.models.mcp import McpConfig
-from yukar.models.project import Repo, RepoCommands
+from yukar.models.project import DevServerConfig, Repo, RepoCommands
 from yukar.models.roles import ConfigurableAgentRole
 from yukar.models.skill import Skill, SkillMeta
 from yukar.storage import agent_config_repo, agent_profiles_repo, mcp_repo, skills_repo
@@ -63,6 +65,7 @@ from yukar.storage.project_repo import (
     save_project,
     save_repo,
     update_repo_commands,
+    update_repo_dev_server,
 )
 
 logger = logging.getLogger(__name__)
@@ -326,6 +329,45 @@ async def put_repo_commands(
     """Replace the run_command allow/deny lists for a repo."""
     await get_project_or_404(root, project_id)
     updated = await update_repo_commands(root, project_id, repo_name, body)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
+    return updated
+
+
+@router.put(
+    "/{project_id}/repos/{repo_name}/dev-server",
+    response_model=Repo,
+)
+async def put_repo_dev_server(
+    project_id: str,
+    repo_name: str,
+    body: DevServerConfig,
+    root: WorkspaceRootDep,
+) -> Repo:
+    """Replace the dev server launch config for a repo.
+
+    The config is declarative: the host (never the agents) launches the
+    services from it when browser verification is requested for a trial.
+    """
+    await get_project_or_404(root, project_id)
+    updated = await update_repo_dev_server(root, project_id, repo_name, body)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
+    return updated
+
+
+@router.delete(
+    "/{project_id}/repos/{repo_name}/dev-server",
+    response_model=Repo,
+)
+async def delete_repo_dev_server(
+    project_id: str,
+    repo_name: str,
+    root: WorkspaceRootDep,
+) -> Repo:
+    """Clear the dev server launch config (disables browser verification)."""
+    await get_project_or_404(root, project_id)
+    updated = await update_repo_dev_server(root, project_id, repo_name, None)
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
     return updated

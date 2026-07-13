@@ -117,6 +117,8 @@ from yukar.models.roles import AgentRole
 from yukar.models.run import RunState
 from yukar.models.task import Task, TasksFile, compute_plan_hash
 from yukar.models.thread import ThreadEntry
+from yukar.preview import get_dev_server_manager
+from yukar.preview.browser import get_browser_session_manager
 from yukar.runs.scheduler import WorkerScheduler
 from yukar.storage import plan_approval_repo, state_repo, tasks_repo, threads_repo
 from yukar.storage.epic_repo import get_epic
@@ -560,6 +562,46 @@ class EpicOrchestrator:
                         project_id,
                         exc_info=True,
                     )
+            # Dev servers are run-scoped: stop this epic's per-trial services
+            # (and any browser sessions pointing at them) on every exit
+            # (design §3.1).  Same double-cancel hazard as the MCP stop above,
+            # so the shield pattern is reused; failures only log — a leaked
+            # child is reaped again at trial archive/shutdown.
+            _browser_sessions = get_browser_session_manager()
+            if _browser_sessions is not None:
+                try:
+                    await asyncio.shield(_browser_sessions.close_for_epic(project_id, epic_id))
+                except asyncio.CancelledError:
+                    if _mcp_cancel is None:
+                        _mcp_cancel = asyncio.CancelledError()
+                except Exception:
+                    logger.warning(
+                        "Browser sessions: error closing for %s/%s",
+                        project_id,
+                        epic_id,
+                        exc_info=True,
+                    )
+            _dev_manager = get_dev_server_manager()
+            if _dev_manager is not None:
+                try:
+                    await asyncio.shield(_dev_manager.stop_for_epic(project_id, epic_id))
+                except asyncio.CancelledError:
+                    if _mcp_cancel is None:
+                        _mcp_cancel = asyncio.CancelledError()
+                    logger.warning(
+                        "Dev servers: outer cancel received during stop for %s/%s"
+                        " — cleanup continues in background",
+                        project_id,
+                        epic_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Dev servers: error stopping for %s/%s",
+                        project_id,
+                        epic_id,
+                        exc_info=True,
+                    )
+
             # Sentinel closes SSE streams — only when this exit really ends
             # the stream's usefulness (stop / error / normal return).  A
             # shelve or server shutdown skips it: state.yaml still says

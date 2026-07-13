@@ -570,6 +570,10 @@ export function deleteAgentProfile(projectId: string, name: string): Promise<voi
 
 export type Repo = components["schemas"]["Repo"];
 export type AddRepoRequest = components["schemas"]["AddRepoRequest"];
+export type DevServerConfig = components["schemas"]["DevServerConfig"];
+export type DevService = components["schemas"]["DevService"];
+export type ServiceReadiness = components["schemas"]["ServiceReadiness"];
+export type DevServerBrowser = components["schemas"]["DevServerBrowser"];
 
 export function listRepos(projectId: string): Promise<Repo[]> {
   return apiFetch(`/api/projects/${projectId}/repos`);
@@ -593,6 +597,23 @@ export function putRepoCommands(
   return apiFetch(`/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/commands`, {
     method: "PUT",
     body: commands,
+  });
+}
+
+export function putRepoDevServer(
+  projectId: string,
+  repoName: string,
+  config: DevServerConfig,
+): Promise<Repo> {
+  return apiFetch(`/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/dev-server`, {
+    method: "PUT",
+    body: config,
+  });
+}
+
+export function deleteRepoDevServer(projectId: string, repoName: string): Promise<Repo> {
+  return apiFetch(`/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/dev-server`, {
+    method: "DELETE",
   });
 }
 
