@@ -37,7 +37,6 @@ const ja = {
       error: "エラー",
     },
     actionsToggle: "エピック操作を表示",
-    moreActions: "その他の操作",
     reopen: "再オープン",
     complete: "完了にする",
     completeTitle: "このエピックを完了にします（未完のまま終える場合もこの操作です）",
@@ -59,7 +58,6 @@ const ja = {
     resume: "再開",
     stop: "停止",
     rerun: "再実行",
-    requestFix: "修正依頼",
     reindex: "再インデックス",
     starting: "開始中…",
     pausing: "一時停止中…（適用待ち）",
@@ -67,6 +65,7 @@ const ja = {
     stopAction: "停止する",
     stopping: "停止中…",
     creating: "作成中…",
+    trialsSection: "トライ",
     newTrial: "新規トライ",
     newTrialDescription:
       "現在のアクティブ・トライをアーカイブし、default ブランチを基点にした新しいブランチで新トライを開始します（ブランチ名には序数サフィックスが付きます）。",
@@ -573,6 +572,8 @@ const ja = {
     globalNav: "グローバルナビゲーション",
     appHome: "yukar — プロジェクト一覧",
     backToEpics: "エピック一覧へ戻る",
+    epicNav: "エピックのサイドバー",
+    epicSections: "エピックのセクション",
   },
   epicShell: {
     runFailed: "▲ 実行が失敗しました",

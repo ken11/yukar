@@ -45,7 +45,6 @@ const en = {
       error: "Error",
     },
     actionsToggle: "Show epic actions",
-    moreActions: "More actions",
     reopen: "Reopen",
     complete: "Complete",
     completeTitle: "Mark this epic as completed (also used to finish with unfinished work)",
@@ -67,7 +66,6 @@ const en = {
     resume: "Resume",
     stop: "Stop",
     rerun: "Rerun",
-    requestFix: "Request Fix",
     reindex: "Reindex",
     starting: "Starting…",
     pausing: "Pausing… (applying)",
@@ -75,6 +73,7 @@ const en = {
     stopAction: "Stop",
     stopping: "Stopping…",
     creating: "Creating…",
+    trialsSection: "Trials",
     newTrial: "New Trial",
     newTrialDescription:
       "Archives the current active trial and starts a new trial on a fresh branch based on the default branch (branch name gets an ordinal suffix).",
@@ -582,6 +581,8 @@ const en = {
     globalNav: "Global navigation",
     appHome: "yukar — project list",
     backToEpics: "Back to epics",
+    epicNav: "Epic sidebar",
+    epicSections: "Epic sections",
   },
   epicShell: {
     runFailed: "▲ Run failed",

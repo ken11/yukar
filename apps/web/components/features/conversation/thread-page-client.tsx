@@ -88,9 +88,8 @@ export function ThreadPageClient({
   return (
     <div className="flex h-full overflow-hidden">
       {/*
-       * Thread list (P3): no persistent pane on desktop — the list lives in the
-       * conversation strip's TrialSwitcher popover (inside ThreadChatInner).
-       * Mobile keeps its drawer overlay, unchanged.
+       * Thread list: desktop lives in the persistent EpicSidebar (EpicShell).
+       * Mobile keeps this drawer overlay, opened by the role-bar toggle.
        */}
       {mobileListOpen && (
         <>
@@ -153,7 +152,6 @@ export function ThreadPageClient({
           isArchived={isArchived}
           projectId={projectId}
           epicId={epicId}
-          initialThreads={initialThreads}
         />
       </div>
     </div>

@@ -88,8 +88,7 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.firstManagerId}`,
       );
-      // P3: the thread list lives in the trial switcher's popover — open it first.
-      await page.getByTestId("trial-switcher-btn").click();
+      // The thread list is persistent in the desktop sidebar.
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
       await threadsNav.getByTestId("continue-branch-btn").click();

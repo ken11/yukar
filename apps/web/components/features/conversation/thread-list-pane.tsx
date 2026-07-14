@@ -25,6 +25,7 @@ export function ThreadListPane({
   currentThreadId,
   initialThreads,
   onClose,
+  variant = "drawer",
 }: {
   projectId: string;
   epicId: string;
@@ -32,6 +33,12 @@ export function ThreadListPane({
   initialThreads: ThreadEntry[];
   /** Mobile: callback to close the panel when a thread is selected */
   onClose?: () => void;
+  /**
+   * "drawer" (default) = fixed 240px column with its own right border (mobile
+   * overlay). "sidebar" = fills its parent, no border (the persistent desktop
+   * EpicSidebar draws the .edge-v boundary itself).
+   */
+  variant?: "drawer" | "sidebar";
 }) {
   const t = useT();
   const { activityState } = useEpicRun();
@@ -56,20 +63,37 @@ export function ThreadListPane({
   const activeThreads = listed.filter((t) => t.status !== "archived");
   const archivedThreads = listed.filter((t) => t.status === "archived");
 
+  const isSidebar = variant === "sidebar";
+
   return (
     <nav
       aria-label="Threads"
-      className="flex h-full w-[240px] shrink-0 flex-col overflow-y-auto bg-surface-container-low"
-      style={{ borderRight: "1px solid var(--color-outline-variant)" }}
+      className={cn(
+        "flex h-full flex-col overflow-y-auto bg-surface-container-low",
+        isSidebar ? "w-full" : "w-[240px] shrink-0",
+      )}
+      style={isSidebar ? undefined : { borderRight: "1px solid var(--color-outline-variant)" }}
     >
-      {/* New trial + continue-on-branch buttons */}
-      <div
-        className="flex shrink-0 flex-col gap-1.5 px-3 py-2"
-        style={{ borderBottom: "1px solid var(--color-outline-variant)" }}
-      >
-        <NewThreadModal projectId={projectId} epicId={epicId} />
-        <NewThreadModal projectId={projectId} epicId={epicId} variant="sameBranch" />
-      </div>
+      {/* New trial + continue-on-branch. Sidebar: a quiet "Trials" label +
+          full-width ghost rows (no competing filled button, no hard border).
+          Drawer (mobile): the original filled/outline buttons. */}
+      {isSidebar ? (
+        <div className="flex shrink-0 flex-col px-2 pt-3">
+          <p className="px-2 pb-1 font-mono text-[10px] uppercase tracking-wider text-outline">
+            {t("common.trialsSection")}
+          </p>
+          <NewThreadModal projectId={projectId} epicId={epicId} compact />
+          <NewThreadModal projectId={projectId} epicId={epicId} variant="sameBranch" compact />
+        </div>
+      ) : (
+        <div
+          className="flex shrink-0 flex-col gap-1.5 px-3 py-2"
+          style={{ borderBottom: "1px solid var(--color-outline-variant)" }}
+        >
+          <NewThreadModal projectId={projectId} epicId={epicId} />
+          <NewThreadModal projectId={projectId} epicId={epicId} variant="sameBranch" />
+        </div>
+      )}
 
       {/* Active thread list */}
       <div className="flex flex-col">

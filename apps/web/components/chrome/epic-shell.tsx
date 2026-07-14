@@ -20,10 +20,12 @@ import type { Epic, Project, RunState, ThreadEntry } from "@/lib/api/endpoints";
 import { getEpic, runAction } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
+import { useIsDesktop } from "@/lib/hooks/use-is-desktop";
 import { useT } from "@/lib/i18n/provider";
 import { useRunActivity } from "@/lib/sse/use-run-activity";
 import { EpicRunProvider } from "./epic-run-context";
 import { EpicScopeHeader } from "./epic-scope-header";
+import { EpicSidebar } from "./epic-sidebar";
 import { EpicTabBar } from "./epic-tab-bar";
 
 interface EpicShellProps {
@@ -46,6 +48,7 @@ export function EpicShell({
   children,
 }: EpicShellProps) {
   const t = useT();
+  const isDesktop = useIsDesktop();
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   // Mobile only: collapse header + tab bar while scrolling down a conversation
   // (driven by ThreadChatInner via context; the classes only apply below md).
@@ -120,97 +123,100 @@ export function EpicShell({
     [projectId, epicId, project, epic, liveEpic, activityState, setPausePending, clearLiveBuffer],
   );
 
+  // Run failure / preparing banners — shown over the content pane on both
+  // layouts (the sidebar / mobile header also carry a compact status).
+  const banners = (
+    <>
+      {runFailed && (
+        <div
+          className="shrink-0 flex items-start gap-3 px-6 py-3"
+          style={{
+            borderBottom: "1px solid color-mix(in oklab, var(--color-error) 20%, transparent)",
+          }}
+        >
+          <Icon name="warning" className="mt-0.5 shrink-0 text-[16px] text-error" />
+          <div>
+            <p
+              className="font-mono text-[12px] font-medium"
+              style={{ color: "var(--color-error)" }}
+            >
+              {t("epicShell.runFailed")}
+            </p>
+            {runError && (
+              <p className="mt-0.5 font-mono text-[11px] text-on-surface-variant">{runError}</p>
+            )}
+          </div>
+        </div>
+      )}
+      {!runFailed && activityState.runStatus === "preparing" && (
+        <div
+          className="shrink-0 flex items-center gap-2 px-6 py-2"
+          style={{
+            borderBottom:
+              "1px solid color-mix(in oklab, var(--color-on-surface-variant) 15%, transparent)",
+          }}
+        >
+          <Icon name="sync" className="shrink-0 text-[14px] text-on-surface-variant animate-spin" />
+          <p className="font-mono text-[11px] text-on-surface-variant">
+            {t("epic.status.preparing")}
+          </p>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <EpicRunProvider value={contextValue}>
       {/*
-       * fix 1: flex h-full flex-col occupies the full viewport height.
-       * To delegate the parent (ProjectLayout) overflow-y-auto scroll inward
-       * on the epic route, this container itself is overflow-hidden.
-       * Each content pane (ThreadPageClient, etc.) manages its own scroll.
+       * Desktop (≥ md): a persistent 320px EpicSidebar beside the 56px global
+       * rail, with a clean full-height content pane on the right (no header /
+       * tab bands). Mobile keeps the stacked, scroll-collapsing bands.
+       * useIsDesktop gates which one MOUNTS so no testid is ever duplicated.
        */}
-      <div className="flex h-full flex-col overflow-hidden md:h-full">
-        {/* nameplate (sticky) — shrink-0.
-            Mobile: collapses while scrolling down the conversation (max-h transition);
-            desktop is pinned open via md:max-h-none. */}
-        <div
-          className={cn(
-            // overflow-hidden only below md (the collapse animation) — the
-            // desktop ⋯ actions menu must not be clipped by this wrapper.
-            "shrink-0 transition-[max-height,opacity] duration-200 max-md:overflow-hidden md:max-h-none md:opacity-100",
-            mobileChromeHidden ? "max-md:max-h-0 max-md:opacity-0" : "max-md:max-h-32",
-          )}
-        >
-          <EpicScopeHeader onStopRequest={() => setShowStopConfirm(true)} />
-        </div>
-
-        {/* banner: shown between header and tabbar (visible on all tabs) */}
-        {/* error: warm ▲ + concise cause (datum language) */}
-        {runFailed && (
-          <div
-            className="shrink-0 flex items-start gap-3 px-6 py-3"
-            style={{
-              borderBottom: "1px solid color-mix(in oklab, var(--color-error) 20%, transparent)",
-            }}
-          >
-            <Icon name="warning" className="mt-0.5 shrink-0 text-[16px] text-error" />
-            <div>
-              <p
-                className="font-mono text-[12px] font-medium"
-                style={{ color: "var(--color-error)" }}
-              >
-                {t("epicShell.runFailed")}
-              </p>
-              {runError && (
-                <p className="mt-0.5 font-mono text-[11px] text-on-surface-variant">{runError}</p>
-              )}
-            </div>
+      {isDesktop ? (
+        <div className="flex h-full overflow-hidden">
+          <EpicSidebar
+            initialThreads={initialThreads}
+            onStopRequest={() => setShowStopConfirm(true)}
+          />
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            {banners}
+            <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
           </div>
-        )}
-
-        {/* preparing: index refresh in progress before Manager starts */}
-        {!runFailed && activityState.runStatus === "preparing" && (
-          <div
-            className="shrink-0 flex items-center gap-2 px-6 py-2"
-            style={{
-              borderBottom:
-                "1px solid color-mix(in oklab, var(--color-on-surface-variant) 15%, transparent)",
-            }}
-          >
-            <Icon
-              name="sync"
-              className="shrink-0 text-[14px] text-on-surface-variant animate-spin"
-            />
-            <p className="font-mono text-[11px] text-on-surface-variant">
-              {t("epic.status.preparing")}
-            </p>
-          </div>
-        )}
-
-        {/* Your-turn state is NOT a banner: the passive indicator is the header
-            StatusBadge, the active one is the lit composer on the parked
-            thread (ThreadChatInner). One voice per state. */}
-
-        {/* tab bar (shrink-0, no top dependency needed) — collapses with the header on mobile */}
-        <div
-          className={cn(
-            "shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 md:max-h-none md:opacity-100",
-            mobileChromeHidden ? "max-md:max-h-0 max-md:opacity-0" : "max-md:max-h-16",
-          )}
-        >
-          <EpicTabBar />
         </div>
+      ) : (
+        <div className="flex h-full flex-col overflow-hidden">
+          {/* nameplate — collapses while scrolling down the conversation. */}
+          <div
+            className={cn(
+              "shrink-0 overflow-hidden transition-[max-height,opacity] duration-200",
+              mobileChromeHidden ? "max-h-0 opacity-0" : "max-h-32",
+            )}
+          >
+            <EpicScopeHeader onStopRequest={() => setShowStopConfirm(true)} />
+          </div>
 
-        {/* void — a breath, not a band: the tab bar's edge-h already draws the
-            horizon, so desktop keeps only 8px here (mobile unchanged). */}
-        <div aria-hidden className="shrink-0 h-4 md:h-2" />
+          {banners}
 
-        {/*
-         * content area — flex-1 min-h-0 overflow-y-auto
-         * Plain pages such as tasks/docs use natural scroll.
-         * h-full flex pages such as thread/diff manage their own scroll (h-full = scroll container height).
-         */}
-        <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
-      </div>
+          {/* Your-turn state is NOT a banner: the passive indicator is the header
+              StatusBadge, the active one is the lit composer on the parked
+              thread (ThreadChatInner). One voice per state. */}
+
+          {/* tab bar — collapses with the header on mobile */}
+          <div
+            className={cn(
+              "shrink-0 overflow-hidden transition-[max-height,opacity] duration-200",
+              mobileChromeHidden ? "max-h-0 opacity-0" : "max-h-16",
+            )}
+          >
+            <EpicTabBar />
+          </div>
+
+          <div aria-hidden className="shrink-0 h-4" />
+
+          <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        </div>
+      )}
 
       {/* Stop confirmation dialog */}
       <StopConfirmDialog

@@ -32,10 +32,14 @@ export function NewThreadModal({
   projectId,
   epicId,
   variant = "new",
+  compact = false,
 }: {
   projectId: string;
   epicId: string;
   variant?: "new" | "sameBranch";
+  /** compact = quiet full-width ghost row (persistent sidebar); default = a
+   *  filled/outline button (mobile drawer, archived banner). */
+  compact?: boolean;
 }) {
   const t = useT();
   const router = useRouter();
@@ -109,9 +113,10 @@ export function NewThreadModal({
       }}
       trigger={
         <Button
-          variant={isSameBranch ? "secondary" : "primary"}
+          variant={compact ? "ghost" : isSameBranch ? "secondary" : "primary"}
           size="sm"
           data-testid={isSameBranch ? "continue-branch-btn" : "new-thread-btn"}
+          className={compact ? "w-full justify-start" : undefined}
         >
           <Icon name={buttonIcon} className="text-[16px]" />
           {label}

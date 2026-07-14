@@ -319,7 +319,7 @@ function EpicDropdown({
 
 // ---- main component ----
 
-export function EpicSwitcher() {
+export function EpicSwitcher({ compact = false }: { compact?: boolean } = {}) {
   const t = useT();
   const router = useRouter();
   const pathname = usePathname();
@@ -417,16 +417,22 @@ export function EpicSwitcher() {
         {/* Vertical rule */}
         <span
           aria-hidden="true"
-          className="mx-2 h-6 w-px shrink-0"
+          className={cn("mx-2 w-px shrink-0", compact ? "h-4" : "h-6")}
           style={{ backgroundColor: "var(--color-outline-variant)" }}
         />
 
-        {/* epic title */}
+        {/* epic title — compact (sidebar): one line, sidebar-scale; default
+            (mobile header): larger and allowed to wrap to two lines. */}
         <span
-          className="min-w-0 line-clamp-1 font-sans font-semibold text-on-surface text-[17px] leading-[24px] md:line-clamp-2 md:text-[length:var(--text-title,26px)] md:leading-[length:var(--text-title--line-height,32px)]"
+          className={cn(
+            "min-w-0 truncate font-sans font-semibold text-on-surface",
+            compact
+              ? "text-[15px] leading-[20px]"
+              : "line-clamp-1 text-[17px] leading-[24px] md:line-clamp-2 md:text-[length:var(--text-title,26px)] md:leading-[length:var(--text-title--line-height,32px)]",
+          )}
           style={{
             letterSpacing: "var(--text-title--letter-spacing, -0.02em)",
-            wordBreak: "break-word",
+            wordBreak: compact ? undefined : "break-word",
           }}
         >
           {epic?.title ?? epicId}

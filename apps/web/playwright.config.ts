@@ -43,6 +43,10 @@ export default defineConfig({
     "**/notifications.spec.ts",
     "**/reindex.spec.ts",
     "**/repos-crud.spec.ts",
+    // browser-verify has its own global-setup + fake script + fixture repos
+    // (playwright.config.browser-verify.ts); the base config does not seed them,
+    // so createProject would 422 here. Run it via its dedicated config.
+    "**/browser-verify.spec.ts",
   ],
   /* Run tests in files in parallel */
   fullyParallel: false,

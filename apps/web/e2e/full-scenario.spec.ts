@@ -256,8 +256,7 @@ test.describe
 
       // Start a fresh conversation on the SAME trial (branch + worktree kept).
       await page.goto(`/projects/${s.projectId}/epics/${s.epicId}/threads/${s.managerThreadId}`);
-      // P3: the thread list lives in the trial switcher's popover — open it first.
-      await page.getByTestId("trial-switcher-btn").click();
+      // The thread list is persistent in the desktop sidebar.
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
       await threadsNav.getByTestId("continue-branch-btn").click();
@@ -325,11 +324,8 @@ test.describe
     test("user invokes the Reviewer → it reviews and reports, epic untouched", async ({ page }) => {
       expect(s.epicId).toBeTruthy();
       await page.goto(`/projects/${s.projectId}/epics/${s.epicId}/threads/manager`);
-      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
-      // only rendered when the controls are in an idle branch (readiness wait).
-      const actionsBtn = page.getByTestId("epic-actions-btn");
-      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
-      await actionsBtn.click();
+      // Ask Reviewer is inline in the desktop sidebar; it renders once the
+      // controls settle into an idle branch (readiness wait).
       await expect(page.getByTestId("start-review-btn")).toBeVisible({ timeout: 15_000 });
 
       const [reviewResp] = await Promise.all([

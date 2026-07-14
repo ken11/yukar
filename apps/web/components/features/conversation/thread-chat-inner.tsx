@@ -14,13 +14,12 @@ import {
 import { cn } from "@/lib/cn";
 import { parseKickoff } from "@/lib/conversation/kickoff";
 import { buildStreamItems } from "@/lib/conversation/stream-items";
+import { useIsDesktop } from "@/lib/hooks/use-is-desktop";
 import { useT } from "@/lib/i18n/provider";
-import { AgentChips } from "./agent-chips";
 import { ToolRunGroup } from "./docs-fold";
 import { ManagerEffortControl } from "./manager-effort-control";
 import { formatTime, MessageRow, RoleAttribution, roleIcon } from "./message-row";
 import { PlanApprovalBanner } from "./plan-approval-banner";
-import { TrialSwitcher } from "./trial-switcher";
 
 /**
  * TurnHorizon — the boundary line drawn where a new human turn begins.
@@ -59,7 +58,6 @@ export function ThreadChatInner({
   isArchived,
   projectId,
   epicId,
-  initialThreads = [],
   threadListToggle,
 }: {
   thread: ThreadEntry | null;
@@ -78,20 +76,18 @@ export function ThreadChatInner({
   isArchived?: boolean;
   projectId?: string;
   epicId?: string;
-  /** Thread list for the trial switcher's popover (SSR seed). */
-  initialThreads?: ThreadEntry[];
-  /** Mobile-only thread-list toggle button, rendered at the head of the role bar (md:hidden inside) */
+  /** Mobile-only thread-list toggle button, rendered at the head of the role bar */
   threadListToggle?: React.ReactNode;
 }) {
   const t = useT();
+  const isDesktop = useIsDesktop();
   const [value, setValue] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   // Mobile reading mode: scrolling down the history collapses the epic header +
-  // tab bar (EpicShell applies the classes below md only); scrolling up restores them.
-  // activityState feeds the strip's agent chips (single SSE subscription in EpicShell).
-  const { setMobileChromeHidden, activityState } = useEpicRun();
+  // tab bar; scrolling up restores them (mobile chrome only).
+  const { setMobileChromeHidden } = useEpicRun();
   const lastScrollTopRef = useRef(0);
   // Programmatic scrolls (auto-scroll to the latest message) must not collapse
   // the chrome — only user gestures should. The auto-scroll effect bumps this
@@ -256,44 +252,23 @@ export function ThreadChatInner({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="flex h-full flex-col overflow-hidden">
-        {/* Thread role badge — datum row, not a card.
-            Mobile: doubles as the single merged bar (thread-list toggle + role icon + effort);
-            the role LABEL is hidden there because the toggle already shows the trial title. */}
-        {thread && (
+        {/* Thread role badge — datum row, not a card. Mobile only: it doubles
+            as the single merged bar (thread-list toggle + role icon + effort);
+            the role LABEL is hidden because the toggle already shows the trial
+            title. On desktop the persistent EpicSidebar owns thread identity,
+            agent state and effort, so the chat pane has no top band at all. */}
+        {thread && !isDesktop && (
           <div
-            className="flex shrink-0 items-center gap-2 px-2 py-1 md:gap-3 md:px-6 md:py-1"
+            className="flex shrink-0 items-center gap-2 px-2 py-1"
             style={{ borderBottom: "1px solid var(--color-outline-variant)" }}
           >
             {threadListToggle}
-            {/* Mobile keeps the compact role glyph (the toggle already names the
-                thread); desktop replaces glyph+label with the trial switcher.
-                md:hidden sits on the wrapper — the external Material Symbols CSS
-                loads after the compiled utilities and would override it on the
-                icon itself. */}
-            <span className="shrink-0 md:hidden" aria-hidden>
+            <span className="shrink-0" aria-hidden>
               <Icon
                 name={roleIcon[thread.role] ?? "chat"}
                 className="shrink-0 text-[14px] text-on-surface-variant"
               />
             </span>
-            {projectId && epicId && (
-              <TrialSwitcher
-                projectId={projectId}
-                epicId={epicId}
-                currentThreadId={thread.id}
-                currentLabel={thread.title ?? roleLabel[thread.role] ?? thread.role}
-                currentRole={thread.role}
-                initialThreads={initialThreads}
-              />
-            )}
-            {projectId && epicId && (
-              <AgentChips
-                treeState={activityState.treeState}
-                projectId={projectId}
-                epicId={epicId}
-                currentThreadId={thread.id}
-              />
-            )}
             <div className="ml-auto flex items-center gap-3">
               {isArchived && <span className="font-mono text-[10px] text-outline">archived</span>}
               {isRunning && !isArchived && (

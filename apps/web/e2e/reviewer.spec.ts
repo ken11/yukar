@@ -93,11 +93,8 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
       );
-      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
-      // only rendered when the controls are in an idle branch (readiness wait).
-      const actionsBtn = page.getByTestId("epic-actions-btn");
-      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
-      await actionsBtn.click();
+      // Secondary actions are inline in the desktop sidebar; the Ask Reviewer
+      // button renders once the controls settle into an idle branch.
       await expect(page.getByTestId("start-review-btn")).toBeVisible({ timeout: 15_000 });
 
       // Stream continuity: starting the Reviewer shelves the parked
@@ -160,8 +157,7 @@ test.describe
       // the banner must NOT follow. The parked marker belongs to the reviewer
       // conversation; showing it on the Trial thread was the old
       // misattribution bug (managerThreadId doubling as run attribution).
-      // P3: the thread list lives in the trial switcher's popover — open it first.
-      await page.getByTestId("trial-switcher-btn").click();
+      // The thread list is persistent in the desktop sidebar.
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
       // .first(): the sidebar has two links to the trial (the thread row and
@@ -276,8 +272,7 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.reviewerId}`,
       );
-      // P3: the thread list lives in the trial switcher's popover — open it first.
-      await page.getByTestId("trial-switcher-btn").click();
+      // The thread list is persistent in the desktop sidebar.
       const threadsNav = page.locator('nav[aria-label="Threads"]');
       await expect(threadsNav).toBeVisible({ timeout: 10_000 });
       await expect(
@@ -433,11 +428,9 @@ test.describe
       await page.goto(
         `/projects/${state.projectId}/epics/${state.epicId}/threads/${state.managerThreadId}`,
       );
-      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
-      // only rendered when the controls are in an idle branch (readiness wait).
-      const actionsBtn = page.getByTestId("epic-actions-btn");
-      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
-      await actionsBtn.click();
+      // Complete is inline in the desktop sidebar; it renders once the controls
+      // settle into an idle branch (readiness wait).
+      await expect(page.getByTestId("complete-epic-btn")).toBeVisible({ timeout: 15_000 });
       await page.getByTestId("complete-epic-btn").click();
       await expect
         .poll(
@@ -459,12 +452,7 @@ test.describe
       );
 
       // The reviewer button remains available on a completed epic (read-only
-      // inspection never requires reopening) — behind the ⋯ menu.
-      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
-      // only rendered when the controls are in an idle branch (readiness wait).
-      const actionsBtn = page.getByTestId("epic-actions-btn");
-      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
-      await actionsBtn.click();
+      // inspection never requires reopening) — inline in the sidebar.
       await expect(
         page.getByTestId("start-review-btn"),
         "Ask Reviewer is shown on a completed epic",

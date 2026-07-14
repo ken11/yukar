@@ -24,7 +24,7 @@ import { useT } from "@/lib/i18n/provider";
 import { useEpicRun } from "./epic-run-context";
 import { EpicSwitcher } from "./epic-switcher";
 
-function resolveStatus(
+export function resolveStatus(
   epicStatus: string | undefined,
   runStatus: string,
   hasParkedRun: boolean,

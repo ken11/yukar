@@ -198,14 +198,11 @@ test.describe
       expect(state.epicB_Id).toBeTruthy();
 
       // Navigate to the epic page (thread page) — the complete button is in
-      // RunControlsBar (EpicScopeHeader), shown on any thread page URL.
+      // RunControlsBar (desktop sidebar), shown on any thread page URL.
       await page.goto(`/projects/${state.projectId}/epics/${state.epicB_Id}/threads/manager`);
 
-      // Secondary actions live behind the ⋯ menu on desktop; the trigger is
-      // only rendered when the controls are in an idle branch (readiness wait).
-      const actionsBtn = page.getByTestId("epic-actions-btn");
-      await expect(actionsBtn).toBeVisible({ timeout: 15_000 });
-      await actionsBtn.click();
+      // Complete is inline in the desktop sidebar; it renders once the controls
+      // settle into an idle branch (readiness wait).
       const completeBtn = page.getByTestId("complete-epic-btn");
       await expect(completeBtn).toBeVisible({ timeout: 15_000 });
       await completeBtn.click();

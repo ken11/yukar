@@ -7,12 +7,17 @@
  * the collapsed run-status vocabulary (preparing / running / paused / waiting / error, plus
  * completed for JOB runs only). "waiting" = your turn — the normal resting
  * state, handled by the default open-epic branch.
- * Imported by EpicScopeHeader and EpicShell.
+ * Imported by EpicSidebar (desktop) and EpicScopeHeader (mobile).
+ *
+ * All actions are laid out flat — the primary run action plus the secondary
+ * actions (Ask Reviewer / Complete) sit side by side; there is no ⋯ submenu.
+ * `layout="stack"` makes every button a full-width row for the vertical sidebar;
+ * the default `"inline"` keeps them as a wrapping chip row (mobile header).
  */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Icon } from "@/components/icon";
 import { runAction, startReview, startRun } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
@@ -20,69 +25,6 @@ import { cn } from "@/lib/cn";
 import { useT } from "@/lib/i18n/provider";
 import type { useRunActivity } from "@/lib/sse/use-run-activity";
 import { extractCompleteError, useCompleteEpic, useReopenEpic } from "./use-close-epic";
-
-// ---------------------------------------------------------------------------
-// ActionsMenu — secondary epic actions behind ⋯ (desktop only)
-// ---------------------------------------------------------------------------
-
-/**
- * Desktop: a ⋯ trigger with a popover holding the secondary actions
- * (Ask Reviewer / Request Fix / Complete …) — the header keeps one primary
- * run action inline. Mobile: `display: contents` lets the same children flow
- * flat into the collapsed controls row exactly as before (no duplicate nodes,
- * no duplicate testids).
- */
-function ActionsMenu({ children }: { children: React.ReactNode }) {
-  const t = useT();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div ref={rootRef} className="contents md:relative md:block">
-      <button
-        type="button"
-        data-testid="epic-actions-btn"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={t("epic.moreActions")}
-        title={t("epic.moreActions")}
-        onClick={() => setOpen((v) => !v)}
-        className="hidden items-center rounded border border-outline-variant px-2 py-1.5 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white md:flex"
-      >
-        <Icon name="more_horiz" className="text-[16px]" />
-      </button>
-      <div
-        role="menu"
-        onClickCapture={() => setOpen(false)}
-        className={cn(
-          "contents md:absolute md:right-0 md:top-[calc(100%+4px)] md:z-30 md:min-w-[200px] md:flex-col md:items-stretch md:gap-1 md:rounded md:border md:border-outline-variant md:bg-surface-container md:p-1 md:shadow-lg",
-          open ? "md:flex" : "md:hidden",
-        )}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/** Shared class for buttons that double as chips (mobile) and menu rows (desktop). */
-const MENU_ITEM_CLS = "md:w-full md:justify-start md:border-transparent";
 
 // ---------------------------------------------------------------------------
 // StopConfirmDialog
@@ -145,10 +87,10 @@ export function StopConfirmDialog({
 // ---------------------------------------------------------------------------
 
 /**
- * Run-control button group. Used in EpicScopeHeader.
+ * Run-control button group. Used in EpicSidebar (desktop) and EpicScopeHeader (mobile).
  *
  * The epic side is a single user-owned bit:
- *   - open      → all run operations + Complete + Ask Reviewer + Request Fix
+ *   - open      → all run operations + Complete + Ask Reviewer
  *   - completed → read-only: Reopen + Ask Reviewer (reviewer is read-only,
  *                 so inspecting finished work never requires reopening)
  * Run-state branches: preparing/running/paused show execution controls;
@@ -163,6 +105,7 @@ export function RunControlsBar({
   activityState,
   setPausePending,
   onStopRequest,
+  layout = "inline",
 }: {
   projectId: string;
   epicId: string;
@@ -171,6 +114,8 @@ export function RunControlsBar({
   activityState: ReturnType<typeof useRunActivity>["state"];
   setPausePending: (v: boolean) => void;
   onStopRequest: () => void;
+  /** "stack" = full-width rows (vertical sidebar); "inline" = wrapping chips (mobile). */
+  layout?: "inline" | "stack";
 }) {
   const t = useT();
   const router = useRouter();
@@ -182,6 +127,19 @@ export function RunControlsBar({
   const reopenMutation = useReopenEpic(projectId);
 
   const isEpicCompleted = epicStatus === "completed";
+
+  // In "stack" layout every action is a full-width, left-aligned row.
+  const stackCls = layout === "stack" ? "w-full justify-start" : "";
+
+  // Secondary actions (Ask Reviewer / Complete) — quiet. In the vertical sidebar
+  // they are borderless ghost rows so only the primary run button is filled;
+  // in the mobile chip row they keep a hairline outline.
+  const secondaryCls = cn(
+    "flex items-center gap-1.5 rounded px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+    layout === "stack"
+      ? "w-full justify-start hover:bg-surface-container-high hover:text-on-surface"
+      : "border border-outline-variant hover:bg-surface-container hover:text-on-surface",
+  );
 
   /**
    * Complete button — the user's single "finish" action (approve done work or
@@ -206,10 +164,7 @@ export function RunControlsBar({
           });
         }}
         disabled={completeMutation.isPending}
-        className={cn(
-          "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50",
-          MENU_ITEM_CLS,
-        )}
+        className={secondaryCls}
         title={t("epic.completeTitle")}
       >
         <Icon name="check_circle" className="text-[16px]" />
@@ -284,34 +239,13 @@ export function RunControlsBar({
         reviewMutation.mutate();
       }}
       disabled={reviewMutation.isPending}
-      className={cn(
-        "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50",
-        MENU_ITEM_CLS,
-      )}
+      className={secondaryCls}
       title={t("epic.reviewCheckTitle")}
     >
       <Icon name="fact_check" className="text-[16px]" />
       <span className="hidden sm:inline">
         {reviewMutation.isPending ? "…" : t("epic.reviewCheck")}
       </span>
-    </button>
-  );
-
-  /** Request Fix — jump to the active manager conversation. */
-  const renderRequestFixButton = () => (
-    <button
-      type="button"
-      onClick={() =>
-        router.push(`/projects/${projectId}/epics/${epicId}/threads/${managerThreadId}`)
-      }
-      className={cn(
-        "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface",
-        MENU_ITEM_CLS,
-      )}
-      title={t("common.requestFix")}
-    >
-      <Icon name="forum" className="text-[16px]" />
-      <span className="hidden sm:inline">{t("common.requestFix")}</span>
     </button>
   );
 
@@ -326,13 +260,16 @@ export function RunControlsBar({
           data-testid="reopen-btn"
           onClick={() => reopenMutation.mutate(epicId)}
           disabled={reopenMutation.isPending}
-          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+          className={cn(
+            "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50",
+            stackCls,
+          )}
           title={t("epic.reopen")}
         >
           <Icon name="lock_open" className="text-[16px]" />
           <span className="hidden sm:inline">{t("epic.reopen")}</span>
         </button>
-        <ActionsMenu>{renderReviewerButton()}</ActionsMenu>
+        {renderReviewerButton()}
       </>
     );
   }
@@ -344,7 +281,10 @@ export function RunControlsBar({
         data-testid="stop-run-btn"
         onClick={onStopRequest}
         disabled={actionMutation.isPending}
-        className="flex items-center gap-1.5 rounded border border-error/40 px-3 py-1.5 text-body-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50"
+        className={cn(
+          "flex items-center gap-1.5 rounded border border-error/40 px-3 py-1.5 text-body-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50",
+          stackCls,
+        )}
         title={t("run.stopWarning")}
         aria-label={t("common.stop")}
       >
@@ -362,7 +302,10 @@ export function RunControlsBar({
           data-testid="pause-run-btn"
           onClick={handlePause}
           disabled={actionMutation.isPending || pausePending}
-          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-variant hover:text-on-surface disabled:opacity-50"
+          className={cn(
+            "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-variant hover:text-on-surface disabled:opacity-50",
+            stackCls,
+          )}
           title={pauseLabel}
         >
           <Icon name="pause" className="text-[16px]" />
@@ -373,7 +316,10 @@ export function RunControlsBar({
           data-testid="stop-run-btn"
           onClick={onStopRequest}
           disabled={actionMutation.isPending}
-          className="flex items-center gap-1.5 rounded border border-error/40 px-3 py-1.5 text-body-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50"
+          className={cn(
+            "flex items-center gap-1.5 rounded border border-error/40 px-3 py-1.5 text-body-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50",
+            stackCls,
+          )}
           title={t("run.stopWarning")}
           aria-label={t("common.stop")}
         >
@@ -392,7 +338,10 @@ export function RunControlsBar({
           data-testid="resume-run-btn"
           onClick={() => actionMutation.mutate("resume")}
           disabled={actionMutation.isPending || pausePending}
-          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className={cn(
+            "flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50",
+            stackCls,
+          )}
           title={actionMutation.isPending ? t("common.resuming") : t("common.resume")}
         >
           <Icon name="play_arrow" className="text-[16px]" />
@@ -405,7 +354,10 @@ export function RunControlsBar({
           data-testid="stop-run-btn"
           onClick={onStopRequest}
           disabled={actionMutation.isPending}
-          className="flex items-center gap-1.5 rounded border border-error/40 px-3 py-1.5 text-body-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50"
+          className={cn(
+            "flex items-center gap-1.5 rounded border border-error/40 px-3 py-1.5 text-body-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50",
+            stackCls,
+          )}
           title={t("run.stopWarning")}
           aria-label={t("common.stop")}
         >
@@ -419,7 +371,7 @@ export function RunControlsBar({
   // JOB run finished (runStatus="completed" — resolve / arbiter only; a
   // conversation run never completes). The epic itself stays open — finishing
   // a job never transitions the epic. Offer Rerun, and the shared open-epic
-  // actions (Reviewer / Request Fix / Complete).
+  // actions (Reviewer / Complete).
   if (isCompleted) {
     return (
       <>
@@ -429,7 +381,10 @@ export function RunControlsBar({
           data-testid="rerun-btn"
           onClick={() => runMutation.mutate()}
           disabled={runMutation.isPending}
-          className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+          className={cn(
+            "flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50",
+            stackCls,
+          )}
           title={runMutation.isPending ? t("common.starting") : t("common.rerun")}
         >
           <Icon name="restart_alt" className="text-[16px]" />
@@ -437,11 +392,8 @@ export function RunControlsBar({
             {runMutation.isPending ? t("common.starting") : t("common.rerun")}
           </span>
         </button>
-        <ActionsMenu>
-          {renderReviewerButton()}
-          {renderRequestFixButton()}
-          {renderCompleteButton()}
-        </ActionsMenu>
+        {renderReviewerButton()}
+        {renderCompleteButton()}
       </>
     );
   }
@@ -458,7 +410,10 @@ export function RunControlsBar({
         data-testid="start-run-btn"
         onClick={() => runMutation.mutate()}
         disabled={runMutation.isPending || !canStart}
-        className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        className={cn(
+          "flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50",
+          stackCls,
+        )}
         title={runMutation.isPending ? t("common.starting") : t("run.startRun")}
       >
         <Icon name="rocket_launch" className="text-[16px]" />
@@ -466,11 +421,8 @@ export function RunControlsBar({
           {runMutation.isPending ? t("common.starting") : t("run.startRun")}
         </span>
       </button>
-      <ActionsMenu>
-        {renderReviewerButton()}
-        {renderRequestFixButton()}
-        {renderCompleteButton()}
-      </ActionsMenu>
+      {renderReviewerButton()}
+      {renderCompleteButton()}
     </>
   );
 }
