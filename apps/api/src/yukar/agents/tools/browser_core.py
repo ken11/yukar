@@ -16,11 +16,13 @@ response_builder) so wrappers only add the LLM-facing docstrings.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from yukar.agents.tools.response_builder import make_error, make_success
+from yukar.config import paths
 from yukar.models.project import DevServerConfig
 from yukar.preview.browser import (
     BrowserSession,
@@ -111,6 +113,15 @@ async def _page_summary(session: BrowserSession) -> str:
     return f"url: {session.page.url}\ntitle: {await session.page.title()}"
 
 
+async def _page_result(session: BrowserSession) -> dict[str, Any]:
+    """url/title + snapshot, plus the egress blocked-origin digest when any (§13)."""
+    text = f"{await _page_summary(session)}\n\n{await session.snapshot()}"
+    blocked = session.blocked_summary()
+    if blocked:
+        text += f"\n\n{blocked}"
+    return make_success(text)
+
+
 async def open_app(target: BrowserTarget, service: str | None = None) -> dict[str, Any]:
     """Ensure the declared services and open one of them (default: first)."""
     manager = get_dev_server_manager()
@@ -118,10 +129,9 @@ async def open_app(target: BrowserTarget, service: str | None = None) -> dict[st
     if manager is None or sessions is None:
         return make_error(_NOT_AVAILABLE)
 
-    config = await load_dev_server_config(
-        target.workspace_root, target.project_id, target.repo_name
-    )
-    if config is None:
+    repo = await get_repo(target.workspace_root, target.project_id, target.repo_name)
+    config = repo.dev_server if repo is not None else None
+    if repo is None or config is None:
         return make_error(
             f"Repo {target.repo_name!r} has no dev-server config. "
             "Ask the user to configure it in the project's repo settings."
@@ -132,17 +142,43 @@ async def open_app(target: BrowserTarget, service: str | None = None) -> dict[st
         return make_error(f"Unknown service {chosen!r}. Declared: {service_names}")
 
     try:
-        entry = await manager.ensure(target.trial_key, config, target.worktree_path)
+        # repo_root anchors repo-relative env_file declarations to the BASE
+        # checkout even when the services run in a trial worktree (§11).
+        entry = await manager.ensure(
+            target.trial_key, config, target.worktree_path, repo_root=Path(repo.path)
+        )
     except DevServerError as exc:
         return make_error(f"Dev server failed to start: {exc}")
 
-    session = await sessions.session(target.session_key)
-    session.allow(
+    # User-captured auth state (design §12): loaded into a NEW context so the
+    # agent starts logged in.  The agent never reads the file itself.
+    auth_state = paths.browser_auth_state(
+        target.workspace_root, target.project_id, target.repo_name
+    )
+    has_auth_state = await asyncio.to_thread(auth_state.is_file)
+    session = await sessions.session(
+        target.session_key,
+        repo_name=target.repo_name,
+        storage_state=auth_state if has_auth_state else None,
+    )
+    # REPLACE (not accumulate) the allow-set from the CURRENT live service
+    # origins + config, so a removed origin / disabled CDN / relaunched port
+    # takes effect here without a session teardown.
+    session.set_allowed(
         [*manager.origins(target.trial_key), *config.browser.allowed_origins],
         cdn_preset=config.browser.allow_common_cdns,
     )
 
-    url = entry[chosen].origin
+    # ensure() relaunches on a service-set mismatch, so a healthy reused entry
+    # always contains `chosen`; guard anyway to turn any residual race into a
+    # clean tool error instead of a KeyError.
+    served = entry.get(chosen)
+    if served is None:
+        return make_error(
+            f"Service {chosen!r} is not running. Declared: {list(entry)}. "
+            "Try browser_open again."
+        )
+    url = served.origin
     try:
         await session.page.goto(url, timeout=_GOTO_TIMEOUT_MS)
     except Exception as exc:
@@ -150,7 +186,7 @@ async def open_app(target: BrowserTarget, service: str | None = None) -> dict[st
             f"Navigation to {url} failed: {exc}\n"
             f"--- server log tail ---\n{manager.log_tail(target.trial_key, max_lines=40)}"
         )
-    return make_success(f"{await _page_summary(session)}\n\n{await session.snapshot()}")
+    return await _page_result(session)
 
 
 async def navigate(target: BrowserTarget, url: str) -> dict[str, Any]:
@@ -167,7 +203,7 @@ async def navigate(target: BrowserTarget, url: str) -> dict[str, Any]:
         await session.page.goto(url, timeout=_GOTO_TIMEOUT_MS)
     except Exception as exc:
         return make_error(f"Navigation to {url} failed: {exc}")
-    return make_success(f"{await _page_summary(session)}\n\n{await session.snapshot()}")
+    return await _page_result(session)
 
 
 async def read_page(target: BrowserTarget) -> dict[str, Any]:
@@ -175,7 +211,7 @@ async def read_page(target: BrowserTarget) -> dict[str, Any]:
     session, err = await _session_or_error(target)
     if err is not None or session is None:
         return err or make_error(_NOT_AVAILABLE)
-    return make_success(f"{await _page_summary(session)}\n\n{await session.snapshot()}")
+    return await _page_result(session)
 
 
 async def click(target: BrowserTarget, ref: str) -> dict[str, Any]:

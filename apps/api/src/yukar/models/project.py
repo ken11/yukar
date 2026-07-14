@@ -19,6 +19,7 @@ class RepoIndex(BaseModel):
 
 
 _SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ServiceReadiness(BaseModel):
@@ -54,6 +55,15 @@ class DevService(BaseModel):
     may contain ``{port}`` (this service's assigned port) and ``{port:name}``
     (a sibling service's port). ``base_port`` is a preference — the host
     assigns a free port per trial so parallel worktrees never collide.
+
+    Secrets are declared by SOURCE, never by value (design §11): ``env_file``
+    names dotenv-style files (absolute, ``~``, or repo-relative — resolved
+    against the BASE checkout, since gitignored files never exist in a
+    worktree) and ``env_passthrough`` names variables copied from the yukar
+    server's own environment.  The host resolves both at launch time and the
+    values reach only the child process — they are never persisted or shown
+    to agents.  Merge order: env_file(s) → env_passthrough → ``env`` literals
+    → ``PORT``.
     """
 
     name: str
@@ -62,11 +72,19 @@ class DevService(BaseModel):
     base_port: int = Field(ge=1, le=65535)
     readiness: ServiceReadiness = Field(default_factory=ServiceReadiness)
     env: dict[str, str] = Field(default_factory=dict)
+    env_file: list[str] = Field(default_factory=list)
+    env_passthrough: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_name(self) -> DevService:
         if not _SERVICE_NAME_RE.match(self.name):
             raise ValueError(f"Invalid service name: {self.name!r}")
+        for decl in self.env_file:
+            if not decl.strip():
+                raise ValueError("env_file entries must be non-empty paths")
+        for var in self.env_passthrough:
+            if not _ENV_NAME_RE.match(var):
+                raise ValueError(f"Invalid env_passthrough variable name: {var!r}")
         return self
 
 

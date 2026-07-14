@@ -103,4 +103,20 @@ describe("roundtrip", () => {
       expect(splitCommandLine(joinCommandLine([tok]))).toEqual([tok]);
     }
   });
+
+  it("round-trips tokens containing backslashes (and backslash-then-quote)", () => {
+    // Regression: joinCommandLine must escape backslashes, and splitCommandLine
+    // must honor \\ — otherwise `a\"b` round-trips to `a\\b` (quote lost, one
+    // backslash doubled) and a no-op re-save silently corrupts the token.
+    const tokens = [
+      `a\\"b`, // a, backslash, quote, b
+      "C:\\path\\to\\bin",
+      "back\\slash",
+      "trailing\\",
+      `mix "q" and \\ slash`,
+    ];
+    for (const tok of tokens) {
+      expect(splitCommandLine(joinCommandLine([tok]))).toEqual([tok]);
+    }
+  });
 });

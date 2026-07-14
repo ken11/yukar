@@ -5,8 +5,21 @@ import { useState } from "react";
 import { textareaClass } from "@/components/features/settings/settings-primitives";
 import { Icon } from "@/components/icon";
 import { EmptyState } from "@/components/ui/empty-state";
-import type { IndexStatusResponse, Repo } from "@/lib/api/endpoints";
-import { addRepo, deleteRepo, getIndexStatus, listRepos, triggerIndex } from "@/lib/api/endpoints";
+import type { BlockedOriginItem, IndexStatusResponse, Repo } from "@/lib/api/endpoints";
+import {
+  addRepo,
+  cancelBrowserLogin,
+  deleteBrowserAuth,
+  deleteRepo,
+  extractDetail,
+  finishBrowserLogin,
+  getBrowserAuth,
+  getIndexStatus,
+  listBlockedOrigins,
+  listRepos,
+  startBrowserLogin,
+  triggerIndex,
+} from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
 import type { DevServerDraft, ServiceDraft } from "@/lib/dev-server/draft";
@@ -320,9 +333,137 @@ function DeleteRepoConfirm({
 const repoInputClass =
   "w-full rounded border border-outline-variant bg-surface-container px-3 py-1.5 font-mono text-code-sm text-on-surface placeholder:text-outline focus:border-[var(--color-light)] focus:outline-none focus:ring-1 focus:ring-[var(--color-light)]";
 
+// ---------------------------------------------------------------------------
+// BrowserAuthSection — user-interactive login capture for agent verification
+// ---------------------------------------------------------------------------
+
+const authButtonClass =
+  "rounded border border-outline-variant/40 px-2 py-1 text-[11px] text-outline transition-colors hover:border-outline hover:text-on-surface disabled:opacity-50";
+
+function BrowserAuthSection({ projectId, repoName }: { projectId: string; repoName: string }) {
+  const t = useT();
+  const qc = useQueryClient();
+
+  const { data: status } = useQuery({
+    queryKey: queryKeys.repos.browserAuth(projectId, repoName),
+    queryFn: () => getBrowserAuth(projectId, repoName),
+    // While the headed window is open, poll so "finish elsewhere / window
+    // closed" is reflected without a manual reload.
+    refetchInterval: (query) => (query.state.data?.login_active ? 3_000 : false),
+  });
+
+  const [actionError, setActionError] = useState("");
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: queryKeys.repos.browserAuth(projectId, repoName) });
+  };
+  const mutationOpts = {
+    onSuccess: () => setActionError(""),
+    // Surface the backend's `detail` (e.g. "A login capture is already in
+    // progress.", "Dev server failed to start: …") rather than the generic
+    // ApiError.message — login capture is a fix-the-reason-by-hand flow.
+    onError: (err: unknown) =>
+      setActionError(extractDetail(err) ?? (err instanceof Error ? err.message : String(err))),
+    onSettled: refresh,
+  };
+  const start = useMutation({
+    mutationFn: () => startBrowserLogin(projectId, repoName),
+    ...mutationOpts,
+  });
+  const finish = useMutation({
+    mutationFn: () => finishBrowserLogin(projectId, repoName),
+    ...mutationOpts,
+  });
+  const cancel = useMutation({
+    mutationFn: () => cancelBrowserLogin(projectId, repoName),
+    ...mutationOpts,
+  });
+  const discard = useMutation({
+    mutationFn: () => deleteBrowserAuth(projectId, repoName),
+    ...mutationOpts,
+  });
+  const busy = start.isPending || finish.isPending || cancel.isPending || discard.isPending;
+
+  return (
+    <div data-testid={`browser-auth-${repoName}`}>
+      <span className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline">
+        {t("repos.devServer.browserAuthTitle")}
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        {status?.login_active ? (
+          <>
+            <span className="text-[12px] text-on-surface-variant">
+              {t("repos.devServer.loginActiveNote")}
+            </span>
+            <button
+              type="button"
+              data-testid={`browser-login-finish-btn-${repoName}`}
+              disabled={busy}
+              onClick={() => finish.mutate()}
+              className={authButtonClass}
+            >
+              {t("repos.devServer.loginFinish")}
+            </button>
+            <button
+              type="button"
+              data-testid={`browser-login-cancel-btn-${repoName}`}
+              disabled={busy}
+              onClick={() => cancel.mutate()}
+              className={authButtonClass}
+            >
+              {t("repos.devServer.loginCancel")}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              data-testid={`browser-login-start-btn-${repoName}`}
+              disabled={busy}
+              onClick={() => start.mutate()}
+              className={authButtonClass}
+            >
+              {t("repos.devServer.loginStart")}
+            </button>
+            {status?.exists && (
+              <>
+                <span
+                  data-testid={`browser-auth-captured-${repoName}`}
+                  className="text-[12px] text-on-surface-variant"
+                >
+                  {t("repos.devServer.capturedAt").replace(
+                    "{date}",
+                    status.captured_at ? new Date(status.captured_at).toLocaleString() : "—",
+                  )}
+                </span>
+                <button
+                  type="button"
+                  data-testid={`browser-auth-discard-btn-${repoName}`}
+                  disabled={busy}
+                  onClick={() => discard.mutate()}
+                  className={authButtonClass}
+                >
+                  {t("repos.devServer.discardAuth")}
+                </button>
+              </>
+            )}
+          </>
+        )}
+      </div>
+      {actionError && (
+        <p className="mt-1 text-[11px]" style={{ color: "var(--color-removed)" }}>
+          {actionError}
+        </p>
+      )}
+      <p className="mt-1 text-[11px] text-outline">{t("repos.devServer.browserAuthNote")}</p>
+    </div>
+  );
+}
+
 interface DevServerSectionProps {
+  projectId: string;
   repo: Repo;
   draft: DevServerDraft;
+  blocked: BlockedOriginItem[];
   isPending: boolean;
   isSaved: boolean;
   error: string;
@@ -333,8 +474,10 @@ interface DevServerSectionProps {
 }
 
 function DevServerSection({
+  projectId,
   repo,
   draft,
+  blocked,
   isPending,
   isSaved,
   error,
@@ -344,6 +487,16 @@ function DevServerSection({
   onRemove,
 }: DevServerSectionProps) {
   const t = useT();
+
+  const allowedOriginLines = draft.allowedOriginsText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  function addBlockedOriginToAllowed(origin: string) {
+    if (allowedOriginLines.includes(origin)) return;
+    onPatch({ allowedOriginsText: [...allowedOriginLines, origin].join("\n") });
+  }
 
   if (!draft.enabled) {
     return (
@@ -558,6 +711,53 @@ function DevServerSection({
               />
               <p className="mt-1 text-[11px] text-outline">{t("repos.devServer.envFormatNote")}</p>
             </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label
+                  htmlFor={`dev-server-service-env-file-${repo.name}-${idx}`}
+                  className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline"
+                >
+                  {t("repos.devServer.serviceEnvFile")}{" "}
+                  <span className="normal-case tracking-normal text-outline/60">
+                    {t("repos.onePerLine")}
+                  </span>
+                </label>
+                <textarea
+                  id={`dev-server-service-env-file-${repo.name}-${idx}`}
+                  data-testid={`dev-server-service-env-file-${repo.name}-${idx}`}
+                  rows={2}
+                  value={svc.envFileText}
+                  onChange={(e) => onPatchService(idx, { envFileText: e.target.value })}
+                  placeholder={"~/secrets/myapp/dev.env\n.env.development"}
+                  className={textareaClass}
+                />
+                <p className="mt-1 text-[11px] text-outline">{t("repos.devServer.envFileNote")}</p>
+              </div>
+              <div>
+                <label
+                  htmlFor={`dev-server-service-env-passthrough-${repo.name}-${idx}`}
+                  className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline"
+                >
+                  {t("repos.devServer.serviceEnvPassthrough")}{" "}
+                  <span className="normal-case tracking-normal text-outline/60">
+                    {t("repos.onePerLine")}
+                  </span>
+                </label>
+                <textarea
+                  id={`dev-server-service-env-passthrough-${repo.name}-${idx}`}
+                  data-testid={`dev-server-service-env-passthrough-${repo.name}-${idx}`}
+                  rows={2}
+                  value={svc.envPassthroughText}
+                  onChange={(e) => onPatchService(idx, { envPassthroughText: e.target.value })}
+                  placeholder={"DATABASE_URL\nSTRIPE_TEST_KEY"}
+                  className={textareaClass}
+                />
+                <p className="mt-1 text-[11px] text-outline">
+                  {t("repos.devServer.envPassthroughNote")}
+                </p>
+              </div>
+            </div>
           </div>
         ))}
 
@@ -616,6 +816,48 @@ function DevServerSection({
             </p>
           </div>
         </div>
+
+        {/* Interactive login capture (§12) — needs a SAVED config to launch */}
+        {repo.dev_server && <BrowserAuthSection projectId={projectId} repoName={repo.name} />}
+
+        {/* Blocked destinations — what the egress gate rejected (§13) */}
+        {blocked.length > 0 && (
+          <div data-testid={`dev-server-blocked-${repo.name}`}>
+            <span className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline">
+              {t("repos.devServer.blockedTitle")}
+            </span>
+            <ul className="space-y-1">
+              {blocked.map((item) => {
+                const alreadyAllowed = allowedOriginLines.includes(item.origin);
+                return (
+                  <li
+                    key={item.origin}
+                    className="flex items-center justify-between gap-3 rounded border border-outline-variant/40 px-2 py-1"
+                  >
+                    <span className="data min-w-0 truncate text-on-surface-variant">
+                      {item.origin}
+                      <span className="ml-2 text-outline">
+                        ×{item.count} ({item.resource_types.join(", ")})
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      data-testid={`add-blocked-origin-btn-${repo.name}-${item.origin}`}
+                      disabled={alreadyAllowed}
+                      onClick={() => addBlockedOriginToAllowed(item.origin)}
+                      className="shrink-0 rounded border border-outline-variant/40 px-1.5 py-0.5 text-[11px] text-outline transition-colors hover:border-outline hover:text-on-surface disabled:opacity-50"
+                    >
+                      {alreadyAllowed
+                        ? t("repos.devServer.addedToAllowed")
+                        : t("repos.devServer.addToAllowed")}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-1 text-[11px] text-outline">{t("repos.devServer.blockedNote")}</p>
+          </div>
+        )}
 
         {/* Save */}
         <div className="flex items-center gap-3">
@@ -678,6 +920,15 @@ export function ProjectReposClient({
   );
 
   const devServer = useRepoDevServer(projectId, initialRepos);
+
+  // What the browser egress gate rejected (in-process aggregate on the API
+  // host).  Polled while the page is open so the "run once → allow what the
+  // app needs" loop works without a manual refresh.
+  const { data: blockedOrigins = [] } = useQuery({
+    queryKey: queryKeys.repos.blockedOrigins(projectId),
+    queryFn: () => listBlockedOrigins(projectId),
+    refetchInterval: 10_000,
+  });
 
   const { data: indexStatus } = useQuery({
     queryKey: queryKeys.index.status(projectId),
@@ -853,8 +1104,10 @@ export function ProjectReposClient({
 
                 {/* Dev server launch config */}
                 <DevServerSection
+                  projectId={projectId}
                   repo={repo}
                   draft={devServer.drafts[repo.name] ?? emptyDevServerDraft()}
+                  blocked={blockedOrigins.filter((item) => item.repo === repo.name)}
                   isPending={devServer.pending[repo.name] ?? false}
                   isSaved={devServer.saved[repo.name] ?? false}
                   error={devServer.saveErrors[repo.name] ?? ""}

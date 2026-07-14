@@ -33,6 +33,7 @@ from typing import Literal
 import httpx
 
 from yukar.models.project import DevServerConfig, DevService
+from yukar.preview.envfile import EnvFileError, parse_env_file, resolve_env_file_path
 from yukar.sandbox.env import build_subprocess_env
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,8 @@ class DevServerManager:
         key: TrialKey,
         config: DevServerConfig,
         worktree: Path,
+        *,
+        repo_root: Path | None = None,
     ) -> dict[str, ServiceHandle]:
         """Start the declared services for *key* unless they are already ready.
 
@@ -157,6 +160,14 @@ class DevServerManager:
         torn down and relaunched from scratch.  On any launch/readiness
         failure the whole entry is stopped and DevServerError is raised with
         the failing service's log tail.
+
+        Args:
+            key: Registry key (one entry per trial worktree per repo).
+            config: The repo's declared dev-server config.
+            worktree: Tree the services run in (trial worktree or base checkout).
+            repo_root: The repo's BASE checkout — anchor for repo-relative
+                ``env_file`` declarations (§11).  ``None`` makes a relative
+                declaration a launch error; absolute/``~`` paths still work.
         """
         if self._closed:
             raise DevServerError("Dev server manager is shut down.")
@@ -164,35 +175,49 @@ class DevServerManager:
         async with lock:
             entry = self._entries.get(key)
             if entry is not None:
-                if all(h.state == "ready" and h.is_alive for h in entry.values()):
+                # Reuse only a fully-healthy entry whose service SET still matches
+                # the config.  An edited dev_server config (service renamed / added
+                # / removed) must relaunch — otherwise open_app would index the
+                # reused entry with a name the running process never bound, raising
+                # KeyError instead of serving the new config.
+                healthy = all(h.state == "ready" and h.is_alive for h in entry.values())
+                same_services = set(entry) == {s.name for s in config.services}
+                if healthy and same_services:
                     return entry
                 await self._stop_entry(entry)
                 self._entries.pop(key, None)
                 self._reserved_ports.difference_update(h.port for h in entry.values())
 
-            alive_total = sum(
-                1 for e in self._entries.values() for h in e.values() if h.is_alive
-            )
-            if alive_total + len(config.services) > self._max_services:
-                raise DevServerError(
-                    f"Dev server capacity exceeded ({alive_total} running, "
-                    f"max {self._max_services})"
-                )
-
             worktree = worktree.resolve()
             if not worktree.is_dir():
                 raise DevServerError(f"Worktree does not exist: {worktree}")
 
-            # Assign every port up-front so {port:name} can reference services
-            # later in the list as well as earlier ones.  Reserve each port the
-            # instant it is chosen (under _alloc_lock) so a concurrent ensure()
-            # for another trial cannot pick the same one.
+            # Capacity check AND port reservation happen together under
+            # _alloc_lock so a concurrent ensure() for another trial cannot both
+            # pass a stale capacity snapshot (TOCTOU over the soft _max_services
+            # cap) nor grab the same port.  Assign every port up-front so
+            # {port:name} can reference services later in the list too.  On any
+            # failure while reserving, release everything reserved so far — a
+            # multi-service config whose 2nd allocation fails must not leak the
+            # 1st service's reservation until process restart.
             ports: dict[str, int] = {}
             async with self._alloc_lock:
-                for svc in config.services:
-                    port = self._allocate_port(svc.base_port, taken=set(ports.values()))
-                    ports[svc.name] = port
-                    self._reserved_ports.add(port)
+                alive_total = sum(
+                    1 for e in self._entries.values() for h in e.values() if h.is_alive
+                )
+                if alive_total + len(config.services) > self._max_services:
+                    raise DevServerError(
+                        f"Dev server capacity exceeded ({alive_total} running, "
+                        f"max {self._max_services})"
+                    )
+                try:
+                    for svc in config.services:
+                        port = self._allocate_port(svc.base_port, taken=set(ports.values()))
+                        ports[svc.name] = port
+                        self._reserved_ports.add(port)
+                except BaseException:
+                    self._reserved_ports.difference_update(ports.values())
+                    raise
 
             entry = {}
             self._entries[key] = entry
@@ -200,7 +225,7 @@ class DevServerManager:
                 for svc in config.services:
                     handle = ServiceHandle(config=svc, port=ports[svc.name])
                     entry[svc.name] = handle
-                    await self._start_service(handle, ports, worktree)
+                    await self._start_service(handle, ports, worktree, repo_root)
             except BaseException:
                 await self._stop_entry(entry)
                 self._entries.pop(key, None)
@@ -306,6 +331,7 @@ class DevServerManager:
         handle: ServiceHandle,
         ports: dict[str, int],
         worktree: Path,
+        repo_root: Path | None,
     ) -> None:
         svc = handle.config
 
@@ -316,14 +342,35 @@ class DevServerManager:
             raise DevServerError(f"Service cwd does not exist: {svc.cwd!r}")
 
         argv = [resolve_port_placeholders(tok, ports, svc.name) for tok in svc.command]
+        # Secrets by SOURCE (§11): env_file(s) then env_passthrough resolve at
+        # launch time, and the values reach only this child process.  A missing
+        # file or unset variable fails the launch LOUDLY — a silently absent
+        # secret would surface as an inexplicable 500 during verification.
+        extra_env: dict[str, str] = {}
+        for decl in svc.env_file:
+            try:
+                path = resolve_env_file_path(decl, repo_root)
+                extra_env.update(await asyncio.to_thread(parse_env_file, path))
+            except EnvFileError as exc:
+                raise DevServerError(f"Service {svc.name!r}: {exc}") from exc
+        for var in svc.env_passthrough:
+            value = os.environ.get(var)
+            if value is None:
+                raise DevServerError(
+                    f"Service {svc.name!r}: env_passthrough variable {var!r} is not set "
+                    "in the yukar server environment"
+                )
+            extra_env[var] = value
+        # Literal env last (explicit declaration wins over file/passthrough);
+        # env_file values stay VERBATIM — port placeholders apply to literals only.
+        extra_env.update(
+            {k: resolve_port_placeholders(v, ports, svc.name) for k, v in svc.env.items()}
+        )
         # PORT is injected LAST so a user-declared env named PORT can never
         # shadow the host-assigned port — otherwise the child would bind the
         # user's value while readiness probes (and the browser) target the
         # allocated one, and per-trial port isolation would break.
-        extra_env = {
-            **{k: resolve_port_placeholders(v, ports, svc.name) for k, v in svc.env.items()},
-            "PORT": str(handle.port),
-        }
+        extra_env["PORT"] = str(handle.port)
         env = build_subprocess_env(cwd=cwd, extra=extra_env)
 
         try:
@@ -396,7 +443,11 @@ class DevServerManager:
 
             url = f"{handle.origin}{svc.readiness.path}"
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                # trust_env=False: the probe targets the child's loopback origin.
+                # Honouring HTTP_PROXY/ALL_PROXY from the environment that
+                # launched `yukar serve` would route 127.0.0.1 through a corporate
+                # proxy that cannot reach it, failing readiness on a healthy server.
+                async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
                     resp = await client.get(url)
                 if resp.status_code < 400:
                     handle.state = "ready"

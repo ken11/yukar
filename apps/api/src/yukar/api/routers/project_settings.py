@@ -29,6 +29,12 @@ Endpoints:
     PUT    /api/projects/{pid}/repos/{repo}/dev-server
     DELETE /api/projects/{pid}/repos/{repo}/dev-server
     DELETE /api/projects/{pid}/repos/{repo}
+    GET    /api/projects/{pid}/browser/blocked
+    GET    /api/projects/{pid}/repos/{repo}/browser-auth
+    POST   /api/projects/{pid}/repos/{repo}/browser-login/start
+    POST   /api/projects/{pid}/repos/{repo}/browser-login/finish
+    POST   /api/projects/{pid}/repos/{repo}/browser-login/cancel
+    DELETE /api/projects/{pid}/repos/{repo}/browser-auth
 
 All routes validate project existence (404) before delegating to storage.
 Path segment safety is enforced by config/paths.py (_validate_segment /
@@ -42,7 +48,7 @@ import logging
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
@@ -56,6 +62,8 @@ from yukar.models.mcp import McpConfig
 from yukar.models.project import DevServerConfig, Repo, RepoCommands
 from yukar.models.roles import ConfigurableAgentRole
 from yukar.models.skill import Skill, SkillMeta
+from yukar.preview.browser import get_browser_session_manager
+from yukar.preview.login import get_login_capture_manager
 from yukar.storage import agent_config_repo, agent_profiles_repo, mcp_repo, skills_repo
 from yukar.storage.project_repo import (
     delete_repo,
@@ -356,6 +364,47 @@ async def put_repo_dev_server(
     return updated
 
 
+class BlockedOriginItem(BaseModel):
+    """One origin the browser egress gate rejected, aggregated per repo (§13)."""
+
+    repo: str
+    origin: str
+    count: int
+    resource_types: list[str]
+    last_at: datetime
+
+
+@router.get(
+    "/{project_id}/browser/blocked",
+    response_model=list[BlockedOriginItem],
+)
+async def list_blocked_origins(
+    project_id: str,
+    root: WorkspaceRootDep,
+) -> list[BlockedOriginItem]:
+    """Origins the browser egress gate rejected for this project's repos.
+
+    In-process aggregate (cleared on server restart), most recent first.  The
+    operational loop it serves: run a verification once, read this list, add
+    the origins the app genuinely needs to the repo's dev-server
+    ``allowed_origins`` — fail-closed stays the default.
+    """
+    await get_project_or_404(root, project_id)
+    sessions = get_browser_session_manager()
+    if sessions is None:
+        return []
+    return [
+        BlockedOriginItem(
+            repo=repo,
+            origin=stat.origin,
+            count=stat.count,
+            resource_types=sorted(stat.resource_types),
+            last_at=datetime.fromtimestamp(stat.last_at, tz=UTC),
+        )
+        for repo, stat in sessions.blocked_origins(project_id)
+    ]
+
+
 @router.delete(
     "/{project_id}/repos/{repo_name}/dev-server",
     response_model=Repo,
@@ -371,6 +420,141 @@ async def delete_repo_dev_server(
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
     return updated
+
+
+class BrowserAuthStatus(BaseModel):
+    """Saved-login state for a repo's app + whether a capture is in flight (§12)."""
+
+    exists: bool
+    captured_at: datetime | None = None
+    login_active: bool = False
+
+
+class LoginStartResponse(BaseModel):
+    url: str
+
+
+def _login_manager_or_503() -> Any:
+    manager = get_login_capture_manager()
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Login capture is not available.")
+    return manager
+
+
+async def _repo_or_404(root: str, project_id: str, repo_name: str) -> Repo:
+    await get_project_or_404(root, project_id)
+    repo = await get_repo(root, project_id, repo_name)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
+    return repo
+
+
+@router.get(
+    "/{project_id}/repos/{repo_name}/browser-auth",
+    response_model=BrowserAuthStatus,
+)
+async def get_browser_auth_status(
+    project_id: str,
+    repo_name: str,
+    root: WorkspaceRootDep,
+) -> BrowserAuthStatus:
+    """Whether a captured login state exists for the repo, and since when."""
+    await _repo_or_404(root, project_id, repo_name)
+    manager = _login_manager_or_503()
+    state_path = paths.browser_auth_state(root, project_id, repo_name)
+    exists = await asyncio.to_thread(state_path.is_file)
+    captured_at = None
+    if exists:
+        mtime = await asyncio.to_thread(lambda: state_path.stat().st_mtime)
+        captured_at = datetime.fromtimestamp(mtime, tz=UTC)
+    return BrowserAuthStatus(
+        exists=exists,
+        captured_at=captured_at,
+        login_active=manager.is_active(project_id, repo_name),
+    )
+
+
+@router.post(
+    "/{project_id}/repos/{repo_name}/browser-login/start",
+    response_model=LoginStartResponse,
+)
+async def start_browser_login(
+    project_id: str,
+    repo_name: str,
+    root: WorkspaceRootDep,
+) -> LoginStartResponse:
+    """Open a HEADED browser on the yukar host for the user to log in (§12).
+
+    The host launches the repo's declared dev servers in the BASE checkout and
+    opens the first service's origin.  The user completes the login themselves
+    (OTP, external IdP, anything) and then calls finish to save the session.
+    """
+    from yukar.preview.login import LoginCaptureError
+
+    repo = await _repo_or_404(root, project_id, repo_name)
+    manager = _login_manager_or_503()
+    try:
+        capture = await manager.start(project_id, repo)
+    except LoginCaptureError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return LoginStartResponse(url=capture.url)
+
+
+@router.post(
+    "/{project_id}/repos/{repo_name}/browser-login/finish",
+    response_model=BrowserAuthStatus,
+)
+async def finish_browser_login(
+    project_id: str,
+    repo_name: str,
+    root: WorkspaceRootDep,
+) -> BrowserAuthStatus:
+    """Save the logged-in session (storage_state) and close the login browser.
+
+    Existing agent browser sessions for the repo are closed so the next
+    browser_open starts from the captured state.
+    """
+    from yukar.preview.login import LoginCaptureError
+
+    await _repo_or_404(root, project_id, repo_name)
+    manager = _login_manager_or_503()
+    try:
+        state_path = await manager.finish(root, project_id, repo_name)
+    except LoginCaptureError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    mtime = await asyncio.to_thread(lambda: state_path.stat().st_mtime)
+    return BrowserAuthStatus(
+        exists=True,
+        captured_at=datetime.fromtimestamp(mtime, tz=UTC),
+        login_active=False,
+    )
+
+
+@router.post("/{project_id}/repos/{repo_name}/browser-login/cancel", status_code=204)
+async def cancel_browser_login(
+    project_id: str,
+    repo_name: str,
+    root: WorkspaceRootDep,
+) -> None:
+    """Close the login browser without saving (idempotent)."""
+    await _repo_or_404(root, project_id, repo_name)
+    manager = _login_manager_or_503()
+    await manager.cancel(project_id, repo_name)
+
+
+@router.delete("/{project_id}/repos/{repo_name}/browser-auth", status_code=204)
+async def delete_browser_auth(
+    project_id: str,
+    repo_name: str,
+    root: WorkspaceRootDep,
+) -> None:
+    """Delete the captured login state; agent sessions go back to clean contexts."""
+    await _repo_or_404(root, project_id, repo_name)
+    state_path = paths.browser_auth_state(root, project_id, repo_name)
+    await asyncio.to_thread(lambda: state_path.unlink(missing_ok=True))
+    sessions = get_browser_session_manager()
+    if sessions is not None:
+        await sessions.close_for_repo(project_id, repo_name)
 
 
 @router.delete("/{project_id}/repos/{repo_name}", status_code=204)
@@ -395,6 +579,23 @@ async def remove_project_repo(
         project.repos.remove(repo_name)
         project.updated_at = datetime.now(UTC)
         await save_project(root, project)
+
+    # An in-flight interactive login capture would otherwise be orphaned: both
+    # its REST controls (finish/cancel) start 404ing once the repo is gone, and
+    # a finish against a re-registered same-name repo would revive the pre-delete
+    # session.  Cancel it (closes the headed browser + __login__ dev servers).
+    login = get_login_capture_manager()
+    if login is not None:
+        await login.cancel(project_id, repo_name)
+
+    # Captured login state carries live session tokens — never leave it behind
+    # (a re-registered repo of the same name would silently inherit the old
+    # session).  Close any agent sessions still holding the state, too.
+    auth_path = paths.browser_auth_state(root, project_id, repo_name)
+    await asyncio.to_thread(lambda: auth_path.unlink(missing_ok=True))
+    sessions = get_browser_session_manager()
+    if sessions is not None:
+        await sessions.close_for_repo(project_id, repo_name)
 
     # Best-effort: purge the FAISS index cache for this repo.
     index_dir = paths.index_dir(root, project_id, repo_name)

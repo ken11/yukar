@@ -73,5 +73,8 @@ export const queryKeys = {
   },
   repos: {
     list: (projectId: string) => ["repos", projectId] as const,
+    blockedOrigins: (projectId: string) => ["repos", "blockedOrigins", projectId] as const,
+    browserAuth: (projectId: string, repoName: string) =>
+      ["repos", "browserAuth", projectId, repoName] as const,
   },
 } as const;

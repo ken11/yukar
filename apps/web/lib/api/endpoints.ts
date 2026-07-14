@@ -617,6 +617,55 @@ export function deleteRepoDevServer(projectId: string, repoName: string): Promis
   });
 }
 
+export type BlockedOriginItem = components["schemas"]["BlockedOriginItem"];
+
+/** Origins the browser egress gate rejected for this project (in-process aggregate). */
+export function listBlockedOrigins(projectId: string): Promise<BlockedOriginItem[]> {
+  return apiFetch(`/api/projects/${projectId}/browser/blocked`);
+}
+
+// ---- Browser login capture (design §12) ----
+
+export type BrowserAuthStatus = components["schemas"]["BrowserAuthStatus"];
+export type LoginStartResponse = components["schemas"]["LoginStartResponse"];
+
+export function getBrowserAuth(projectId: string, repoName: string): Promise<BrowserAuthStatus> {
+  return apiFetch(`/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/browser-auth`);
+}
+
+export function startBrowserLogin(
+  projectId: string,
+  repoName: string,
+): Promise<LoginStartResponse> {
+  return apiFetch(
+    `/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/browser-login/start`,
+    { method: "POST" },
+  );
+}
+
+export function finishBrowserLogin(
+  projectId: string,
+  repoName: string,
+): Promise<BrowserAuthStatus> {
+  return apiFetch(
+    `/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/browser-login/finish`,
+    { method: "POST" },
+  );
+}
+
+export function cancelBrowserLogin(projectId: string, repoName: string): Promise<void> {
+  return apiFetch(
+    `/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/browser-login/cancel`,
+    { method: "POST" },
+  );
+}
+
+export function deleteBrowserAuth(projectId: string, repoName: string): Promise<void> {
+  return apiFetch(`/api/projects/${projectId}/repos/${encodeURIComponent(repoName)}/browser-auth`, {
+    method: "DELETE",
+  });
+}
+
 // ---- MCP (L3) ----
 
 export type McpConfig = components["schemas"]["McpConfig"];

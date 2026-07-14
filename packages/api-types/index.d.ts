@@ -1089,6 +1089,122 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/browser/blocked": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Blocked Origins
+         * @description Origins the browser egress gate rejected for this project's repos.
+         *
+         *     In-process aggregate (cleared on server restart), most recent first.  The
+         *     operational loop it serves: run a verification once, read this list, add
+         *     the origins the app genuinely needs to the repo's dev-server
+         *     ``allowed_origins`` — fail-closed stays the default.
+         */
+        get: operations["list_blocked_origins_api_projects__project_id__browser_blocked_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/repos/{repo_name}/browser-auth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Browser Auth Status
+         * @description Whether a captured login state exists for the repo, and since when.
+         */
+        get: operations["get_browser_auth_status_api_projects__project_id__repos__repo_name__browser_auth_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Browser Auth
+         * @description Delete the captured login state; agent sessions go back to clean contexts.
+         */
+        delete: operations["delete_browser_auth_api_projects__project_id__repos__repo_name__browser_auth_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/repos/{repo_name}/browser-login/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Browser Login
+         * @description Open a HEADED browser on the yukar host for the user to log in (§12).
+         *
+         *     The host launches the repo's declared dev servers in the BASE checkout and
+         *     opens the first service's origin.  The user completes the login themselves
+         *     (OTP, external IdP, anything) and then calls finish to save the session.
+         */
+        post: operations["start_browser_login_api_projects__project_id__repos__repo_name__browser_login_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/repos/{repo_name}/browser-login/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish Browser Login
+         * @description Save the logged-in session (storage_state) and close the login browser.
+         *
+         *     Existing agent browser sessions for the repo are closed so the next
+         *     browser_open starts from the captured state.
+         */
+        post: operations["finish_browser_login_api_projects__project_id__repos__repo_name__browser_login_finish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/repos/{repo_name}/browser-login/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Browser Login
+         * @description Close the login browser without saving (idempotent).
+         */
+        post: operations["cancel_browser_login_api_projects__project_id__repos__repo_name__browser_login_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/repos/{repo_name}": {
         parameters: {
             query?: never;
@@ -1344,6 +1460,40 @@ export interface components {
             cost_jpy: number;
             /** Runs */
             runs?: components["schemas"]["RunUsageBreakdown"][];
+        };
+        /**
+         * BlockedOriginItem
+         * @description One origin the browser egress gate rejected, aggregated per repo (§13).
+         */
+        BlockedOriginItem: {
+            /** Repo */
+            repo: string;
+            /** Origin */
+            origin: string;
+            /** Count */
+            count: number;
+            /** Resource Types */
+            resource_types: string[];
+            /**
+             * Last At
+             * Format: date-time
+             */
+            last_at: string;
+        };
+        /**
+         * BrowserAuthStatus
+         * @description Saved-login state for a repo's app + whether a capture is in flight (§12).
+         */
+        BrowserAuthStatus: {
+            /** Exists */
+            exists: boolean;
+            /** Captured At */
+            captured_at?: string | null;
+            /**
+             * Login Active
+             * @default false
+             */
+            login_active: boolean;
         };
         /**
          * BudgetExceededEvent
@@ -1614,6 +1764,15 @@ export interface components {
          *     may contain ``{port}`` (this service's assigned port) and ``{port:name}``
          *     (a sibling service's port). ``base_port`` is a preference — the host
          *     assigns a free port per trial so parallel worktrees never collide.
+         *
+         *     Secrets are declared by SOURCE, never by value (design §11): ``env_file``
+         *     names dotenv-style files (absolute, ``~``, or repo-relative — resolved
+         *     against the BASE checkout, since gitignored files never exist in a
+         *     worktree) and ``env_passthrough`` names variables copied from the yukar
+         *     server's own environment.  The host resolves both at launch time and the
+         *     values reach only the child process — they are never persisted or shown
+         *     to agents.  Merge order: env_file(s) → env_passthrough → ``env`` literals
+         *     → ``PORT``.
          */
         DevService: {
             /** Name */
@@ -1632,6 +1791,10 @@ export interface components {
             env?: {
                 [key: string]: string;
             };
+            /** Env File */
+            env_file?: string[];
+            /** Env Passthrough */
+            env_passthrough?: string[];
         };
         /** DiffResult */
         DiffResult: {
@@ -2244,6 +2407,11 @@ export interface components {
             request_timeout: number;
             roles?: components["schemas"]["LLMRolesSettings"];
             summarization?: components["schemas"]["ConversationSummarySettings"];
+        };
+        /** LoginStartResponse */
+        LoginStartResponse: {
+            /** Url */
+            url: string;
         };
         /**
          * ManagerMessageEvent
@@ -5970,6 +6138,193 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Repo"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_blocked_origins_api_projects__project_id__browser_blocked_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockedOriginItem"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_browser_auth_status_api_projects__project_id__repos__repo_name__browser_auth_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowserAuthStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_browser_auth_api_projects__project_id__repos__repo_name__browser_auth_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_browser_login_api_projects__project_id__repos__repo_name__browser_login_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginStartResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finish_browser_login_api_projects__project_id__repos__repo_name__browser_login_finish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowserAuthStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_browser_login_api_projects__project_id__repos__repo_name__browser_login_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                repo_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

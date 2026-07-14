@@ -17,6 +17,8 @@ export interface ServiceDraft {
   readinessPath: string;
   readinessTimeout: string;
   envText: string;
+  envFileText: string;
+  envPassthroughText: string;
 }
 
 export interface DevServerDraft {
@@ -35,10 +37,14 @@ export type DraftValidationError =
   | { code: "commandRequired"; serviceIndex: number }
   | { code: "invalidPort"; serviceIndex: number }
   | { code: "invalidTimeout"; serviceIndex: number }
-  | { code: "invalidEnvLine"; serviceIndex: number; line: string };
+  | { code: "invalidEnvLine"; serviceIndex: number; line: string }
+  | { code: "invalidEnvPassthroughName"; serviceIndex: number; line: string };
 
 /** Mirrors the backend DevService.name regex (models/project.py). */
 const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/** Mirrors the backend env-var name regex (models/project.py `_ENV_NAME_RE`). */
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export type DraftConversionResult =
   | { ok: true; config: DevServerConfig }
@@ -53,6 +59,8 @@ export function emptyServiceDraft(): ServiceDraft {
     readinessPath: "",
     readinessTimeout: "60",
     envText: "",
+    envFileText: "",
+    envPassthroughText: "",
   };
 }
 
@@ -80,6 +88,8 @@ function serviceToDraft(service: DevService): ServiceDraft {
     readinessPath: service.readiness?.path ?? "",
     readinessTimeout: String(service.readiness?.timeout_seconds ?? 60),
     envText: envToText(service.env),
+    envFileText: arrayToLines(service.env_file),
+    envPassthroughText: arrayToLines(service.env_passthrough),
   };
 }
 
@@ -164,6 +174,16 @@ export function configFromDraft(draft: DevServerDraft): DraftConversionResult {
     const envResult = parseEnvText(svc.envText, serviceIndex);
     if (!envResult.ok) return envResult;
 
+    const envPassthrough = linesToArray(svc.envPassthroughText);
+    for (const varName of envPassthrough) {
+      if (!ENV_NAME_RE.test(varName)) {
+        return {
+          ok: false,
+          error: { code: "invalidEnvPassthroughName", serviceIndex, line: varName },
+        };
+      }
+    }
+
     services.push({
       name,
       command,
@@ -174,6 +194,8 @@ export function configFromDraft(draft: DevServerDraft): DraftConversionResult {
         timeout_seconds: timeout,
       },
       env: envResult.env,
+      env_file: linesToArray(svc.envFileText),
+      env_passthrough: envPassthrough,
     });
   }
 

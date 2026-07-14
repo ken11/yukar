@@ -1,10 +1,11 @@
 /**
  * Global setup for the browser verification E2E scenario.
  *
- * Creates two fixture git repos, each with a committed index.html (heading
- * "Hello Browser Verify") so the trial worktree really contains the page the
- * headless browser is asked to open.  Server start/stop is managed by the
- * webServer setting in playwright.config.browser-verify.ts.
+ * Creates three fixture git repos, each with a committed index.html (heading
+ * "Hello Browser Verify") so the tree the host serves — trial worktree in
+ * group B, base checkout in group C — really contains the page the headless
+ * browser is asked to open.  Server start/stop is managed by the webServer
+ * setting in playwright.config.browser-verify.ts.
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -43,6 +44,7 @@ export default async function globalSetup(): Promise<void> {
 
   initRepo(BROWSER_VERIFY_SEED.repoDirSettings);
   initRepo(BROWSER_VERIFY_SEED.repoDirAgent);
+  initRepo(BROWSER_VERIFY_SEED.repoDirManager);
 
   console.log("[browser-verify globalSetup] temp dirs ready:", BROWSER_VERIFY_SEED.base);
 }

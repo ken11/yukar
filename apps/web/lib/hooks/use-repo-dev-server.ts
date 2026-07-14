@@ -3,7 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { DevServerConfig, Repo } from "@/lib/api/endpoints";
-import { deleteRepoDevServer, putRepoDevServer } from "@/lib/api/endpoints";
+import { deleteRepoDevServer, extractDetail, putRepoDevServer } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import type { DevServerDraft, DraftValidationError, ServiceDraft } from "@/lib/dev-server/draft";
 import { configFromDraft, draftFromConfig, emptyDevServerDraft } from "@/lib/dev-server/draft";
@@ -42,9 +42,12 @@ export function useRepoDevServer(projectId: string, initialRepos: Repo[]) {
       invalidPort: "repos.devServer.errors.invalidPort",
       invalidTimeout: "repos.devServer.errors.invalidTimeout",
       invalidEnvLine: "repos.devServer.errors.invalidEnvLine",
+      invalidEnvPassthroughName: "repos.devServer.errors.invalidEnvPassthroughName",
     }[error.code];
     let message = t(key).replace("{service}", service);
-    if (error.code === "invalidEnvLine") message = message.replace("{line}", error.line);
+    if (error.code === "invalidEnvLine" || error.code === "invalidEnvPassthroughName") {
+      message = message.replace("{line}", error.line);
+    }
     return message;
   }
 
@@ -68,7 +71,9 @@ export function useRepoDevServer(projectId: string, initialRepos: Repo[]) {
       setPending((prev) => ({ ...prev, [repoName]: false }));
       setSaveErrors((prev) => ({
         ...prev,
-        [repoName]: err instanceof Error ? err.message : "Save failed",
+        // Prefer the backend's `detail` (e.g. "Dev server failed to start: …")
+        // over the generic "API 4xx: …" ApiError.message.
+        [repoName]: extractDetail(err) ?? (err instanceof Error ? err.message : "Save failed"),
       }));
     },
   });
@@ -88,7 +93,7 @@ export function useRepoDevServer(projectId: string, initialRepos: Repo[]) {
       setPending((prev) => ({ ...prev, [repoName]: false }));
       setSaveErrors((prev) => ({
         ...prev,
-        [repoName]: err instanceof Error ? err.message : "Save failed",
+        [repoName]: extractDetail(err) ?? (err instanceof Error ? err.message : "Save failed"),
       }));
     },
   });

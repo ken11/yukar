@@ -263,3 +263,49 @@ class TestBrowserFlow:
         # Re-open works after an explicit stop.
         reopened = await tools["browser_open"]()
         assert reopened["status"] == "success", _text_of(reopened)
+
+
+class TestBlockedOriginVisibility:
+    """Egress-gate rejections surface to the agent and the per-repo aggregate (§13)."""
+
+    async def test_blocked_subresource_recorded_and_reported(
+        self, ctx: AgentContext, managers: Any
+    ) -> None:
+        _dev, sessions = managers
+        (ctx.worktree_path / "blocked.html").write_text(
+            "<!DOCTYPE html><html><head><title>Blocked</title></head>"
+            '<body><img src="https://blocked.example/x.png"></body></html>'
+        )
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        opened = await tools["browser_open"]()
+        assert opened["status"] == "success", _text_of(opened)
+
+        navigated = await tools["browser_navigate"](url="/blocked.html")
+        assert navigated["status"] == "success", _text_of(navigated)
+        text = _text_of(navigated)
+        if "[egress]" not in text:
+            # The aborted subresource can land just after the load event —
+            # a follow-up read must carry the digest.
+            text = _text_of(await tools["browser_read"]())
+        assert "[egress]" in text
+        assert "https://blocked.example" in text
+
+        rows = sessions.blocked_origins("p")
+        assert any(
+            repo == "app" and stat.origin == "https://blocked.example" and stat.count >= 1
+            for repo, stat in rows
+        )
+        # Unrelated project: nothing recorded.
+        assert sessions.blocked_origins("other-project") == []
+
+    def test_record_into_caps_distinct_origins(self) -> None:
+        from yukar.preview.browser import _BLOCKED_ORIGIN_CAP, _record_into
+
+        stats: dict[str, Any] = {}
+        for i in range(_BLOCKED_ORIGIN_CAP + 10):
+            _record_into(stats, f"https://origin-{i}.example/x", "img")
+        assert len(stats) == _BLOCKED_ORIGIN_CAP
+        # Existing origins keep counting even at the cap.
+        _record_into(stats, "https://origin-0.example/y", "fetch")
+        assert stats["https://origin-0.example"].count == 2
+        assert stats["https://origin-0.example"].resource_types == {"img", "fetch"}

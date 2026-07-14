@@ -12,9 +12,10 @@
  * Split a command line into exec tokens.
  *
  * Whitespace separates tokens; single or double quotes group text (quotes are
- * stripped). Inside a double-quoted span, `\"` is honored as a literal `"` so
- * tokens that themselves contain quotes survive a joinCommandLine round-trip.
- * An unterminated quote consumes the rest of the line as one token.
+ * stripped). Inside a double-quoted span, `\"` and `\\` are honored as a literal
+ * `"` and `\` so tokens that themselves contain quotes or backslashes survive a
+ * joinCommandLine round-trip. An unterminated quote consumes the rest of the
+ * line as one token.
  */
 export function splitCommandLine(line: string): string[] {
   const tokens: string[] = [];
@@ -26,8 +27,9 @@ export function splitCommandLine(line: string): string[] {
   for (const ch of line) {
     if (quote !== null) {
       if (escaped) {
-        // Only \" is a recognized escape; any other sequence keeps its backslash.
-        current += ch === '"' ? '"' : `\\${ch}`;
+        // \" → " and \\ → \ (the two joinCommandLine emits); any other sequence
+        // keeps its backslash so unrelated input is preserved.
+        current += ch === '"' ? '"' : ch === "\\" ? "\\" : `\\${ch}`;
         escaped = false;
         continue;
       }
@@ -67,12 +69,16 @@ export function splitCommandLine(line: string): string[] {
  * Join exec tokens back into an editable command line.
  *
  * Any token that splitCommandLine would not reproduce verbatim — one containing
- * whitespace, a double- or single-quote, or an empty token — is wrapped in
- * double quotes with embedded double-quotes backslash-escaped, so a later
- * splitCommandLine round-trips to the same tokens.
+ * whitespace, a quote, a backslash, or an empty token — is wrapped in double
+ * quotes with embedded backslashes AND double-quotes backslash-escaped (in that
+ * order), so a later splitCommandLine round-trips to the same tokens.
  */
 export function joinCommandLine(tokens: string[]): string {
   return tokens
-    .map((tok) => (tok === "" || /[\s"']/.test(tok) ? `"${tok.replace(/"/g, '\\"')}"` : tok))
+    .map((tok) =>
+      tok === "" || /[\s"'\\]/.test(tok)
+        ? `"${tok.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+        : tok,
+    )
     .join(" ");
 }

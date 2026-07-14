@@ -91,6 +91,7 @@ from yukar.agents.prompts import (
 from yukar.agents.streaming import AgentUsageRecorder, StreamTranslator
 from yukar.agents.tools.agent_config_tools import make_agent_config_tools
 from yukar.agents.tools.agent_profile_tools import make_agent_profile_tools
+from yukar.agents.tools.browser_overview_tools import make_browser_overview_tools
 from yukar.agents.tools.docs_tools import make_manager_docs_tools
 from yukar.agents.tools.repo_tools import make_repo_tools
 from yukar.agents.tools.skill_mcp_tools import make_skill_mcp_tools
@@ -959,6 +960,15 @@ class EpicOrchestrator:
         # remember() tool: callable by Manager only. Captures store + epic_id in closure.
         remember_tool = _make_remember_tool(mem_store, epic_id, _pub_sensitive)
 
+        # Browser verification bundle (Manager + Reviewer): the same cores as
+        # the Worker/Evaluator bundle, but each tool takes a `repo` argument
+        # and resolves its target per call — trial worktree when it exists,
+        # base checkout before any work does (browser_overview_tools).  Empty
+        # when no registered repo declares a dev_server config.
+        browser_overview_tools = await make_browser_overview_tools(
+            root, project_id, epic_id, epic, owner_id=manager_thread_id
+        )
+
         if self._agent_role == "reviewer":
             # Read-only reviewer: inspect the branch diff, search the code, run the
             # tests, and report to the user in the message body.  No task/dispatch/
@@ -975,6 +985,7 @@ class EpicOrchestrator:
                 read_branch_diff_tool,
                 *manager_repo_tools,
                 *reviewer_ctx_tools,
+                *browser_overview_tools,
             ]
         else:
             # Manager: read-only worktree tools (fs_read + repo_grep, no run_tests)
@@ -993,6 +1004,7 @@ class EpicOrchestrator:
                 remember_tool,
                 *manager_repo_tools,
                 *manager_ctx_tools,
+                *browser_overview_tools,
                 *manager_docs_tools,
                 *manager_agent_config_tools,
                 *manager_profile_tools,

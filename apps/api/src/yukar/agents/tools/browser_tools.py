@@ -85,6 +85,11 @@ def make_browser_tools(ctx: AgentContext, owner_id: str) -> list[Any]:
         resulting URL plus a snapshot of the page. Re-calling is cheap — a
         healthy server is reused, a crashed one is relaunched.
 
+        If the user captured a login for this repo, the page starts already
+        authenticated. If you hit a login wall instead, do NOT guess or invent
+        credentials — report it and ask the user to log in via the repos
+        page's manual browser action.
+
         Args:
             service: Which declared service's origin to open. Defaults to the
                 first service in the config.
@@ -138,6 +143,9 @@ def make_browser_tools(ctx: AgentContext, owner_id: str) -> list[Any]:
     @tool
     async def browser_type(ref: str, text: str, press_enter: bool = False) -> dict[str, Any]:
         """Fill the input/textarea with the given snapshot ref.
+
+        Never type guessed/invented credentials, and never fill OTP or
+        CAPTCHA fields — logging in is the user's move, not yours.
 
         Args:
             ref: Element ref from the latest snapshot (e.g. "e7").

@@ -204,8 +204,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     browser_session_manager = BrowserSessionManager()
     init_browser_session_manager(browser_session_manager)
     app.state.browser_session_manager = browser_session_manager
+    from yukar.preview.login import LoginCaptureManager, init_login_capture_manager
+
+    login_capture_manager = LoginCaptureManager()
+    init_login_capture_manager(login_capture_manager)
+    app.state.login_capture_manager = login_capture_manager
 
     yield
+
+    # Shutdown: abandon any in-flight interactive login captures first (they
+    # hold a headed browser + dev servers of their own).
+    try:
+        await login_capture_manager.stop_all()
+    except Exception:
+        logger.warning("Shutdown: login capture stop_all failed", exc_info=True)
 
     # Shutdown: close browser sessions, then stop all dev server processes,
     # before anything else so child process groups never outlive the host.
@@ -221,6 +233,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # subsequent test) does not inherit these shut-down managers.
     init_dev_server_manager(None)
     init_browser_session_manager(None)
+    init_login_capture_manager(None)
 
     # Shutdown: stop watcher.
     if watcher is not None:

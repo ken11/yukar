@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from yukar.config import paths
 from yukar.models.project import (
     DevServerConfig,
     DevService,
@@ -238,3 +239,128 @@ class TestDevServerAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data[0]["dev_server"]["services"][0]["base_port"] == 3000
+
+
+class TestBlockedOriginsAPI:
+    """GET /projects/{pid}/browser/blocked — §13 visibility endpoint."""
+
+    async def _seed_repo(self, tmp_workspace: Path) -> str:
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p", repos=["app"]))
+        await save_repo(root, "p", Repo(name="app", path="/tmp/app"))
+        return root
+
+    @pytest.mark.asyncio
+    async def test_empty_when_nothing_blocked(self, app_client: Any, tmp_workspace: Path) -> None:
+        await self._seed_repo(tmp_workspace)
+        resp = await app_client.get("/api/projects/p/browser/blocked")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @pytest.mark.asyncio
+    async def test_lists_recorded_origins_for_the_project_only(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        from yukar.preview.browser import (
+            BlockedOriginStat,
+            BrowserSessionManager,
+            init_browser_session_manager,
+        )
+
+        await self._seed_repo(tmp_workspace)
+        sessions = BrowserSessionManager()
+        init_browser_session_manager(sessions)
+        try:
+            stat = BlockedOriginStat(origin="https://idp.example", count=3)
+            stat.resource_types.update({"xhr", "fetch"})
+            stat.last_at = 1_752_000_000.0
+            sessions._blocked_by_repo[("p", "app")] = {"https://idp.example": stat}
+            sessions._blocked_by_repo[("other", "app")] = {
+                "https://x.example": BlockedOriginStat(origin="https://x.example", count=1)
+            }
+
+            resp = await app_client.get("/api/projects/p/browser/blocked")
+            assert resp.status_code == 200
+            items = resp.json()
+            assert len(items) == 1
+            assert items[0]["repo"] == "app"
+            assert items[0]["origin"] == "https://idp.example"
+            assert items[0]["count"] == 3
+            assert items[0]["resource_types"] == ["fetch", "xhr"]
+            assert items[0]["last_at"].startswith("2")
+        finally:
+            init_browser_session_manager(None)
+
+    @pytest.mark.asyncio
+    async def test_missing_project_404(self, app_client: Any) -> None:
+        resp = await app_client.get("/api/projects/noexist/browser/blocked")
+        assert resp.status_code == 404
+
+
+class TestBrowserLoginAPI:
+    """REST layer of the login-capture endpoints (§12) — error paths that do
+    not need a real headed browser (the happy path is E2E group A-3)."""
+
+    async def _seed_repo(self, tmp_workspace: Path) -> str:
+        root = str(tmp_workspace)
+        await save_project(root, Project(id="p", name="p", repos=["app"]))
+        await save_repo(root, "p", Repo(name="app", path="/tmp/app"))
+        return root
+
+    @pytest.mark.asyncio
+    async def test_503_when_login_manager_absent(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        # app_client does not run the lifespan → the singleton is None.
+        from yukar.preview.login import init_login_capture_manager
+
+        await self._seed_repo(tmp_workspace)
+        init_login_capture_manager(None)
+        resp = await app_client.get("/api/projects/p/repos/app/browser-auth")
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_browser_auth_status_and_error_paths(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        from yukar.preview.login import LoginCaptureManager, init_login_capture_manager
+
+        root = await self._seed_repo(tmp_workspace)
+        init_login_capture_manager(LoginCaptureManager())
+        try:
+            # No capture saved yet.
+            status = await app_client.get("/api/projects/p/repos/app/browser-auth")
+            assert status.status_code == 200
+            assert status.json()["exists"] is False
+            assert status.json()["login_active"] is False
+
+            # finish without an active capture → 409 (not 500).
+            finish = await app_client.post("/api/projects/p/repos/app/browser-login/finish")
+            assert finish.status_code == 409
+
+            # cancel is idempotent → 204 even with nothing in flight.
+            cancel = await app_client.post("/api/projects/p/repos/app/browser-login/cancel")
+            assert cancel.status_code == 204
+
+            # Unknown repo → 404 on every endpoint.
+            assert (
+                await app_client.get("/api/projects/p/repos/ghost/browser-auth")
+            ).status_code == 404
+            assert (
+                await app_client.post("/api/projects/p/repos/ghost/browser-login/start")
+            ).status_code == 404
+
+            # GET reports captured_at once a state file exists.
+            state = paths.browser_auth_state(root, "p", "app")
+            state.parent.mkdir(parents=True, exist_ok=True)
+            state.write_text("{}")
+            after = await app_client.get("/api/projects/p/repos/app/browser-auth")
+            assert after.json()["exists"] is True
+            assert after.json()["captured_at"] is not None
+
+            # DELETE clears it.
+            deleted = await app_client.delete("/api/projects/p/repos/app/browser-auth")
+            assert deleted.status_code == 204
+            assert not state.exists()
+        finally:
+            init_login_capture_manager(None)

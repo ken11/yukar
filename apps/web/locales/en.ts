@@ -320,12 +320,32 @@ const en = {
         "{port} in the command or env values is replaced with the real port the host assigns per trial. {port:name} references another service's port.",
       readinessEmptyNote: "Empty = the service is ready once its port accepts connections.",
       envFormatNote: "One KEY=VALUE per line.",
+      serviceEnvFile: "Env files",
+      envFileNote:
+        "Paths to dotenv-style files (absolute / ~ / repo-relative). Values are read at launch and reach only the dev-server process. Relative paths are read from the original checkout, not the worktree.",
+      serviceEnvPassthrough: "Pass-through variables",
+      envPassthroughNote:
+        "Copied by name from the yukar server's environment. Values are never stored. An unset variable fails the launch.",
       addService: "Add service",
       removeService: "Remove this service",
       allowedOrigins: "Allowed origins",
       allowedOriginsNote: "One per line. The trial's own services are always allowed.",
       allowCommonCdns: "Allow common CDNs",
       allowCommonCdnsNote: "Well-known CDNs only, GET only.",
+      browserAuthTitle: "Browser login",
+      browserAuthNote:
+        "Hand your logged-in session to the browser agents use for verification. A browser window opens on the host — finish logging in (including any OTP), then save. A test account is recommended. Note: if the app stores tokens in localStorage, the handoff may not survive a port change between capture and verification (the base port is reused whenever it is free).",
+      loginStart: "Log in manually in a browser",
+      loginFinish: "Save login",
+      loginCancel: "Cancel",
+      loginActiveNote: "A browser window is open — finish logging in, then save.",
+      capturedAt: "Captured: {date}",
+      discardAuth: "Discard login",
+      blockedTitle: "Blocked destinations",
+      blockedNote:
+        "Destinations the egress gate rejected during agent browser verification. Add only what the app genuinely needs to the allowed origins, then save.",
+      addToAllowed: "Add to allowed",
+      addedToAllowed: "Added",
       save: "Save",
       saving: "Saving…",
       saved: "Saved",
@@ -340,6 +360,8 @@ const en = {
         invalidTimeout:
           "Service {service}: timeout must be a number greater than 0 and at most 600.",
         invalidEnvLine: "Service {service}: env line “{line}” is not KEY=VALUE.",
+        invalidEnvPassthroughName:
+          "Service {service}: pass-through variable “{line}” is not a valid name (start with a letter or _, then letters, digits, _).",
       },
     },
   },

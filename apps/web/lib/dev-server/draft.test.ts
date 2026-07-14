@@ -11,6 +11,8 @@ const fullConfig: DevServerConfig = {
       base_port: 3000,
       readiness: { path: "/health", timeout_seconds: 90 },
       env: { NODE_ENV: "development", API_URL: "http://127.0.0.1:{port:api}" },
+      env_file: ["~/secrets/dev.env", ".env.development"],
+      env_passthrough: ["DATABASE_URL"],
     },
   ],
   browser: {
@@ -31,6 +33,8 @@ function validDraft(overrides: Partial<DevServerDraft> = {}): DevServerDraft {
         readinessPath: "/health",
         readinessTimeout: "90",
         envText: "NODE_ENV=development",
+        envFileText: "",
+        envPassthroughText: "",
       },
     ],
     allowedOriginsText: "https://fonts.googleapis.com",
@@ -69,6 +73,8 @@ describe("draftFromConfig", () => {
         readinessPath: "/health",
         readinessTimeout: "90",
         envText: "NODE_ENV=development\nAPI_URL=http://127.0.0.1:{port:api}",
+        envFileText: "~/secrets/dev.env\n.env.development",
+        envPassthroughText: "DATABASE_URL",
       },
     ]);
     expect(draft.allowedOriginsText).toBe("https://fonts.googleapis.com");
@@ -102,6 +108,8 @@ describe("configFromDraft", () => {
       base_port: 3000,
       readiness: { path: "/health", timeout_seconds: 90 },
       env: { NODE_ENV: "development" },
+      env_file: [],
+      env_passthrough: [],
     });
     expect(result.config.browser).toEqual({
       allowed_origins: ["https://fonts.googleapis.com"],
@@ -255,5 +263,38 @@ describe("configFromDraft", () => {
     draft.services = [draft.services[0], { ...emptyServiceDraft(), name: "api", basePort: "no" }];
     const result = configFromDraft(draft);
     expect(result).toEqual({ ok: false, error: { code: "commandRequired", serviceIndex: 1 } });
+  });
+});
+
+describe("env sources (env_file / env_passthrough)", () => {
+  it("splits env files and pass-through names one per line, dropping blanks", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), {
+        envFileText: "~/secrets/dev.env\n\n .env.development \n",
+        envPassthroughText: "DATABASE_URL\n\nSTRIPE_TEST_KEY\n",
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.services[0].env_file).toEqual(["~/secrets/dev.env", ".env.development"]);
+    expect(result.config.services[0].env_passthrough).toEqual(["DATABASE_URL", "STRIPE_TEST_KEY"]);
+  });
+
+  it.each(["1BAD", "A B", "DASH-ED"])("rejects invalid pass-through name %s", (name) => {
+    const result = configFromDraft(patchService(validDraft(), { envPassthroughText: name }));
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "invalidEnvPassthroughName", serviceIndex: 0, line: name },
+    });
+  });
+
+  it("roundtrips env sources through draftFromConfig", () => {
+    const result = configFromDraft(draftFromConfig(fullConfig));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.services[0].env_file).toEqual(fullConfig.services[0].env_file);
+    expect(result.config.services[0].env_passthrough).toEqual(
+      fullConfig.services[0].env_passthrough,
+    );
   });
 });

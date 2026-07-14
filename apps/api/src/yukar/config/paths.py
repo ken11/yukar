@@ -89,6 +89,16 @@ def repo_yaml(root: str, project_id: str, repo_name: str) -> Path:
     return repos_dir(root, project_id) / f"{repo_name}.yaml"
 
 
+def browser_auth_state(root: str, project_id: str, repo_name: str) -> Path:
+    """Saved Playwright storage_state for a repo's app (design §12).
+
+    Written by the host after the user completes an interactive login; injected
+    into every agent browser context for the repo.  Agents never read it.
+    """
+    _validate_segment(repo_name, "repo_name")
+    return repos_dir(root, project_id) / f"{repo_name}.browser-auth.json"
+
+
 def project_docs_dir(root: str, project_id: str) -> Path:
     return project_dir(root, project_id) / "docs"
 

@@ -1,13 +1,16 @@
 /**
  * Playwright config for the browser verification E2E test.
  *
- * Two groups against one backend instance:
+ * Three groups against one backend instance:
  *   A. Repos-page dev-server editor roundtrip (configure → save → reload →
  *      remove) — pure settings UI, no run.
  *   B. Agent flow — a scripted worker-only run whose Worker really calls
  *      browser_open / browser_read: the host launches the declared
  *      `python3 -m http.server` inside the trial worktree and drives a
  *      headless Chromium page on it (tools are real even under provider=fake).
+ *   C. Manager flow — the scripted Manager verifies the user's written
+ *      scenario ITSELF via the repo-dispatching browser bundle; nothing is
+ *      dispatched, so the host serves the repo's base checkout.
  *
  * Launch strategy:
  *   - FastAPI (8000): started with BROWSER_VERIFY_FAKE_SCRIPT
@@ -93,6 +96,9 @@ export default defineConfig({
         // the approval gate itself is covered by the plan-gate scenario.
         YUKAR_REQUIRE_PLAN_APPROVAL: "0",
         YUKAR_FAKE_SLEEP: "0",
+        // The login-capture browser cannot open a headed window in CI — the
+        // test drives the same flow headless (design §12 test hook).
+        YUKAR_LOGIN_BROWSER_HEADLESS: "1",
       },
     },
     // ---- Next.js dev server (port 3000) ----

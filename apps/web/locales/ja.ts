@@ -311,12 +311,32 @@ const ja = {
         "コマンドや環境変数の中の {port} は、トライアルごとにホストが割り当てた実ポートに置き換わります。{port:名前} と書くと別サービスのポートを参照します。",
       readinessEmptyNote: "空欄のときはポートが開くのを待つだけで起動完了とみなします。",
       envFormatNote: "1行につき KEY=VALUE の形式で書きます。",
+      serviceEnvFile: "環境変数ファイル",
+      envFileNote:
+        "dotenv 形式のファイルのパス（絶対 / ~ / リポジトリ相対）。値は起動時に読み、開発サーバーのプロセスにだけ渡します。相対パスは worktree ではなく元のチェックアウトから読みます。",
+      serviceEnvPassthrough: "引き継ぐ環境変数",
+      envPassthroughNote:
+        "yukar サーバーの環境から名前で引き継ぎます。値はどこにも保存されません。未設定なら起動エラーになります。",
       addService: "サービスを追加",
       removeService: "このサービスを削除",
       allowedOrigins: "許可するオリジン",
       allowedOriginsNote: "1行に1つずつ書きます。トライアル自身のサービスは常に許可されます。",
       allowCommonCdns: "よく使われる CDN を許可",
       allowCommonCdnsNote: "既知の CDN のみ・GET だけが通ります。",
+      browserAuthTitle: "ブラウザログイン",
+      browserAuthNote:
+        "エージェントが検証に使うブラウザへ、あなたのログインセッションを引き継ぎます。ホスト上にブラウザ窓が開くので、ログイン（OTP なども）を済ませてから保存してください。テスト用アカウントの使用を推奨します。注意: アプリが localStorage にトークンを置く場合、記録時と検証時でポートが変わると引き継げないことがあります（基準ポートが空いていれば同じポートが使われます）。",
+      loginStart: "ブラウザで手動ログイン",
+      loginFinish: "ログインを保存",
+      loginCancel: "キャンセル",
+      loginActiveNote: "ブラウザ窓が開いています。ログインを済ませてから保存してください。",
+      capturedAt: "記録済み: {date}",
+      discardAuth: "ログイン状態を破棄",
+      blockedTitle: "ブロックされた接続先",
+      blockedNote:
+        "エージェントのブラウザ検証中に遮断された接続先です。アプリの動作に必要なものだけを許可に追加し、保存してください。",
+      addToAllowed: "許可に追加",
+      addedToAllowed: "追加済み",
       save: "保存",
       saving: "保存中…",
       saved: "保存しました",
@@ -333,6 +353,8 @@ const ja = {
           "サービス {service} のタイムアウトは 0 より大きく 600 以下の数値で入力してください。",
         invalidEnvLine:
           "サービス {service} の環境変数「{line}」が KEY=VALUE の形式になっていません。",
+        invalidEnvPassthroughName:
+          "サービス {service} の引き継ぐ環境変数「{line}」が変数名として不正です（英字か _ で始め、英数字と _ のみ）。",
       },
     },
   },

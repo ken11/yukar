@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -32,6 +33,8 @@ from urllib.parse import urljoin, urlparse
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from playwright.async_api import (
         Browser,
         BrowserContext,
@@ -62,6 +65,8 @@ _CONSOLE_CAP = 200
 _SNAPSHOT_CAP_CHARS = 40_000
 _REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 _MAX_REDIRECTS = 20
+_BLOCKED_ORIGIN_CAP = 50  # distinct origins tracked per session / per repo
+_BLOCKED_SUMMARY_MAX = 5  # origins listed in the agent-facing summary line
 
 
 def normalize_origin(url: str) -> str:
@@ -121,8 +126,12 @@ _SNAPSHOT_JS = """
     const own = el.getAttribute('aria-label') || el.getAttribute('alt')
       || el.getAttribute('placeholder') || el.getAttribute('title') || '';
     let text = own;
+    // Never surface the value of a password field: the real accessibility tree
+    // masks it, but this walker would otherwise hand the plaintext to the agent
+    // (a logged-in agent reaching a settings page can see a pre-filled secret).
     if (!text && ('value' in el) && typeof el.value === 'string'
-        && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) text = el.value;
+        && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
+        && el.type !== 'password') text = el.value;
     if (!text) text = el.textContent || '';
     return text.trim().replace(/\\s+/g, ' ').slice(0, 80);
   };
@@ -168,21 +177,57 @@ class SessionKey:
 
 
 @dataclass
+class BlockedOriginStat:
+    """Aggregate of egress-gate rejections for one origin (§13)."""
+
+    origin: str
+    count: int = 0
+    resource_types: set[str] = field(default_factory=set)
+    last_at: float = 0.0  # time.time()
+
+    def bump(self, resource_type: str) -> None:
+        self.count += 1
+        self.resource_types.add(resource_type)
+        self.last_at = time.time()
+
+
+def _record_into(stats: dict[str, BlockedOriginStat], url: str, resource_type: str) -> None:
+    """Bump the per-origin stat in *stats*, respecting the origin cap."""
+    origin = normalize_origin(url) or url[:120]
+    stat = stats.get(origin)
+    if stat is None:
+        if len(stats) >= _BLOCKED_ORIGIN_CAP:
+            return  # keep the earliest origins; a runaway page can't grow this
+        stat = stats[origin] = BlockedOriginStat(origin=origin)
+    stat.bump(resource_type)
+
+
+@dataclass
 class BrowserSession:
     """One agent's page plus its egress allow-set and console capture."""
 
     key: SessionKey
     context: BrowserContext
     page: Page
+    repo_name: str = ""  # attribution for blocked-origin stats (§13)
     allowed_origins: set[str] = field(default_factory=set)
     cdn_preset_enabled: bool = False
     console: deque[str] = field(default_factory=lambda: deque(maxlen=_CONSOLE_CAP))
+    blocked: dict[str, BlockedOriginStat] = field(default_factory=dict)
 
-    def allow(self, origins: list[str], *, cdn_preset: bool) -> None:
-        self.allowed_origins.update(normalize_origin(o) for o in origins)
+    def set_allowed(self, origins: list[str], *, cdn_preset: bool) -> None:
+        """REPLACE the egress allow-set with the current config's origins.
+
+        Called by open_app on every browser_open.  Replacing (not unioning)
+        means a config change takes effect on the next open without tearing the
+        session down: origins the user removed stop being allowed, a disabled
+        CDN preset stops matching, and a service relaunched on a new port drops
+        its stale origin (the design §5 invariant "allowed = the origins this
+        trial's services are CURRENTLY serving").
+        """
+        self.allowed_origins = {normalize_origin(o) for o in origins}
         self.allowed_origins.discard("")
-        if cdn_preset:
-            self.cdn_preset_enabled = True
+        self.cdn_preset_enabled = cdn_preset
 
     def is_allowed(self, url: str, method: str) -> bool:
         origin = normalize_origin(url)
@@ -192,6 +237,24 @@ class BrowserSession:
             self.cdn_preset_enabled
             and origin in COMMON_CDN_ORIGINS
             and method.upper() == "GET"
+        )
+
+    def blocked_summary(self) -> str:
+        """Short agent-facing digest of what the egress gate rejected, or ""."""
+        if not self.blocked:
+            return ""
+        top = sorted(self.blocked.values(), key=lambda s: -s.count)[:_BLOCKED_SUMMARY_MAX]
+        lines = [
+            f"- {s.origin} ×{s.count} ({', '.join(sorted(s.resource_types))})" for s in top
+        ]
+        more = len(self.blocked) - len(top)
+        if more > 0:
+            lines.append(f"- … and {more} more origin(s)")
+        return (
+            "[egress] The gate blocked requests to origins outside the allow-set:\n"
+            + "\n".join(lines)
+            + "\nIf the app needs one of these, report it to the user — they can add "
+            "it to the repo's dev-server allowed_origins."
         )
 
     async def snapshot(self) -> str:
@@ -248,10 +311,31 @@ class BrowserSessionManager:
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._sessions: dict[SessionKey, BrowserSession] = {}
+        # Blocked-origin aggregate per (project, repo) — decoupled from session
+        # lifetime so the UI can still answer "what should I allow?" after the
+        # run parked or the session closed (§13).  Process memory only.
+        self._blocked_by_repo: dict[tuple[str, str], dict[str, BlockedOriginStat]] = {}
         # Serialises browser launch + session creation so parallel agents
         # (the scheduler runs Workers concurrently) can't each start a separate
         # Chromium and orphan all but the last.
         self._lock = asyncio.Lock()
+
+    def record_blocked(self, session: BrowserSession, url: str, resource_type: str) -> None:
+        """Record one egress-gate rejection on the session AND the repo aggregate."""
+        _record_into(session.blocked, url, resource_type)
+        repo_key = (session.key.project_id, session.repo_name)
+        _record_into(self._blocked_by_repo.setdefault(repo_key, {}), url, resource_type)
+
+    def blocked_origins(self, project_id: str) -> list[tuple[str, BlockedOriginStat]]:
+        """(repo_name, stat) pairs for the project, most recent first."""
+        rows = [
+            (repo, stat)
+            for (pid, repo), stats in self._blocked_by_repo.items()
+            if pid == project_id
+            for stat in stats.values()
+        ]
+        rows.sort(key=lambda r: -r[1].last_at)
+        return rows
 
     async def _ensure_browser(self) -> Browser:
         if self._browser is not None and self._browser.is_connected():
@@ -277,17 +361,36 @@ class BrowserSessionManager:
             return existing
         return None
 
-    async def session(self, key: SessionKey) -> BrowserSession:
+    async def session(
+        self,
+        key: SessionKey,
+        *,
+        repo_name: str = "",
+        storage_state: Path | None = None,
+    ) -> BrowserSession:
         """Return the owner's session, creating page + egress gate on first use.
 
         Called by browser_open (which then populates the allow-set).  A stale
         session whose page has closed is torn down (context closed) and rebuilt
         so a crashed renderer never leaks its context.
+
+        Args:
+            key: The owner's session key.
+            repo_name: Attributes blocked-origin stats to the repo (§13); only
+                browser_open knows it, every other tool reuses the session.
+            storage_state: User-captured auth state (cookies + localStorage,
+                design §12) loaded into the NEW context so the agent starts
+                logged in.  Applied only at context creation; an existing live
+                session keeps its state.  A corrupt file logs a warning and
+                falls back to a clean context (verification still works — the
+                agent just hits the login wall and reports it).
         """
         async with self._lock:
             existing = self._sessions.get(key)
             if existing is not None:
                 if not existing.page.is_closed():
+                    if repo_name:
+                        existing.repo_name = repo_name
                     return existing
                 # Page died (renderer crash / agent close) — drop the old
                 # context before rebuilding so it does not leak.
@@ -298,30 +401,62 @@ class BrowserSessionManager:
             # service_workers="block": SW-initiated requests bypass route
             # interception entirely — with agent-authored page code that would
             # be an egress hole, so service workers are disabled outright.
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                service_workers="block",
-            )
+            context_kwargs: dict[str, object] = {
+                "viewport": {"width": 1280, "height": 800},
+                "service_workers": "block",
+            }
+            if storage_state is not None:
+                context_kwargs["storage_state"] = str(storage_state)
+            try:
+                context = await browser.new_context(**context_kwargs)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+            except Exception:
+                if storage_state is None:
+                    raise
+                # Corrupt/unreadable auth state — fall back to a clean context.
+                logger.warning(
+                    "Browser auth state %s could not be loaded — starting unauthenticated",
+                    storage_state,
+                    exc_info=True,
+                )
+                context_kwargs.pop("storage_state", None)
+                context = await browser.new_context(**context_kwargs)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
             await context.add_init_script(_NEUTER_NON_HTTP_EGRESS_JS)
             page = await context.new_page()
-            session = BrowserSession(key=key, context=context, page=page)
+            session = BrowserSession(key=key, context=context, page=page, repo_name=repo_name)
 
             async def _gate(route: Route) -> None:
                 request = route.request
                 if not session.is_allowed(request.url, request.method):
                     logger.info("Browser egress blocked: %s %s", request.method, request.url)
+                    self.record_blocked(session, request.url, request.resource_type)
                     await route.abort("blockedbyclient")
                     return
-                # Streaming-prone types take continue_(): route.fetch() buffers
-                # the whole body and would hang on an endless stream.  The
-                # trade-off is that a SERVER redirect from an allowed origin to
-                # a disallowed one is followed by the browser un-gated for these
-                # types (neither continue_ NOR fulfill re-gates a redirect hop —
-                # verified empirically).  Accepted residual: a DIRECT request to
-                # a disallowed origin is still blocked above for every type, and
-                # the dev-server subprocess already has ungated egress, so an
-                # allowed-origin open-redirect launders nothing secret from it.
-                if request.resource_type in _STREAMING_RESOURCE_TYPES:
+                # Documents (top-level navigations) and streaming types take
+                # continue_() rather than the manual fetch+fulfill path:
+                #  - document: a FULFILLED response carries no real remote IP, so
+                #    Chromium classifies the PAGE's address space as Unknown
+                #    (treated as public).  Every later request from that page to a
+                #    127.0.0.1 sibling service — fetch / xhr / WebSocket, the
+                #    design's multi-service topology (frontend → backend, HMR) —
+                #    is then a public→loopback request that Local Network Access
+                #    blocks (ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS).
+                #    continue_() lets the real loopback connection set the address
+                #    space, so cross-service verification works.
+                #  - streaming: route.fetch() buffers the whole body and would
+                #    hang on an endless stream.
+                # Redirect residual for BOTH (design §5): a SERVER redirect from
+                # an allowed origin to a disallowed one is followed un-gated.
+                # Accepted because (a) a DIRECT request to a disallowed origin is
+                # still blocked above for every type, and (b) the redirect
+                # Location is authored by the allowed dev-server subprocess, which
+                # already has ungated egress — so it launders nothing the
+                # subprocess could not exfiltrate directly.  Non-document
+                # subresources (img / script / css / font / …) still take the
+                # manual re-gating path below.
+                if (
+                    request.resource_type == "document"
+                    or request.resource_type in _STREAMING_RESOURCE_TYPES
+                ):
                     await route.continue_()
                     return
                 # Non-streaming types: follow the redirect chain ourselves,
@@ -331,19 +466,48 @@ class BrowserSessionManager:
                 try:
                     response = await route.fetch(max_redirects=0)
                     hops = 0
+                    method = request.method
                     while response.status in _REDIRECT_STATUSES and hops < _MAX_REDIRECTS:
                         location = response.headers.get("location")
                         if not location:
                             break
                         next_url = urljoin(response.url, location)
-                        if not session.is_allowed(next_url, request.method):
+                        if not session.is_allowed(next_url, method):
                             logger.info("Browser egress blocked (redirect): %s", next_url)
+                            self.record_blocked(session, next_url, request.resource_type)
                             await route.abort("blockedbyclient")
                             return
-                        response = await session.context.request.get(
-                            next_url, max_redirects=0
-                        )
+                        # 307/308 preserve method+body; 303 and the historical
+                        # 301/302 non-GET behaviour downgrade to GET.  Following
+                        # the chain with GET would turn a form POST into a GET and
+                        # make scenario verification report a false defect.
+                        if response.status in (307, 308):
+                            body = request.post_data_buffer
+                            if body is not None:
+                                response = await session.context.request.fetch(
+                                    next_url, method=method, data=body, max_redirects=0
+                                )
+                            else:
+                                response = await session.context.request.fetch(
+                                    next_url, method=method, max_redirects=0
+                                )
+                        else:
+                            method = "GET"
+                            response = await session.context.request.get(
+                                next_url, max_redirects=0
+                            )
                         hops += 1
+                    if response.status in _REDIRECT_STATUSES:
+                        # Cap hit while still redirecting: the next hop was never
+                        # gated, and a fulfilled 3xx is followed by the browser
+                        # un-gated (design §5).  Fail closed rather than hand the
+                        # browser an un-gated redirect.
+                        logger.info(
+                            "Browser egress blocked: redirect chain exceeded %d hops",
+                            _MAX_REDIRECTS,
+                        )
+                        await route.abort("blockedbyclient")
+                        return
                     await route.fulfill(response=response)
                 except Exception:
                     # Page teardown mid-flight etc. — fail closed.
@@ -357,6 +521,7 @@ class BrowserSessionManager:
                     ws.connect_to_server()
                 else:
                     logger.info("Browser egress blocked (ws): %s", ws.url)
+                    self.record_blocked(session, ws.url, "websocket")
                     await ws.close()
 
             await context.route("**/*", _gate)
@@ -388,6 +553,20 @@ class BrowserSessionManager:
         session = self._sessions.pop(key, None)
         if session is not None:
             await self._close_session(session)
+
+    async def close_for_repo(self, project_id: str, repo_name: str) -> None:
+        """Close every session attributed to *repo_name* (auth state changed §12).
+
+        The next browser_open rebuilds the context with the new storage_state —
+        the same "call browser_open first" recovery path agents already know.
+        """
+        keys = [
+            k
+            for k, s in self._sessions.items()
+            if k.project_id == project_id and s.repo_name == repo_name
+        ]
+        for k in keys:
+            await self.close(k)
 
     async def close_for_trial(self, project_id: str, epic_id: str, trial_id: str) -> None:
         keys = [
