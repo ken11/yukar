@@ -217,11 +217,18 @@ html[lang="en"] { --leading-prose: 1.5; --tracking-prose: 0; }
   /* Horizontal datum — bottom of header. The boundary between header surface (light) and field (dark) is the horizon */
   .edge-h { box-shadow: 0 1px 0 0 var(--edge-shadow), inset 0 -1px 0 0 var(--edge-lit); }
 
-  /* single point of light — current location / live. Short vertical segment on the left edge */
-  .light-v { box-shadow: inset 2px 0 0 0 var(--color-light); }
-  @keyframes light-pulse { 0%,100% { opacity:.6 } 50% { opacity:1 } }
-  .light-live { animation: light-pulse 2.4s ease-in-out infinite; }
-  @media (prefers-reduced-motion: reduce) { .light-live { animation: none; opacity: 1; } }
+  /* single point of light — current location / live. A cyan strip on the host's
+     left inner edge, painted by an overlay pseudo-element so that ONLY the light
+     pulses — never the host's content. (A full-height sidebar or header must not
+     blink as a whole.) The host must be a positioning context: add `relative`,
+     or already be sticky/absolute/fixed. */
+  .light-v::before {
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; z-index: 1;
+    background: var(--color-light); pointer-events: none;
+  }
+  @keyframes light-pulse { 0%,100% { opacity:.55 } 50% { opacity:1 } }
+  .light-live::before { animation: light-pulse 2.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .light-live::before { animation: none; opacity: 1; } }
 }
 
 html {

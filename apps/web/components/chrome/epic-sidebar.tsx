@@ -127,7 +127,8 @@ export function EpicSidebar({
     <aside
       aria-label={t("nav.epicNav")}
       className={cn(
-        "flex h-full w-[320px] shrink-0 flex-col bg-surface-container-low edge-v",
+        // `relative` anchors the .light-v edge-light overlay (a pseudo-element).
+        "relative flex h-full w-[320px] shrink-0 flex-col bg-surface-container-low edge-v",
         // Running only: single cyan point at the top-left edge.
         isRunning ? "light-v light-live" : "",
       )}

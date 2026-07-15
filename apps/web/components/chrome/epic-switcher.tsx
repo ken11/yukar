@@ -395,7 +395,10 @@ export function EpicSwitcher({ compact = false }: { compact?: boolean } = {}) {
         aria-label={`${t("epicSwitcher.switchEpic")}: ${epicId}`}
         onClick={handleOpen}
         className={cn(
-          "flex min-w-0 items-center gap-1 overflow-hidden rounded px-1 py-0.5 transition-colors",
+          // max-w-full: a <button> is a form control and sizes to fit-content even
+          // when block-level, so without this clamp a long title grows the button
+          // past its column instead of letting the title truncate.
+          "flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded px-1 py-0.5 transition-colors",
           "hover:bg-surface-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]",
           open && "bg-surface-container",
         )}

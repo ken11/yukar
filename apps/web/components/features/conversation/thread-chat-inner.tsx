@@ -471,7 +471,8 @@ export function ThreadChatInner({
               <div
                 className={cn(
                   "flex flex-col",
-                  showTurnState && "light-v light-live composer-bloom",
+                  // `relative` anchors the .light-v edge-light overlay (a pseudo-element).
+                  showTurnState && "relative light-v light-live composer-bloom",
                 )}
                 style={{
                   backgroundColor: "var(--color-surface-container-lowest)",
