@@ -536,17 +536,17 @@ class TestReviewerWorktreeTools:
 
         fs_read = by_name["fs_read"]
         # Dispatch to the correct worktree via `repo`.
-        a = fs_read(path="marker.txt", repo="repoA")
+        a = await fs_read(path="marker.txt", repo="repoA")
         assert a["status"] == "success"
         assert "content of repoA" in a["content"][0]["text"]
-        b = fs_read(path="marker.txt", repo="repoB")
+        b = await fs_read(path="marker.txt", repo="repoB")
         assert b["status"] == "success"
         assert "content of repoB" in b["content"][0]["text"]
         # `repo` is always required → omitting it errors (lists available repos).
-        missing_repo = fs_read(path="marker.txt")
+        missing_repo = await fs_read(path="marker.txt")
         assert missing_repo["status"] == "error"
         # Unknown repo → error.
-        unknown = fs_read(path="marker.txt", repo="nope")
+        unknown = await fs_read(path="marker.txt", repo="nope")
         assert unknown["status"] == "error"
 
     @pytest.mark.asyncio
@@ -574,9 +574,59 @@ class TestReviewerWorktreeTools:
         by_name = {getattr(t, "tool_name", None): t for t in tools}
         assert set(by_name) == {"run_tests", "fs_read", "repo_grep"}
         # fs_read resolves against the base checkout when no worktree exists.
-        result = by_name["fs_read"](path="base.txt", repo="myrepo")
+        result = await by_name["fs_read"](path="base.txt", repo="myrepo")
         assert result["status"] == "success"
         assert "base checkout content" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_worktree_created_mid_run_is_picked_up(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The tools resolve their target tree PER CALL, so a worktree the first
+        dispatch creates AFTER the tools were built (mid-run) is read on the very
+        next call — the tool never stays frozen on the base checkout it started on.
+
+        Regression: the Manager's fs_read/repo_grep kept showing stale
+        base-checkout code after a Worker had already committed work in the
+        branch worktree, because the target was frozen at build time."""
+        from yukar.config import paths as p
+        from yukar.models.epic import Epic
+        from yukar.models.project import Project, Repo
+        from yukar.storage.project_repo import save_project, save_repo
+
+        root = str(tmp_path / "ws")
+        pid, eid = "p-mid", "EP-mid"
+        await save_project(root, Project(id=pid, name=pid))
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "impl.txt").write_text("OLD base-checkout code")
+        await save_repo(root, pid, Repo(name="myrepo", path=str(repo_dir)))
+
+        orch = _reviewer_orchestrator()
+        orch._epic = Epic(id=eid, slug="s", title="T", status="open", touched_repos=[])
+        # Build the tools BEFORE any worktree exists (Turn 0).
+        tools = await orch._build_worktree_ro_tools(root, pid, eid)
+        by_name = {getattr(t, "tool_name", None): t for t in tools}
+        fs_read = by_name["fs_read"]
+        repo_grep = by_name["repo_grep"]
+
+        # First call: no worktree yet → base checkout.
+        before = await fs_read(path="impl.txt", repo="myrepo")
+        assert before["status"] == "success"
+        assert "OLD base-checkout code" in before["content"][0]["text"]
+
+        # A worker dispatch creates the trial worktree mid-run and commits NEW work
+        # (active_thread_id=None → trial "manager").
+        wt = p.worktree_dir(root, pid, eid, "manager", "myrepo")
+        wt.mkdir(parents=True)
+        (wt / "impl.txt").write_text("NEW worktree code")
+
+        # SAME tool instances, next call: now resolves to the worktree, not stale base.
+        after = await fs_read(path="impl.txt", repo="myrepo")
+        assert after["status"] == "success"
+        assert "NEW worktree code" in after["content"][0]["text"]
+        assert "OLD base-checkout code" not in after["content"][0]["text"]
+        grep = await repo_grep(pattern="worktree code", repo="myrepo")
+        assert grep["status"] == "success"
+        assert "NEW worktree code" in grep["content"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_no_registered_repos_yields_no_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -653,11 +703,11 @@ class TestReviewerWorktreeTools:
         assert "fs_write" not in by_name
         assert "fs_delete" not in by_name
         # `repo` is required even for a single-repo epic (no default/auto-pick).
-        result = by_name["fs_read"](path="marker.txt", repo="myrepo")
+        result = await by_name["fs_read"](path="marker.txt", repo="myrepo")
         assert result["status"] == "success"
         assert "hello from myrepo" in result["content"][0]["text"]
         # Omitting `repo` errors rather than silently picking the sole repo.
-        assert by_name["fs_read"](path="marker.txt")["status"] == "error"
+        assert (await by_name["fs_read"](path="marker.txt"))["status"] == "error"
 
 
 class TestReviewerLegacyEpic:
