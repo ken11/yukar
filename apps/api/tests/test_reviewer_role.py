@@ -624,9 +624,29 @@ class TestReviewerWorktreeTools:
         assert after["status"] == "success"
         assert "NEW worktree code" in after["content"][0]["text"]
         assert "OLD base-checkout code" not in after["content"][0]["text"]
-        grep = await repo_grep(pattern="worktree code", repo="myrepo")
+        # repo_grep shells out to ripgrep, which the CI runner does not have
+        # installed (every other grep test mocks the subprocess for exactly this
+        # reason — see test_issue_dispatch_tools).  Mock it here too and assert
+        # ripgrep is launched with cwd = the NEW worktree: that is what proves
+        # repo_grep resolved to the mid-run worktree, not the stale base checkout.
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        rg_proc = MagicMock()
+        rg_proc.returncode = 0
+        rg_proc.communicate = AsyncMock(
+            return_value=(b"impl.txt\x1f1\x1fNEW worktree code\n", b"")
+        )
+        fake_exec = AsyncMock(return_value=rg_proc)
+        with patch(
+            "yukar.agents.tools.grep_tools.asyncio.create_subprocess_exec", fake_exec
+        ):
+            grep = await repo_grep(pattern="worktree code", repo="myrepo")
         assert grep["status"] == "success"
         assert "NEW worktree code" in grep["content"][0]["text"]
+        # Per-call resolution routed ripgrep at the mid-run worktree, not base.
+        call = fake_exec.await_args
+        assert call is not None
+        assert call.kwargs["cwd"] == str(wt)
 
     @pytest.mark.asyncio
     async def test_no_registered_repos_yields_no_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
