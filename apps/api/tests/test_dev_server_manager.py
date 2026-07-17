@@ -218,6 +218,31 @@ class TestEnsure:
             await manager.stop_all()
 
     @pytest.mark.asyncio
+    async def test_ipv6_only_bind_is_detected(
+        self, manager: DevServerManager, worktree: Path
+    ) -> None:
+        """A server that binds only IPv6 ``::1`` (as `next dev` on localhost
+        often does) must be reached at ``[::1]`` — not the IPv4 default that
+        would yield ERR_CONNECTION_REFUSED."""
+        serve_v6 = (
+            "import os,socket,time\n"
+            "port=int(os.environ['PORT'])\n"
+            "s=socket.create_server(('::1',port),family=socket.AF_INET6)\n"
+            "print('listening on',port,flush=True)\n"
+            "time.sleep(120)\n"
+        )
+        svc = _service(command=[sys.executable, "-c", serve_v6])
+        try:
+            entry = await manager.ensure(KEY, _config(svc), worktree)
+            handle = entry["web"]
+            assert handle.state == "ready"
+            assert handle.host == "::1"
+            # IPv6 literal is bracketed so the URL is well-formed.
+            assert handle.origin == f"http://[::1]:{handle.port}"
+        finally:
+            await manager.stop_all()
+
+    @pytest.mark.asyncio
     async def test_env_cross_reference_reaches_child(
         self, manager: DevServerManager, worktree: Path
     ) -> None:

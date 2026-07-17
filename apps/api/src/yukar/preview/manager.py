@@ -45,6 +45,32 @@ _PORT_SCAN_SPAN = 200  # how far above base_port the free-port search goes
 _READY_POLL_SECONDS = 0.25
 _TERM_GRACE_SECONDS = 5.0
 
+# Loopback families a dev server may bind, probed in this order at readiness.
+# A server that binds `localhost` resolves to IPv6 ``::1`` on many systems
+# (notably macOS), so a hard-coded IPv4 ``127.0.0.1`` target would be REFUSED
+# even though the server is up.  We detect which family actually accepts a
+# connection and address the browser + readiness probe at THAT family, so the
+# navigation target always matches where the child is really listening.
+_LOOPBACK_PROBE_HOSTS: tuple[str, ...] = ("127.0.0.1", "::1")
+
+
+async def _first_reachable_loopback(port: int) -> str | None:
+    """Return the first loopback host accepting a TCP connection on *port*.
+
+    Tries IPv4 then IPv6 (see :data:`_LOOPBACK_PROBE_HOSTS`).  ``None`` when
+    neither accepts yet — the caller keeps polling until the deadline.
+    """
+    for host in _LOOPBACK_PROBE_HOSTS:
+        try:
+            _, writer = await asyncio.open_connection(host, port)
+        except OSError:
+            continue
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        return host
+    return None
+
 # {port} / {port:service} / {port:repo/service} — group 1 carries the
 # reference ("service" or "repo/service"); bare {port} leaves it None.
 # The inside is matched LOOSELY on purpose: repo names have no charset
@@ -95,6 +121,9 @@ class ServiceHandle:
     config: DevService
     port: int
     state: ServiceState = "starting"
+    # Loopback family the child was found listening on (set at readiness).
+    # Defaults to IPv4; becomes "::1" when the server bound IPv6-only.
+    host: str = "127.0.0.1"
     proc: asyncio.subprocess.Process | None = None
     error: str | None = None
     _log: deque[bytes] = field(default_factory=deque, repr=False)
@@ -103,7 +132,9 @@ class ServiceHandle:
 
     @property
     def origin(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
+        # Bracket IPv6 literals so the URL is well-formed (http://[::1]:PORT).
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"http://{host}:{self.port}"
 
     @property
     def is_alive(self) -> bool:
@@ -511,15 +542,17 @@ class DevServerManager:
                 )
 
             if not port_open:
-                try:
-                    _, writer = await asyncio.open_connection("127.0.0.1", handle.port)
-                    writer.close()
-                    with contextlib.suppress(Exception):
-                        await writer.wait_closed()
-                    port_open = True
-                except OSError:
+                # Detect which loopback family the child actually bound and
+                # pin the handle's host to it — so readiness, the egress
+                # allow-set, and the browser navigation all target the address
+                # the server is really listening on (fixes ERR_CONNECTION_REFUSED
+                # when the dev server binds IPv6 ``::1`` but we assume IPv4).
+                reachable = await _first_reachable_loopback(handle.port)
+                if reachable is None:
                     await asyncio.sleep(_READY_POLL_SECONDS)
                     continue
+                handle.host = reachable
+                port_open = True
 
             if svc.readiness.path is None:
                 handle.state = "ready"
