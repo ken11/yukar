@@ -34,6 +34,15 @@ export interface UseEventStreamOptions<T = unknown> {
   onError?: (ev: Event) => void;
   /** Auto-reconnect interval in ms (default 3000) */
   retryMs?: number;
+  /**
+   * Close the stream once the page has been hidden this long, and reconnect
+   * (through the normal onReconnect path) when it becomes visible again.
+   * Chrome caps HTTP/1.1 at 6 concurrent connections PER ORIGIN ACROSS TABS,
+   * so a few background tabs each holding 2-3 EventSources starve every
+   * fetch in every tab — hidden tabs must release their sockets.
+   * Default 30000; pass 0 to keep the stream open while hidden.
+   */
+  hiddenGraceMs?: number;
 }
 
 /**
@@ -44,6 +53,9 @@ export interface UseEventStreamOptions<T = unknown> {
  * - Delegates to the browser's built-in auto-reconnect while EventSource is in CONNECTING state.
  *   Manual exponential backoff reconnect (capped at 30 seconds) is triggered only when CLOSED (browser gave up).
  *   Resets retryCount on successful connection.
+ * - Suspends (closes) the stream after the page has been hidden for hiddenGraceMs
+ *   and reconnects on visibility — hidden tabs must not hold sockets from the
+ *   per-origin connection pool (6 for HTTP/1.1, shared across tabs).
  */
 export function useEventStream<T = unknown>({
   url,
@@ -52,6 +64,7 @@ export function useEventStream<T = unknown>({
   onReconnect,
   onError,
   retryMs = 3000,
+  hiddenGraceMs = 30_000,
 }: UseEventStreamOptions<T>): void {
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
@@ -65,14 +78,18 @@ export function useEventStream<T = unknown>({
   useEffect(() => {
     if (!url) return;
 
-    let es: EventSource;
+    let es: EventSource | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+    // True while the stream is intentionally down because the page is hidden.
+    let suspended = false;
     // Distinguishes first connection from reconnection. false on first open, true thereafter.
     let hasOpened = false;
     // Counter for exponential backoff. Reset on successful connection.
     let retryCount = 0;
     const maxRetryMs = 30_000;
+    const suspendEnabled = hiddenGraceMs > 0;
 
     /** Parse ev.data as JSON and forward to onMessage; silently drops malformed data. */
     function parseAndDispatch(ev: MessageEvent, eventType: string): void {
@@ -86,7 +103,7 @@ export function useEventStream<T = unknown>({
     }
 
     function connect() {
-      if (closed) return;
+      if (closed || suspended) return;
       es = new EventSource(url as string);
 
       // On connection established: call onOpen for the first connection, onReconnect for reconnections.
@@ -164,8 +181,8 @@ export function useEventStream<T = unknown>({
         onErrorRef.current?.(ev);
         // The browser auto-reconnects EventSource while readyState===CONNECTING.
         // To avoid duplication, only trigger manual backoff reconnection when CLOSED (browser gave up).
-        if (closed) return;
-        if (es.readyState === EventSource.CLOSED) {
+        if (closed || suspended) return;
+        if (es && es.readyState === EventSource.CLOSED) {
           const delay = Math.min(retryMs * 2 ** retryCount, maxRetryMs);
           retryCount += 1;
           es.close();
@@ -174,12 +191,53 @@ export function useEventStream<T = unknown>({
       };
     }
 
+    // Hidden-tab suspension: release the socket after a grace period so
+    // parked tabs cannot starve the per-origin connection pool; quick tab
+    // switches within the grace window keep the stream (no backfill churn).
+    // Resuming goes through connect() → the open event fires onReconnect,
+    // so consumers dedupe the backend's backfill exactly like any reconnect.
+    function suspend() {
+      hiddenTimer = null;
+      suspended = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      es?.close();
+    }
+
+    function onVisibilityChange() {
+      if (closed) return;
+      if (document.hidden) {
+        hiddenTimer ??= setTimeout(suspend, hiddenGraceMs);
+      } else {
+        if (hiddenTimer) {
+          clearTimeout(hiddenTimer);
+          hiddenTimer = null;
+        }
+        if (suspended) {
+          suspended = false;
+          retryCount = 0;
+          connect();
+        }
+      }
+    }
+
+    if (suspendEnabled) {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+      // A tab opened in the background (e.g. ctrl+click) starts hidden and
+      // never fired visibilitychange — start its grace countdown now.
+      if (document.hidden) hiddenTimer = setTimeout(suspend, hiddenGraceMs);
+    }
+
     connect();
 
     return () => {
       closed = true;
+      if (suspendEnabled) document.removeEventListener("visibilitychange", onVisibilityChange);
       if (retryTimer) clearTimeout(retryTimer);
+      if (hiddenTimer) clearTimeout(hiddenTimer);
       es?.close();
     };
-  }, [url, retryMs]);
+  }, [url, retryMs, hiddenGraceMs]);
 }

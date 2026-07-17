@@ -43,10 +43,16 @@ export function useRepoDevServer(projectId: string, initialRepos: Repo[]) {
       invalidTimeout: "repos.devServer.errors.invalidTimeout",
       invalidEnvLine: "repos.devServer.errors.invalidEnvLine",
       invalidEnvPassthroughName: "repos.devServer.errors.invalidEnvPassthroughName",
+      unknownPortReference: "repos.devServer.errors.unknownPortReference",
+      unknownRepoReference: "repos.devServer.errors.unknownRepoReference",
+      unknownRemoteService: "repos.devServer.errors.unknownRemoteService",
     }[error.code];
-    let message = t(key).replace("{service}", service);
-    if (error.code === "invalidEnvLine" || error.code === "invalidEnvPassthroughName") {
-      message = message.replace("{line}", error.line);
+    // Function replacements: the values are user input ("$&", "$'" in an env
+    // line or a service name) and must never be interpreted as JS replacement
+    // patterns.
+    let message = t(key).replace("{service}", () => service);
+    if ("line" in error) {
+      message = message.replaceAll("{line}", () => error.line);
     }
     return message;
   }
@@ -118,9 +124,19 @@ export function useRepoDevServer(projectId: string, initialRepos: Repo[]) {
     });
   }
 
-  function handleSave(repoName: string) {
+  function handleSave(repoName: string, allRepos?: Repo[]) {
     const draft = drafts[repoName] ?? emptyDevServerDraft();
-    const result = configFromDraft(draft);
+    // {port:repo/service} references validate against the other repos' SAVED
+    // configs; without the list (never in practice) the backend still 422s.
+    const crossRepo = {
+      selfRepoName: repoName,
+      repoServices: Object.fromEntries(
+        (allRepos ?? initialRepos)
+          .filter((r) => r.dev_server)
+          .map((r) => [r.name, (r.dev_server?.services ?? []).map((s) => s.name)]),
+      ),
+    };
+    const result = configFromDraft(draft, crossRepo);
     if (!result.ok) {
       setSaveErrors((prev) => ({ ...prev, [repoName]: validationMessage(draft, result.error) }));
       return;

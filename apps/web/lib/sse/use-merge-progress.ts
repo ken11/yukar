@@ -35,10 +35,23 @@ export function useMergeProgress(
 ): UseMergeProgressReturn {
   const [progress, setProgress] = useState<MergeProgressState | null>(null);
 
-  const { subscribe } = useProjectEventStream();
+  const { subscribe, subscribeReconnect } = useProjectEventStream();
 
   const onInvalidateRef = useRef(onInvalidate);
   onInvalidateRef.current = onInvalidate;
+
+  // The project stream has no replay: a "finished" published while the
+  // connection was down (network blip / hidden-tab suspension) never arrives,
+  // which would leave an in-flight panel stuck forever. On reconnect, refetch
+  // the board (REST reflects the real epic states) and drop unfinished
+  // SSE-accumulated progress — a merge still running repaints on its next
+  // progress event.
+  useEffect(() => {
+    return subscribeReconnect(() => {
+      onInvalidateRef.current?.();
+      setProgress((prev) => (prev !== null && !prev.isFinished ? null : prev));
+    });
+  }, [subscribeReconnect]);
 
   useEffect(() => {
     return subscribe(({ data }) => {

@@ -19,7 +19,10 @@ from yukar.preview.manager import (
     DevServerError,
     DevServerManager,
     TrialKey,
+    cross_repo_port_references,
+    ensure_with_dependencies,
     resolve_port_placeholders,
+    unknown_port_references,
 )
 
 KEY = TrialKey(project_id="p", epic_id="e1", trial_id="t1", repo_name="app")
@@ -83,6 +86,87 @@ class TestPortPlaceholders:
 
     def test_plain_text_untouched(self) -> None:
         assert resolve_port_placeholders("pnpm dev", {"web": 1}, "web") == "pnpm dev"
+
+
+class TestUnknownPortReferences:
+    """Save-time scan for {port:name} references outside this config."""
+
+    def test_valid_cross_reference_ok(self) -> None:
+        config = _config(
+            _service(name="api", base_port=42840),
+            _service(
+                name="web",
+                base_port=42850,
+                env={"API_URL": "http://127.0.0.1:{port:api}"},
+            ),
+        )
+        assert unknown_port_references(config) == []
+
+    def test_unknown_reference_in_env_reported(self) -> None:
+        config = _config(
+            _service(name="web", base_port=42850, env={"API_URL": "http://x:{port:api}"})
+        )
+        problems = unknown_port_references(config)
+        assert len(problems) == 1
+        assert "'api'" in problems[0]
+        assert "'web'" in problems[0]
+
+    def test_unknown_reference_in_command_reported(self) -> None:
+        svc = _service(
+            name="web", base_port=42850, command=["serve", "--upstream", "{port:backend}"]
+        )
+        problems = unknown_port_references(_config(svc))
+        assert len(problems) == 1
+        assert "'backend'" in problems[0]
+
+    def test_bare_port_placeholder_ok(self) -> None:
+        svc = _service(name="web", base_port=42850, env={"SELF": "http://x:{port}"})
+        assert unknown_port_references(_config(svc)) == []
+
+    def test_qualified_reference_not_reported_here(self) -> None:
+        # {port:repo/service} resolves against ANOTHER repo — validated at the
+        # project level, not against this config's own service names.
+        svc = _service(name="web", base_port=42850, env={"API": "http://x:{port:backend/api}"})
+        assert unknown_port_references(_config(svc)) == []
+
+
+class TestCrossRepoReferences:
+    def test_qualified_refs_extracted(self) -> None:
+        svc = _service(
+            name="web",
+            base_port=42850,
+            command=["serve", "--upstream", "{port:backend/api}"],
+            env={"OTHER": "http://x:{port:auth/idp}"},
+        )
+        assert cross_repo_port_references(_config(svc)) == {("backend", "api"), ("auth", "idp")}
+
+    def test_bare_and_unqualified_ignored(self) -> None:
+        svc = _service(name="web", base_port=42850, env={"SELF": "{port}:{port:web}"})
+        assert cross_repo_port_references(_config(svc)) == set()
+
+    def test_qualified_resolution(self) -> None:
+        out = resolve_port_placeholders("{port:backend/api}", {"backend/api": 4321}, "web")
+        assert out == "4321"
+
+    def test_dotted_repo_name_matches(self) -> None:
+        # Repo names carry no charset constraint ("next.js", "example.com") —
+        # the placeholder must match them, not silently pass the text through.
+        svc = _service(name="web", base_port=42850, env={"API": "http://x:{port:next.js/api}"})
+        assert cross_repo_port_references(_config(svc)) == {("next.js", "api")}
+        out = resolve_port_placeholders("{port:next.js/api}", {"next.js/api": 4321}, "web")
+        assert out == "4321"
+
+    def test_loose_reference_fails_loudly_at_resolution(self) -> None:
+        # Anything inside {port:...} must resolve or raise — never pass through
+        # as literal text into the child's env/argv.
+        with pytest.raises(DevServerError, match="foo bar"):
+            resolve_port_placeholders("{port:foo bar}", {"web": 3000}, "web")
+
+    def test_unqualified_loose_reference_reported_at_save(self) -> None:
+        svc = _service(name="web", base_port=42850, env={"X": "http://x:{port: api}"})
+        problems = unknown_port_references(_config(svc))
+        assert len(problems) == 1
+        assert "' api'" in problems[0]
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +412,377 @@ class TestEnsure:
             registered = manager.get_entry(KEY)
             assert registered is not None
             assert set(registered) == {"app"}
+        finally:
+            await manager.stop_all()
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo dependencies (ensure_with_dependencies / external_ports)
+# ---------------------------------------------------------------------------
+
+# Captures one env var to captured.txt, binds PORT, then idles.
+_CAPTURE_URL = (
+    "import os,socket,time\n"
+    "open('captured.txt','w').write(os.environ.get('BACKEND_URL',''))\n"
+    "s=socket.create_server(('127.0.0.1',int(os.environ['PORT'])))\n"
+    "time.sleep(120)\n"
+)
+
+# Writes a start marker, binds PORT, then idles — proves the service launched
+# even after a later cleanup removed its registry entry.
+_SERVE_MARK = (
+    "import os,socket,time\n"
+    "open('started.txt','w').write('1')\n"
+    "s=socket.create_server(('127.0.0.1',int(os.environ['PORT'])))\n"
+    "time.sleep(120)\n"
+)
+
+
+class TestEnsureWithDependencies:
+    @pytest.mark.asyncio
+    async def test_dependency_starts_first_and_port_substitutes(
+        self, manager: DevServerManager, tmp_path: Path
+    ) -> None:
+        backend_tree = tmp_path / "backend"
+        backend_tree.mkdir()
+        web_tree = tmp_path / "web"
+        web_tree.mkdir()
+        backend_cfg = _config(_service(name="api", base_port=42860))
+        web_cfg = _config(
+            _service(
+                name="web",
+                command=[sys.executable, "-c", _CAPTURE_URL],
+                base_port=42870,
+                env={"BACKEND_URL": "http://127.0.0.1:{port:backend/api}"},
+            )
+        )
+
+        async def load(name: str) -> tuple[DevServerConfig, Path] | None:
+            return (backend_cfg, backend_tree) if name == "backend" else None
+
+        async def resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+            return TrialKey("p", "e1", "t1", name), base
+
+        try:
+            entries = await ensure_with_dependencies(
+                manager,
+                "webrepo",
+                web_cfg,
+                key=TrialKey("p", "e1", "t1", "webrepo"),
+                tree=web_tree,
+                repo_root=web_tree,
+                load_config=load,
+                resolve_tree=resolve,
+            )
+            assert set(entries) == {"webrepo", "backend"}
+            backend_port = entries["backend"]["api"].port
+            captured = (web_tree / "captured.txt").read_text()
+            assert captured == f"http://127.0.0.1:{backend_port}"
+        finally:
+            await manager.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_cycle_rejected(self, manager: DevServerManager, tmp_path: Path) -> None:
+        cfg_a = _config(_service(name="s", base_port=42880, env={"X": "{port:b/s}"}))
+        cfg_b = _config(_service(name="s", base_port=42890, env={"X": "{port:a/s}"}))
+
+        async def load(name: str) -> tuple[DevServerConfig, Path] | None:
+            return {"a": (cfg_a, tmp_path), "b": (cfg_b, tmp_path)}.get(name)
+
+        async def resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+            return TrialKey("p", "e1", "t1", name), base
+
+        with pytest.raises(DevServerError, match="Circular"):
+            await ensure_with_dependencies(
+                manager,
+                "a",
+                cfg_a,
+                key=TrialKey("p", "e1", "t1", "a"),
+                tree=tmp_path,
+                repo_root=tmp_path,
+                load_config=load,
+                resolve_tree=resolve,
+            )
+
+    @pytest.mark.asyncio
+    async def test_unknown_dependency_repo_rejected(
+        self, manager: DevServerManager, tmp_path: Path
+    ) -> None:
+        cfg = _config(_service(name="web", base_port=42880, env={"X": "{port:ghost/api}"}))
+
+        async def load(_name: str) -> tuple[DevServerConfig, Path] | None:
+            return None
+
+        async def resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+            return TrialKey("p", "e1", "t1", name), base
+
+        with pytest.raises(DevServerError, match="ghost"):
+            await ensure_with_dependencies(
+                manager,
+                "webrepo",
+                cfg,
+                key=TrialKey("p", "e1", "t1", "webrepo"),
+                tree=tmp_path,
+                repo_root=tmp_path,
+                load_config=load,
+                resolve_tree=resolve,
+            )
+
+    @pytest.mark.asyncio
+    async def test_failed_target_stops_freshly_launched_deps(
+        self, manager: DevServerManager, tmp_path: Path
+    ) -> None:
+        backend_tree = tmp_path / "backend"
+        backend_tree.mkdir()
+        backend_cfg = _config(
+            _service(name="api", command=[sys.executable, "-c", _SERVE_MARK], base_port=42860)
+        )
+        # Target's command does not exist — its launch fails AFTER the dep is up.
+        web_cfg = _config(
+            _service(
+                name="web",
+                command=["/nonexistent-binary-for-test"],
+                base_port=42870,
+                env={"X": "{port:backend/api}"},
+            )
+        )
+        dep_key = TrialKey("p", "e1", "t1", "backend")
+
+        async def load(name: str) -> tuple[DevServerConfig, Path] | None:
+            return (backend_cfg, backend_tree) if name == "backend" else None
+
+        async def resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+            return dep_key, base
+
+        try:
+            with pytest.raises(DevServerError, match="web"):
+                await ensure_with_dependencies(
+                    manager,
+                    "webrepo",
+                    web_cfg,
+                    key=TrialKey("p", "e1", "t1", "webrepo"),
+                    tree=tmp_path,
+                    repo_root=tmp_path,
+                    load_config=load,
+                    resolve_tree=resolve,
+                )
+            # The dep really launched (its start marker exists) and was then
+            # rolled back — "gone" must not mean "never started".
+            assert (backend_tree / "started.txt").exists()
+            assert manager.get_entry(dep_key) is None
+        finally:
+            await manager.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_preexisting_dep_survives_target_failure(
+        self, manager: DevServerManager, tmp_path: Path
+    ) -> None:
+        # The other half of the rollback contract: a dependency entry that was
+        # ALREADY running (another agent may be using it) must NOT be stopped
+        # when the target's launch fails.
+        backend_tree = tmp_path / "backend"
+        backend_tree.mkdir()
+        backend_cfg = _config(_service(name="api", base_port=42860))
+        dep_key = TrialKey("p", "e1", "t1", "backend")
+        web_cfg = _config(
+            _service(
+                name="web",
+                command=["/nonexistent-binary-for-test"],
+                base_port=42870,
+                env={"X": "{port:backend/api}"},
+            )
+        )
+
+        async def load(name: str) -> tuple[DevServerConfig, Path] | None:
+            return (backend_cfg, backend_tree) if name == "backend" else None
+
+        async def resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+            return dep_key, base
+
+        try:
+            existing = await manager.ensure(dep_key, backend_cfg, backend_tree)
+            with pytest.raises(DevServerError, match="web"):
+                await ensure_with_dependencies(
+                    manager,
+                    "webrepo",
+                    web_cfg,
+                    key=TrialKey("p", "e1", "t1", "webrepo"),
+                    tree=tmp_path,
+                    repo_root=tmp_path,
+                    load_config=load,
+                    resolve_tree=resolve,
+                )
+            entry = manager.get_entry(dep_key)
+            assert entry is not None
+            assert entry["api"].proc is existing["api"].proc  # untouched, not relaunched
+            assert entry["api"].is_alive
+        finally:
+            await manager.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_transitive_chain_ports_flow_through(
+        self, manager: DevServerManager, tmp_path: Path
+    ) -> None:
+        # A → B → C: topological launch beyond depth 1, with each dependent
+        # receiving its OWN referenced ports.
+        trees = {name: tmp_path / name for name in ("a", "b", "c")}
+        for tree in trees.values():
+            tree.mkdir()
+        cfg_c = _config(_service(name="svc", base_port=42910))
+        cfg_b = _config(
+            _service(
+                name="svc",
+                command=[sys.executable, "-c", _CAPTURE_URL],
+                base_port=42920,
+                env={"BACKEND_URL": "http://127.0.0.1:{port:c/svc}"},
+            )
+        )
+        cfg_a = _config(
+            _service(
+                name="svc",
+                command=[sys.executable, "-c", _CAPTURE_URL],
+                base_port=42930,
+                env={"BACKEND_URL": "http://127.0.0.1:{port:b/svc}"},
+            )
+        )
+        configs = {"b": cfg_b, "c": cfg_c}
+
+        async def load(name: str) -> tuple[DevServerConfig, Path] | None:
+            cfg = configs.get(name)
+            return (cfg, trees[name]) if cfg is not None else None
+
+        async def resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+            return TrialKey("p", "e1", "t1", name), base
+
+        try:
+            entries = await ensure_with_dependencies(
+                manager,
+                "a",
+                cfg_a,
+                key=TrialKey("p", "e1", "t1", "a"),
+                tree=trees["a"],
+                repo_root=trees["a"],
+                load_config=load,
+                resolve_tree=resolve,
+            )
+            assert set(entries) == {"a", "b", "c"}
+            b_port = entries["b"]["svc"].port
+            c_port = entries["c"]["svc"].port
+            assert (trees["a"] / "captured.txt").read_text() == f"http://127.0.0.1:{b_port}"
+            assert (trees["b"] / "captured.txt").read_text() == f"http://127.0.0.1:{c_port}"
+        finally:
+            await manager.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_dependency_reuse_is_entrypoint_stable(
+        self, manager: DevServerManager, tmp_path: Path
+    ) -> None:
+        # Each repo's external_ports snapshot must depend only on its OWN
+        # references — opening Z (which pulls in A and B) and then opening B
+        # directly must NOT relaunch the healthy B.
+        trees = {name: tmp_path / name for name in ("z", "a", "b")}
+        for tree in trees.values():
+            tree.mkdir()
+        cfg_a = _config(_service(name="x", base_port=42940))
+        cfg_b = _config(_service(name="y", base_port=42950))
+        cfg_z = _config(
+            _service(
+                name="web",
+                base_port=42960,
+                env={
+                    "A_URL": "http://127.0.0.1:{port:a/x}",
+                    "B_URL": "http://127.0.0.1:{port:b/y}",
+                },
+            )
+        )
+        configs = {"a": cfg_a, "b": cfg_b}
+
+        async def load(name: str) -> tuple[DevServerConfig, Path] | None:
+            cfg = configs.get(name)
+            return (cfg, trees[name]) if cfg is not None else None
+
+        async def resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+            return TrialKey("p", "e1", "t1", name), base
+
+        try:
+            first = await ensure_with_dependencies(
+                manager,
+                "z",
+                cfg_z,
+                key=TrialKey("p", "e1", "t1", "z"),
+                tree=trees["z"],
+                repo_root=trees["z"],
+                load_config=load,
+                resolve_tree=resolve,
+            )
+            b_proc = first["b"]["y"].proc
+
+            second = await ensure_with_dependencies(
+                manager,
+                "b",
+                cfg_b,
+                key=TrialKey("p", "e1", "t1", "b"),
+                tree=trees["b"],
+                repo_root=trees["b"],
+                load_config=load,
+                resolve_tree=resolve,
+            )
+            assert second["b"]["y"].proc is b_proc  # healthy reuse, no relaunch
+        finally:
+            await manager.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_changed_external_ports_relaunches(
+        self, manager: DevServerManager, worktree: Path
+    ) -> None:
+        key = TrialKey("p", "e1", "t1", "webrepo")
+        cfg = _config(
+            _service(
+                name="web",
+                command=[sys.executable, "-c", _CAPTURE_URL],
+                base_port=42870,
+                env={"BACKEND_URL": "http://127.0.0.1:{port:backend/api}"},
+            )
+        )
+        try:
+            entry1 = await manager.ensure(
+                key, cfg, worktree, external_ports={"backend/api": 42901}
+            )
+            assert (worktree / "captured.txt").read_text().endswith(":42901")
+            # Same snapshot → healthy reuse (same process).
+            entry2 = await manager.ensure(
+                key, cfg, worktree, external_ports={"backend/api": 42901}
+            )
+            assert entry2["web"].proc is entry1["web"].proc
+            # A dependency relaunched on a new port → the dependent relaunches
+            # so its env re-substitutes.
+            entry3 = await manager.ensure(
+                key, cfg, worktree, external_ports={"backend/api": 42902}
+            )
+            assert entry3["web"].proc is not entry1["web"].proc
+            assert (worktree / "captured.txt").read_text().endswith(":42902")
+        finally:
+            await manager.stop_all()
+
+    @pytest.mark.asyncio
+    async def test_self_qualified_alias_resolves(
+        self, manager: DevServerManager, worktree: Path
+    ) -> None:
+        key = TrialKey("p", "e1", "t1", "app")
+        cfg = _config(
+            _service(
+                name="web",
+                command=[sys.executable, "-c", _CAPTURE_URL],
+                base_port=42870,
+                env={"BACKEND_URL": "http://127.0.0.1:{port:app/web}"},
+            )
+        )
+        try:
+            entry = await manager.ensure(key, cfg, worktree)
+            assert (
+                (worktree / "captured.txt").read_text()
+                == f"http://127.0.0.1:{entry['web'].port}"
+            )
         finally:
             await manager.stop_all()
 

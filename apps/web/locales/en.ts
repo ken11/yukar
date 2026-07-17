@@ -288,6 +288,9 @@ const en = {
       "Each line matches the command prefix: `pytest` allows any pytest call; `pnpm test` allows only that subcommand. Empty = Worker cannot run any command (fail-safe).",
     denyPriorityNote: "Takes priority over allow.",
     saveCommandsLabel: "Save command settings for {repo}",
+    saveCommands: "Save commands",
+    savingCommands: "Saving…",
+    savedCommands: "Saved",
     addRepo: "Add repository",
     addAction: "Add & Index",
     adding: "Adding…",
@@ -316,17 +319,23 @@ const en = {
       serviceReadinessTimeout: "Readiness timeout (seconds)",
       serviceEnv: "Environment variables",
       portNote:
-        "{port} in the command or env values is replaced with the real port the host assigns per trial. {port:name} references another service's port.",
+        "In the command and in “Environment variables” values below, {port} is replaced with the real port the host assigns at each launch. Reference another service's port by its name as {port:{example}} (a bare {{example}} does not work). A service in another repo is {port:repo-name/service-name}.",
       readinessEmptyNote: "Empty = the service is ready once its port accepts connections.",
-      envFormatNote: "One KEY=VALUE per line.",
+      envMergeNote:
+        "Environment variables apply from the top field down; a later field overrides the same name (env files → pass-through → literals). The host injects PORT last.",
+      envFormatNote: "One KEY=VALUE per line. Values may use {port} / {port:service-name}.",
       serviceEnvFile: "Env files",
       envFileNote:
-        "Paths to dotenv-style files (absolute / ~ / repo-relative). Values are read at launch and reach only the dev-server process. Relative paths are read from the original checkout, not the worktree.",
+        "Paths to dotenv-style files (absolute / ~ / repo-relative). Values are read at launch and reach only the dev-server process. Relative paths are read from the original checkout, not the worktree. {port} inside file values is NOT substituted.",
       serviceEnvPassthrough: "Pass-through variables",
       envPassthroughNote:
         "Copied by name from the yukar server's environment. Values are never stored. An unset variable fails the launch.",
       addService: "Add service",
       removeService: "Remove this service",
+      moveServiceUp: "Move this service up",
+      moveServiceDown: "Move this service down",
+      startOrderNote:
+        "Services start top to bottom, each waiting for the previous one to become ready. Put the depended-on side (e.g. a backend) first. Referencing another repo via {port:repo-name/service-name} starts that repo's services first.",
       allowedOrigins: "Allowed origins",
       allowedOriginsNote: "One per line. The trial's own services are always allowed.",
       allowCommonCdns: "Allow common CDNs",
@@ -345,7 +354,7 @@ const en = {
         "Destinations the egress gate rejected during agent browser verification. Add only what the app genuinely needs to the allowed origins, then save.",
       addToAllowed: "Add to allowed",
       addedToAllowed: "Added",
-      save: "Save",
+      save: "Save dev server",
       saving: "Saving…",
       saved: "Saved",
       errors: {
@@ -361,6 +370,12 @@ const en = {
         invalidEnvLine: "Service {service}: env line “{line}” is not KEY=VALUE.",
         invalidEnvPassthroughName:
           "Service {service}: pass-through variable “{line}” is not a valid name (start with a letter or _, then letters, digits, _).",
+        unknownPortReference:
+          "Service {service}: {port:{line}} references “{line}”, which is not declared in this config. Same-repo services are {port:service-name}; another repo's are {port:repo-name/service-name}.",
+        unknownRepoReference:
+          "Service {service}: referenced repo “{line}” is not registered in this project or has no dev-server config.",
+        unknownRemoteService:
+          "Service {service}: {port:{line}} does not match any service declared in that repo's dev-server config.",
       },
     },
   },

@@ -200,6 +200,180 @@ class TestDevServerAPI:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
+    async def test_put_unknown_port_reference_422(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        # {port:name} must reference a service declared in the SAME config —
+        # rejected at save time, not at agent launch time.
+        await self._seed_repo(tmp_workspace)
+        body = {
+            "services": [
+                {
+                    "name": "web",
+                    "command": ["pnpm", "dev", "--port", "{port}"],
+                    "base_port": 3000,
+                    "env": {"API_URL": "http://127.0.0.1:{port:api}"},
+                }
+            ]
+        }
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=body)
+        assert resp.status_code == 422
+        assert "api" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_cross_repo_reference_validated(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        root = await self._seed_repo(tmp_workspace)
+        body = {
+            "services": [
+                {
+                    "name": "web",
+                    "command": ["pnpm", "dev"],
+                    "base_port": 3000,
+                    "env": {"API_URL": "http://127.0.0.1:{port:backend/api}"},
+                }
+            ]
+        }
+        # Referenced repo not registered → 422.
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=body)
+        assert resp.status_code == 422
+        assert "backend" in resp.json()["detail"]
+
+        # Register the backend repo WITH a dev-server config declaring `api` → 200.
+        await save_repo(
+            root,
+            "p",
+            Repo(
+                name="backend",
+                path="/tmp/backend",
+                dev_server=DevServerConfig(
+                    services=[DevService(name="api", command=["uvicorn"], base_port=8000)]
+                ),
+            ),
+        )
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=body)
+        assert resp.status_code == 200
+
+        # Referencing a service the backend repo does not declare → 422.
+        bad = {
+            "services": [
+                {
+                    "name": "web",
+                    "command": ["pnpm", "dev"],
+                    "base_port": 3000,
+                    "env": {"API_URL": "http://127.0.0.1:{port:backend/ghost}"},
+                }
+            ]
+        }
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=bad)
+        assert resp.status_code == 422
+        assert "ghost" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_dotted_repo_reference_validated(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        # Repo names have no charset constraint ("next.js") — references to
+        # them must be validated, not silently passed through.
+        root = await self._seed_repo(tmp_workspace)
+        await save_repo(
+            root,
+            "p",
+            Repo(
+                name="next.js",
+                path="/tmp/nextjs",
+                dev_server=DevServerConfig(
+                    services=[DevService(name="api", command=["node"], base_port=8000)]
+                ),
+            ),
+        )
+        ok = {
+            "services": [
+                {
+                    "name": "web",
+                    "command": ["pnpm", "dev"],
+                    "base_port": 3000,
+                    "env": {"API_URL": "http://127.0.0.1:{port:next.js/api}"},
+                }
+            ]
+        }
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=ok)
+        assert resp.status_code == 200
+
+        bad = {
+            "services": [
+                {
+                    "name": "web",
+                    "command": ["pnpm", "dev"],
+                    "base_port": 3000,
+                    "env": {"API_URL": "http://127.0.0.1:{port:ghost.io/api}"},
+                }
+            ]
+        }
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=bad)
+        assert resp.status_code == 422
+        assert "ghost.io" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_mutual_reference_cycle_422(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        # A save that would close a reference cycle (A⇄B) must be rejected —
+        # otherwise both sides pass per-reference validation and every later
+        # launch fails with a cycle error mid-agent-turn.
+        root = await self._seed_repo(tmp_workspace)
+        await save_repo(
+            root,
+            "p",
+            Repo(
+                name="backend2",
+                path="/tmp/backend2",
+                dev_server=DevServerConfig(
+                    services=[
+                        DevService(
+                            name="api",
+                            command=["uvicorn"],
+                            base_port=8000,
+                            env={"FRONT": "http://127.0.0.1:{port:app/web}"},
+                        )
+                    ]
+                ),
+            ),
+        )
+        body = {
+            "services": [
+                {
+                    "name": "web",
+                    "command": ["pnpm", "dev"],
+                    "base_port": 3000,
+                    "env": {"API_URL": "http://127.0.0.1:{port:backend2/api}"},
+                }
+            ]
+        }
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=body)
+        assert resp.status_code == 422
+        assert "circular" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_put_self_qualified_reference_ok(
+        self, app_client: Any, tmp_workspace: Path
+    ) -> None:
+        await self._seed_repo(tmp_workspace)
+        body = {
+            "services": [
+                {
+                    "name": "web",
+                    "command": ["pnpm", "dev"],
+                    "base_port": 3000,
+                    "env": {"SELF": "http://127.0.0.1:{port:app/web}"},
+                }
+            ]
+        }
+        resp = await app_client.put("/api/projects/p/repos/app/dev-server", json=body)
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_put_missing_repo_404(self, app_client: Any, tmp_workspace: Path) -> None:
         await save_project(str(tmp_workspace), Project(id="p", name="p"))
         resp = await app_client.put("/api/projects/p/repos/ghost/dev-server", json=_VALID_BODY)

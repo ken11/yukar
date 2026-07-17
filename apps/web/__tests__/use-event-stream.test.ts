@@ -8,7 +8,12 @@ import { useEventStream } from "../lib/sse/use-event-stream";
 
 // EventSource mock
 class MockEventSource {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
+
   url: string;
+  readyState = 1;
   onerror: ((ev: Event) => void) | null = null;
   private listeners: Map<string, EventListener[]> = new Map();
 
@@ -214,6 +219,184 @@ describe("useEventStream", () => {
 
       expect(first).not.toHaveBeenCalled();
       expect(second).toHaveBeenCalledOnce();
+    });
+  });
+
+  // Hidden-tab suspension: parked tabs must release their sockets — Chrome's
+  // per-origin connection pool (6 for HTTP/1.1) is shared ACROSS tabs, and a
+  // few background tabs holding SSE starve every fetch in every tab.
+  describe("hidden-tab suspension", () => {
+    /** Stub document.visibilityState/hidden and fire visibilitychange. */
+    function setVisibility(hidden: boolean) {
+      Object.defineProperty(document, "hidden", { value: hidden, configurable: true });
+      Object.defineProperty(document, "visibilityState", {
+        value: hidden ? "hidden" : "visible",
+        configurable: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      setVisibility(false);
+    });
+
+    it("closes the stream after the page stays hidden past the grace period", () => {
+      renderHook(() =>
+        useEventStream({ url: "/api/events", onMessage: () => {}, hiddenGraceMs: 30_000 }),
+      );
+      const es = MockEventSource.instances[0];
+      const closeSpy = vi.fn();
+      es.close = closeSpy;
+
+      setVisibility(true);
+      vi.advanceTimersByTime(29_999);
+      expect(closeSpy).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(closeSpy).toHaveBeenCalledOnce();
+    });
+
+    it("a quick tab switch within the grace period keeps the stream open", () => {
+      renderHook(() =>
+        useEventStream({ url: "/api/events", onMessage: () => {}, hiddenGraceMs: 30_000 }),
+      );
+      const es = MockEventSource.instances[0];
+      const closeSpy = vi.fn();
+      es.close = closeSpy;
+
+      setVisibility(true);
+      vi.advanceTimersByTime(10_000);
+      setVisibility(false);
+      vi.advanceTimersByTime(60_000);
+
+      expect(closeSpy).not.toHaveBeenCalled();
+      expect(MockEventSource.instances).toHaveLength(1); // no second connection either
+    });
+
+    it("reconnects when the page becomes visible again, firing onReconnect", () => {
+      const onOpen = vi.fn();
+      const onReconnect = vi.fn();
+      renderHook(() =>
+        useEventStream({
+          url: "/api/events",
+          onMessage: () => {},
+          onOpen,
+          onReconnect,
+          hiddenGraceMs: 30_000,
+        }),
+      );
+      MockEventSource.instances[0].emit("open", ""); // first open
+      expect(onOpen).toHaveBeenCalledOnce();
+
+      setVisibility(true);
+      vi.advanceTimersByTime(30_000); // suspend fires
+      expect(MockEventSource.instances).toHaveLength(1);
+
+      setVisibility(false);
+      expect(MockEventSource.instances).toHaveLength(2); // new connection
+      MockEventSource.instances[1].emit("open", "");
+      // Resume goes through the reconnect path → consumers dedupe backfill.
+      expect(onReconnect).toHaveBeenCalledOnce();
+      expect(onOpen).toHaveBeenCalledOnce();
+    });
+
+    it("hiddenGraceMs: 0 disables suspension entirely", () => {
+      renderHook(() =>
+        useEventStream({ url: "/api/events", onMessage: () => {}, hiddenGraceMs: 0 }),
+      );
+      const es = MockEventSource.instances[0];
+      const closeSpy = vi.fn();
+      es.close = closeSpy;
+
+      setVisibility(true);
+      vi.advanceTimersByTime(600_000);
+
+      expect(closeSpy).not.toHaveBeenCalled();
+    });
+
+    it("a tab mounted while hidden starts its grace countdown immediately", () => {
+      Object.defineProperty(document, "hidden", { value: true, configurable: true });
+      Object.defineProperty(document, "visibilityState", {
+        value: "hidden",
+        configurable: true,
+      });
+      renderHook(() =>
+        useEventStream({ url: "/api/events", onMessage: () => {}, hiddenGraceMs: 30_000 }),
+      );
+      const es = MockEventSource.instances[0];
+      const closeSpy = vi.fn();
+      es.close = closeSpy;
+
+      vi.advanceTimersByTime(30_000);
+      expect(closeSpy).toHaveBeenCalledOnce();
+    });
+
+    it("suspension cancels a pending backoff retry (no reconnect while hidden)", () => {
+      // The backoff delay is capped at 30s internally, so pick retry > grace
+      // WITHIN that cap: retry due at +20s, suspension at +10s must cancel it.
+      renderHook(() =>
+        useEventStream({
+          url: "/api/events",
+          onMessage: () => {},
+          retryMs: 20_000,
+          hiddenGraceMs: 10_000,
+        }),
+      );
+      const es = MockEventSource.instances[0];
+      es.readyState = MockEventSource.CLOSED; // browser gave up → manual backoff path
+      es.onerror?.(new Event("error")); // schedules a retry at +20s
+
+      setVisibility(true);
+      vi.advanceTimersByTime(10_000); // suspend fires, must clear the pending retry
+      vi.advanceTimersByTime(600_000); // nothing may reconnect while hidden
+      expect(MockEventSource.instances).toHaveLength(1);
+    });
+
+    it("resume resets the backoff counter (first retry after resume uses the base delay)", () => {
+      renderHook(() =>
+        useEventStream({
+          url: "/api/events",
+          onMessage: () => {},
+          retryMs: 20_000,
+          hiddenGraceMs: 10_000,
+        }),
+      );
+      // Inflate retryCount to 1: error → CLOSED → backoff scheduled at +20s…
+      const es1 = MockEventSource.instances[0];
+      es1.readyState = MockEventSource.CLOSED;
+      es1.onerror?.(new Event("error"));
+      // …then hide; suspend (at +10s, before the retry) cancels it.
+      setVisibility(true);
+      vi.advanceTimersByTime(10_000);
+      expect(MockEventSource.instances).toHaveLength(1);
+
+      // Resume: reconnect once, immediately.
+      setVisibility(false);
+      expect(MockEventSource.instances).toHaveLength(2);
+
+      // A new failure after resume must back off from the BASE delay again —
+      // without the retryCount reset the delay would be 40s (capped 30s) and
+      // this retry would not fire at +20s.
+      const es2 = MockEventSource.instances[1];
+      es2.readyState = MockEventSource.CLOSED;
+      es2.onerror?.(new Event("error"));
+      vi.advanceTimersByTime(20_000);
+      expect(MockEventSource.instances).toHaveLength(3);
+    });
+
+    it("unmount while suspended cleans up without reconnecting", () => {
+      const { unmount } = renderHook(() =>
+        useEventStream({ url: "/api/events", onMessage: () => {}, hiddenGraceMs: 30_000 }),
+      );
+      setVisibility(true);
+      vi.advanceTimersByTime(30_000);
+      unmount();
+      setVisibility(false);
+      expect(MockEventSource.instances).toHaveLength(1);
     });
   });
 

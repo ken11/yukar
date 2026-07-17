@@ -28,9 +28,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from yukar.config import paths
-from yukar.models.project import Repo
+from yukar.models.project import DevServerConfig, Repo
 from yukar.preview.browser import get_browser_session_manager
-from yukar.preview.manager import DevServerError, TrialKey, get_dev_server_manager
+from yukar.preview.manager import (
+    DevServerError,
+    DevServerManager,
+    RepoConfigLoader,
+    TrialKey,
+    ensure_with_dependencies,
+    get_dev_server_manager,
+)
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Page, Playwright
@@ -61,6 +68,9 @@ class LoginCapture:
     page: Page
     url: str
     started_at: float
+    # Dependency repos launched via {port:repo/service} — their login-keyed
+    # dev servers are stopped together with the capture's own.
+    dep_repos: tuple[str, ...] = ()
 
 
 class LoginCaptureManager:
@@ -90,7 +100,17 @@ class LoginCaptureManager:
         capture = self._captures.get((project_id, repo_name))
         return capture is not None and capture.browser.is_connected()
 
-    async def start(self, project_id: str, repo: Repo) -> LoginCapture:
+    async def _stop_login_servers(
+        self, dev: DevServerManager, project_id: str, repo_name: str, dep_repos: tuple[str, ...]
+    ) -> None:
+        """Stop the login-keyed dev servers of a repo and its dependencies."""
+        for name in (repo_name, *dep_repos):
+            with contextlib.suppress(Exception):
+                await dev.stop(self._trial_key(project_id, name))
+
+    async def start(
+        self, project_id: str, repo: Repo, *, load_config: RepoConfigLoader | None = None
+    ) -> LoginCapture:
         """Launch the repo's dev servers (base checkout) and open a headed browser.
 
         Raises:
@@ -115,16 +135,42 @@ class LoginCaptureManager:
 
             base = Path(repo.path)
             key = self._trial_key(project_id, repo.name)
+
+            async def _resolve(name: str, dep_base: Path) -> tuple[TrialKey, Path]:
+                # Dependencies run from their base checkouts under the same
+                # login-scoped key family as the capture's own servers.
+                return self._trial_key(project_id, name), dep_base
+
+            async def _no_deps(_name: str) -> tuple[DevServerConfig, Path] | None:
+                return None
+
             try:
-                entry = await dev.ensure(key, config, base, repo_root=base)
+                entries = await ensure_with_dependencies(
+                    dev,
+                    repo.name,
+                    config,
+                    key=key,
+                    tree=base,
+                    repo_root=base,
+                    load_config=load_config or _no_deps,
+                    resolve_tree=_resolve,
+                )
             except DevServerError as exc:
+                # ensure_with_dependencies stops what it launched on failure,
+                # so no login-keyed orphans are left behind here.
                 raise LoginCaptureError(f"Dev server failed to start: {exc}") from exc
+            entry = entries[repo.name]
+            dep_repos = tuple(sorted(set(entries) - {repo.name}))
             url = entry[config.services[0].name].origin
 
             from playwright.async_api import async_playwright
 
             headless = os.environ.get(_HEADLESS_ENV) == "1"
-            playwright = await async_playwright().start()
+            try:
+                playwright = await async_playwright().start()
+            except Exception:
+                await self._stop_login_servers(dev, project_id, repo.name, dep_repos)
+                raise
             try:
                 browser = await playwright.chromium.launch(headless=headless)
                 context = await browser.new_context()
@@ -132,7 +178,11 @@ class LoginCaptureManager:
             except Exception:
                 with contextlib.suppress(Exception):
                     await playwright.stop()
-                await dev.stop(key)
+                # No LoginCapture exists yet, so _teardown will never run —
+                # stop the capture's own servers AND the dependency repos'
+                # (login-family keys are outside every run-end sweep; leaking
+                # them eats max_services capacity until app shutdown).
+                await self._stop_login_servers(dev, project_id, repo.name, dep_repos)
                 raise
             # Best-effort: even if the first load fails the window stays open
             # and the user can navigate/retry themselves.
@@ -148,6 +198,7 @@ class LoginCaptureManager:
                 page=page,
                 url=url,
                 started_at=time.time(),
+                dep_repos=dep_repos,
             )
             self._captures[(project_id, repo.name)] = capture
 
@@ -239,8 +290,9 @@ class LoginCaptureManager:
             await capture.playwright.stop()
         dev = get_dev_server_manager()
         if dev is not None:
-            with contextlib.suppress(Exception):
-                await dev.stop(self._trial_key(capture.project_id, capture.repo_name))
+            await self._stop_login_servers(
+                dev, capture.project_id, capture.repo_name, capture.dep_repos
+            )
 
     async def stop_all(self) -> None:
         """Lifespan teardown — abandon any in-flight captures without saving."""

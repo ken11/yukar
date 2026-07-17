@@ -40,7 +40,7 @@ from typing import Any
 from strands import tool
 
 from yukar.agents.tools import browser_core
-from yukar.agents.tools.browser_core import BrowserTarget
+from yukar.agents.tools.browser_core import BASE_TRIAL_ID, BrowserTarget
 from yukar.agents.tools.response_builder import make_error
 from yukar.agents.trials import resolve_active_trial_id
 from yukar.config import paths
@@ -49,9 +49,9 @@ from yukar.preview.browser import get_browser_session_manager
 from yukar.preview.manager import get_dev_server_manager
 from yukar.storage import project_repo
 
-# Registry/session key for base-checkout targets.  Real trial ids are either
-# the legacy literal "manager" or generated thread ids, so this cannot collide.
-_BASE_TRIAL_ID = "__base__"
+# Registry/session key for base-checkout targets — shared with browser_core so
+# dependency-repo resolution uses the same sentinel.
+_BASE_TRIAL_ID = BASE_TRIAL_ID
 
 
 async def make_browser_overview_tools(
@@ -148,7 +148,9 @@ async def make_browser_overview_tools(
         The host launches the services exactly as configured in the repo's
         dev-server settings and waits until each is ready; you receive the
         resulting URL plus a snapshot of the page.  Re-calling is cheap — a
-        healthy server is reused, a crashed one is relaunched.
+        healthy server is reused, a crashed one is relaunched.  Services of
+        other repos referenced via {port:repo/service} are started first,
+        automatically, and the page may call their origins.
 
         What you are looking at: the epic branch's CURRENT worktree when one
         exists (i.e. the work implemented so far); before any task has run,

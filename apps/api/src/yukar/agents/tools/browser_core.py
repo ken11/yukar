@@ -30,7 +30,12 @@ from yukar.preview.browser import (
     get_browser_session_manager,
     normalize_origin,
 )
-from yukar.preview.manager import DevServerError, TrialKey, get_dev_server_manager
+from yukar.preview.manager import (
+    DevServerError,
+    TrialKey,
+    ensure_with_dependencies,
+    get_dev_server_manager,
+)
 from yukar.storage.project_repo import get_repo
 
 _ACTION_TIMEOUT_MS = 10_000
@@ -39,6 +44,11 @@ _SCREENSHOT_JPEG_QUALITY = 70
 
 _NOT_AVAILABLE = "Browser verification is not available in this process."
 _NOT_OPEN = "No dev server is running for this trial. Call browser_open first."
+
+# Registry/session sentinel for base-checkout targets (shared with the
+# overview bundle).  Real trial ids are the legacy literal "manager" or
+# generated thread ids, so this cannot collide.
+BASE_TRIAL_ID = "__base__"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +133,13 @@ async def _page_result(session: BrowserSession) -> dict[str, Any]:
 
 
 async def open_app(target: BrowserTarget, service: str | None = None) -> dict[str, Any]:
-    """Ensure the declared services and open one of them (default: first)."""
+    """Ensure the declared services and open one of them (default: first).
+
+    ``{port:repo/service}`` references in the config pull in OTHER repos'
+    services as dependencies: they are launched first (awaiting readiness),
+    their real ports substitute into this repo's command/env, and their
+    origins join the page's egress allow-set so the app can call them.
+    """
     manager = get_dev_server_manager()
     sessions = get_browser_session_manager()
     if manager is None or sessions is None:
@@ -141,14 +157,62 @@ async def open_app(target: BrowserTarget, service: str | None = None) -> dict[st
     if chosen not in service_names:
         return make_error(f"Unknown service {chosen!r}. Declared: {service_names}")
 
+    async def _load(name: str) -> tuple[DevServerConfig, Path] | None:
+        dep = await get_repo(target.workspace_root, target.project_id, name)
+        if dep is None or dep.dev_server is None:
+            return None
+        return dep.dev_server, Path(dep.path)
+
+    async def _resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
+        # Dependency repos follow the overview-bundle rule: the SAME trial's
+        # worktree when one exists on disk, else the base checkout under the
+        # BASE_TRIAL_ID sentinel (so a base-tree server is never mistaken for
+        # the branch server once a worktree appears — run-end sweep covers
+        # both).
+        if target.trial_id != BASE_TRIAL_ID:
+            worktree = paths.worktree_dir(
+                target.workspace_root,
+                target.project_id,
+                target.epic_id,
+                target.trial_id,
+                name,
+            )
+            if await asyncio.to_thread(worktree.is_dir):
+                return (
+                    TrialKey(
+                        project_id=target.project_id,
+                        epic_id=target.epic_id,
+                        trial_id=target.trial_id,
+                        repo_name=name,
+                    ),
+                    worktree,
+                )
+        return (
+            TrialKey(
+                project_id=target.project_id,
+                epic_id=target.epic_id,
+                trial_id=BASE_TRIAL_ID,
+                repo_name=name,
+            ),
+            base,
+        )
+
     try:
         # repo_root anchors repo-relative env_file declarations to the BASE
         # checkout even when the services run in a trial worktree (§11).
-        entry = await manager.ensure(
-            target.trial_key, config, target.worktree_path, repo_root=Path(repo.path)
+        entries = await ensure_with_dependencies(
+            manager,
+            target.repo_name,
+            config,
+            key=target.trial_key,
+            tree=target.worktree_path,
+            repo_root=Path(repo.path),
+            load_config=_load,
+            resolve_tree=_resolve,
         )
     except DevServerError as exc:
         return make_error(f"Dev server failed to start: {exc}")
+    entry = entries[target.repo_name]
 
     # User-captured auth state (design §12): loaded into a NEW context so the
     # agent starts logged in.  The agent never reads the file itself.
@@ -163,9 +227,21 @@ async def open_app(target: BrowserTarget, service: str | None = None) -> dict[st
     )
     # REPLACE (not accumulate) the allow-set from the CURRENT live service
     # origins + config, so a removed origin / disabled CDN / relaunched port
-    # takes effect here without a session teardown.
+    # takes effect here without a session teardown.  Dependency repos' service
+    # origins are included — the page must be able to call the backend it was
+    # wired to via {port:repo/service}.
+    dep_origins = [
+        handle.origin
+        for name, dep_entry in entries.items()
+        if name != target.repo_name
+        for handle in dep_entry.values()
+    ]
     session.set_allowed(
-        [*manager.origins(target.trial_key), *config.browser.allowed_origins],
+        [
+            *manager.origins(target.trial_key),
+            *dep_origins,
+            *config.browser.allowed_origins,
+        ],
         cdn_preset=config.browser.allow_common_cdns,
     )
 

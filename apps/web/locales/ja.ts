@@ -279,6 +279,9 @@ const ja = {
       "各行はコマンドの先頭部分と照合されます。「pytest」と書くと pytest を使うすべての呼び出しを許可し、「pnpm test」と書くとそのサブコマンドだけを許可します。空欄のときは Worker はコマンドを実行できません（フェイルセーフ）。",
     denyPriorityNote: "Allow より優先されます。",
     saveCommandsLabel: "{repo} のコマンド設定を保存",
+    saveCommands: "コマンド設定を保存",
+    savingCommands: "保存中…",
+    savedCommands: "保存しました",
     addRepo: "リポジトリを追加",
     addAction: "追加してインデックス",
     adding: "追加中…",
@@ -307,17 +310,24 @@ const ja = {
       serviceReadinessTimeout: "起動待ちタイムアウト（秒）",
       serviceEnv: "環境変数",
       portNote:
-        "コマンドや環境変数の中の {port} は、トライアルごとにホストが割り当てた実ポートに置き換わります。{port:名前} と書くと別サービスのポートを参照します。",
+        "起動コマンドと下の「環境変数」の値では、{port} が起動のたびにホストの割り当てた実ポートに置き換わります。別サービスのポートはサービス名を付けて {port:{example}} と書きます（{{example}} のように名前だけでは参照できません）。別リポジトリのサービスは {port:リポジトリ名/サービス名} と書きます。",
       readinessEmptyNote: "空欄のときはポートが開くのを待つだけで起動完了とみなします。",
-      envFormatNote: "1行につき KEY=VALUE の形式で書きます。",
+      envMergeNote:
+        "環境変数は上の欄から順に適用され、同じ名前は後の欄が上書きします（環境変数ファイル → 引き継ぐ環境変数 → 環境変数）。最後にホストが PORT を注入します。",
+      envFormatNote:
+        "1行につき KEY=VALUE の形式で書きます。値の中では {port} / {port:サービス名} が使えます。",
       serviceEnvFile: "環境変数ファイル",
       envFileNote:
-        "dotenv 形式のファイルのパス（絶対 / ~ / リポジトリ相対）。値は起動時に読み、開発サーバーのプロセスにだけ渡します。相対パスは worktree ではなく元のチェックアウトから読みます。",
+        "dotenv 形式のファイルのパス（絶対 / ~ / リポジトリ相対）。値は起動時に読み、開発サーバーのプロセスにだけ渡します。相対パスは worktree ではなく元のチェックアウトから読みます。値の中の {port} は置き換えません。",
       serviceEnvPassthrough: "引き継ぐ環境変数",
       envPassthroughNote:
         "yukar サーバーの環境から名前で引き継ぎます。値はどこにも保存されません。未設定なら起動エラーになります。",
       addService: "サービスを追加",
       removeService: "このサービスを削除",
+      moveServiceUp: "このサービスを上へ",
+      moveServiceDown: "このサービスを下へ",
+      startOrderNote:
+        "サービスは上から順に起動し、前のサービスの起動完了を待ってから次を起動します。依存される側（バックエンドなど）を上に置いてください。別リポジトリのサービスを {port:リポジトリ名/サービス名} で参照すると、そのリポジトリのサービス一式が先に起動されます。",
       allowedOrigins: "許可するオリジン",
       allowedOriginsNote: "1行に1つずつ書きます。トライアル自身のサービスは常に許可されます。",
       allowCommonCdns: "よく使われる CDN を許可",
@@ -336,7 +346,7 @@ const ja = {
         "エージェントのブラウザ検証中に遮断された接続先です。アプリの動作に必要なものだけを許可に追加し、保存してください。",
       addToAllowed: "許可に追加",
       addedToAllowed: "追加済み",
-      save: "保存",
+      save: "開発サーバー設定を保存",
       saving: "保存中…",
       saved: "保存しました",
       errors: {
@@ -354,6 +364,12 @@ const ja = {
           "サービス {service} の環境変数「{line}」が KEY=VALUE の形式になっていません。",
         invalidEnvPassthroughName:
           "サービス {service} の引き継ぐ環境変数「{line}」が変数名として不正です（英字か _ で始め、英数字と _ のみ）。",
+        unknownPortReference:
+          "サービス {service} の {port:{line}} が参照する「{line}」はこの設定に定義されていません。同じリポジトリ内は {port:サービス名}、別リポジトリは {port:リポジトリ名/サービス名} と書きます。",
+        unknownRepoReference:
+          "サービス {service} が参照するリポジトリ「{line}」は、このプロジェクトに登録されていないか開発サーバー設定がありません。",
+        unknownRemoteService:
+          "サービス {service} の {port:{line}} が参照するサービスは、そのリポジトリの開発サーバー設定に定義されていません。",
       },
     },
   },

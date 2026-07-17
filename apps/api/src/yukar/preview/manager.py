@@ -26,6 +26,7 @@ import re
 import signal
 import socket
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -44,7 +45,15 @@ _PORT_SCAN_SPAN = 200  # how far above base_port the free-port search goes
 _READY_POLL_SECONDS = 0.25
 _TERM_GRACE_SECONDS = 5.0
 
-_PORT_PLACEHOLDER_RE = re.compile(r"\{port(?::([A-Za-z0-9][A-Za-z0-9_-]*))?\}")
+# {port} / {port:service} / {port:repo/service} — group 1 carries the
+# reference ("service" or "repo/service"); bare {port} leaves it None.
+# The inside is matched LOOSELY on purpose: repo names have no charset
+# constraint (dots/spaces are legal — "next.js", "example.com"), and a strict
+# class here would make such references silently unmatchable — passing the
+# save-time validators AND the launch-time resolver, handing the literal
+# placeholder text to the child.  Anything inside {port:...} must therefore
+# either resolve or fail loudly.
+_PORT_PLACEHOLDER_RE = re.compile(r"\{port(?::([^{}]+))?\}")
 
 
 class DevServerError(RuntimeError):
@@ -113,7 +122,10 @@ class ServiceHandle:
 
 
 def resolve_port_placeholders(text: str, ports: dict[str, int], own_service: str) -> str:
-    """Substitute ``{port}`` / ``{port:name}`` in a command token or env value.
+    """Substitute ``{port}`` / ``{port:name}`` / ``{port:repo/name}`` in a token.
+
+    *ports* maps plain service names of the launching repo plus qualified
+    ``repo/service`` keys for every dependency repo already launched.
 
     Raises:
         DevServerError: When a placeholder names a service that does not exist.
@@ -126,6 +138,44 @@ def resolve_port_placeholders(text: str, ports: dict[str, int], own_service: str
         return str(ports[name])
 
     return _PORT_PLACEHOLDER_RE.sub(_sub, text)
+
+
+def unknown_port_references(config: DevServerConfig) -> list[str]:
+    """Unqualified ``{port:name}`` references to services not declared in *config*.
+
+    Save-time feedback: an undeclared reference would otherwise surface as a
+    launch error in the middle of an agent turn.  Scans command tokens and
+    literal env values — the two places ``resolve_port_placeholders`` applies
+    at launch.  Qualified ``{port:repo/service}`` references resolve against
+    OTHER repos and are validated separately (see
+    :func:`cross_repo_port_references`).
+    """
+    declared = {s.name for s in config.services}
+    problems: list[str] = []
+    for svc in config.services:
+        for text in [*svc.command, *svc.env.values()]:
+            for match in _PORT_PLACEHOLDER_RE.finditer(text):
+                name = match.group(1)
+                if name is not None and "/" not in name and name not in declared:
+                    problems.append(
+                        f"Service {svc.name!r} references unknown service {name!r} in "
+                        f"{match.group(0)!r} — only services declared in this repo's "
+                        f"config are resolvable (declared: {sorted(declared)})"
+                    )
+    return problems
+
+
+def cross_repo_port_references(config: DevServerConfig) -> set[tuple[str, str]]:
+    """``(repo, service)`` pairs referenced as ``{port:repo/service}`` in *config*."""
+    refs: set[tuple[str, str]] = set()
+    for svc in config.services:
+        for text in [*svc.command, *svc.env.values()]:
+            for match in _PORT_PLACEHOLDER_RE.finditer(text):
+                name = match.group(1)
+                if name is not None and "/" in name:
+                    repo, _, service = name.partition("/")
+                    refs.add((repo, service))
+    return refs
 
 
 class DevServerManager:
@@ -141,6 +191,10 @@ class DevServerManager:
         self._alloc_lock = asyncio.Lock()
         self._max_services = max_services
         self._closed = False
+        # external_ports snapshot each entry was launched with — a dependency
+        # repo relaunched on a different port must invalidate the dependents
+        # whose env/argv baked in the old number.
+        self._external_ports: dict[TrialKey, dict[str, int]] = {}
 
     # ------------------------------------------------------------------
     # Ensure (lazy, idempotent start)
@@ -153,6 +207,8 @@ class DevServerManager:
         worktree: Path,
         *,
         repo_root: Path | None = None,
+        external_ports: dict[str, int] | None = None,
+        launched_out: list[TrialKey] | None = None,
     ) -> dict[str, ServiceHandle]:
         """Start the declared services for *key* unless they are already ready.
 
@@ -168,9 +224,18 @@ class DevServerManager:
             repo_root: The repo's BASE checkout — anchor for repo-relative
                 ``env_file`` declarations (§11).  ``None`` makes a relative
                 declaration a launch error; absolute/``~`` paths still work.
+            external_ports: Qualified ``repo/service`` → port entries of
+                dependency repos already launched (``{port:repo/service}``
+                resolution).  Callers with cross-repo references use
+                :func:`ensure_with_dependencies`, which computes this.
+            launched_out: When given, this key is appended iff THIS call
+                actually (re)launches processes — a healthy reuse appends
+                nothing.  Decided under the per-key lock, so callers get an
+                exact record for failure cleanup (no get_entry TOCTOU).
         """
         if self._closed:
             raise DevServerError("Dev server manager is shut down.")
+        external = dict(external_ports or {})
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             entry = self._entries.get(key)
@@ -179,14 +244,22 @@ class DevServerManager:
                 # the config.  An edited dev_server config (service renamed / added
                 # / removed) must relaunch — otherwise open_app would index the
                 # reused entry with a name the running process never bound, raising
-                # KeyError instead of serving the new config.
+                # KeyError instead of serving the new config.  A changed
+                # external-ports snapshot must relaunch too: the old processes
+                # baked a dependency's stale port into their env/argv.
                 healthy = all(h.state == "ready" and h.is_alive for h in entry.values())
                 same_services = set(entry) == {s.name for s in config.services}
-                if healthy and same_services:
+                same_external = self._external_ports.get(key, {}) == external
+                if healthy and same_services and same_external:
                     return entry
                 await self._stop_entry(entry)
                 self._entries.pop(key, None)
+                self._external_ports.pop(key, None)
                 self._reserved_ports.difference_update(h.port for h in entry.values())
+
+            # Past the reuse branch — this call WILL launch (or die trying).
+            if launched_out is not None:
+                launched_out.append(key)
 
             worktree = worktree.resolve()
             if not worktree.is_dir():
@@ -219,18 +292,28 @@ class DevServerManager:
                     self._reserved_ports.difference_update(ports.values())
                     raise
 
+            # Resolution map for {port:...}: own plain names win over external
+            # qualified keys (they cannot collide — qualified keys contain "/"),
+            # and the repo's own services are also reachable via their
+            # qualified alias so {port:this-repo/svc} works uniformly.
+            resolution = {
+                **external,
+                **ports,
+                **{f"{key.repo_name}/{name}": port for name, port in ports.items()},
+            }
             entry = {}
             self._entries[key] = entry
             try:
                 for svc in config.services:
                     handle = ServiceHandle(config=svc, port=ports[svc.name])
                     entry[svc.name] = handle
-                    await self._start_service(handle, ports, worktree, repo_root)
+                    await self._start_service(handle, resolution, worktree, repo_root)
             except BaseException:
                 await self._stop_entry(entry)
                 self._entries.pop(key, None)
                 self._reserved_ports.difference_update(ports.values())
                 raise
+            self._external_ports[key] = external
             return entry
 
     def get_entry(self, key: TrialKey) -> dict[str, ServiceHandle] | None:
@@ -270,6 +353,7 @@ class DevServerManager:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             entry = self._entries.pop(key, None)
+            self._external_ports.pop(key, None)
             if entry is None:
                 return False
             self._reserved_ports.difference_update(h.port for h in entry.values())
@@ -499,6 +583,114 @@ class DevServerManager:
         handle._readers.clear()  # noqa: SLF001
         if handle.state != "failed":
             handle.state = "stopped"
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo launch orchestration
+# ---------------------------------------------------------------------------
+
+RepoConfigLoader = Callable[[str], Awaitable["tuple[DevServerConfig, Path] | None"]]
+"""repo name → (dev-server config, base checkout path), or None when unknown."""
+
+RepoTreeResolver = Callable[[str, Path], Awaitable["tuple[TrialKey, Path]"]]
+"""(dep repo name, its base checkout) → (registry key, tree to launch in)."""
+
+
+async def ensure_with_dependencies(
+    manager: DevServerManager,
+    repo_name: str,
+    config: DevServerConfig,
+    *,
+    key: TrialKey,
+    tree: Path,
+    repo_root: Path,
+    load_config: RepoConfigLoader,
+    resolve_tree: RepoTreeResolver,
+) -> dict[str, dict[str, ServiceHandle]]:
+    """Launch *repo_name*'s services plus every repo it references, deps first.
+
+    ``{port:repo/service}`` references define the cross-repo dependency order:
+    a referenced repo's services are ensured (launched and awaited ready)
+    BEFORE the referencing repo starts, and their real ports are handed to the
+    dependent launch as ``external_ports``.  The walk is transitive and
+    rejects cycles.
+
+    Returns:
+        repo name → its service entry, for every repo launched (the target
+        repo and all its dependencies).
+
+    Raises:
+        DevServerError: Unknown/unconfigured dependency repo, a dependency
+            cycle, or any launch failure.
+    """
+    configs: dict[str, tuple[DevServerConfig, Path]] = {repo_name: (config, repo_root)}
+    order: list[str] = []  # dependencies first, target repo last
+    done: set[str] = set()
+
+    async def _visit(repo: str, trail: tuple[str, ...]) -> None:
+        if repo in done:
+            return
+        if repo in trail:
+            cycle = " -> ".join((*trail[trail.index(repo) :], repo))
+            raise DevServerError(f"Circular dev-server dependency between repos: {cycle}")
+        if repo not in configs:
+            loaded = await load_config(repo)
+            if loaded is None:
+                raise DevServerError(
+                    f"{{port:{repo}/...}} references repo {repo!r}, which is not "
+                    "registered in this project or has no dev-server config"
+                )
+            configs[repo] = loaded
+        cfg = configs[repo][0]
+        for dep in sorted({r for r, _service in cross_repo_port_references(cfg)} - {repo}):
+            await _visit(dep, (*trail, repo))
+        done.add(repo)
+        order.append(repo)
+
+    await _visit(repo_name, ())
+
+    qualified: dict[str, int] = {}
+    entries: dict[str, dict[str, ServiceHandle]] = {}
+    launched: list[TrialKey] = []  # keys THIS call brought up (exact — see ensure)
+    try:
+        for repo in order:
+            cfg, base = configs[repo]
+            if repo == repo_name:
+                repo_key, repo_tree = key, tree
+            else:
+                repo_key, repo_tree = await resolve_tree(repo, base)
+            # Hand each repo ONLY the qualified ports it actually references.
+            # Passing the full accumulated map would make the same entry's
+            # external_ports snapshot depend on the ENTRY POINT (opening Z
+            # vs opening its dependency B directly), spuriously failing the
+            # same_external reuse check and relaunching a healthy server out
+            # from under its dependents.
+            refs = cross_repo_port_references(cfg)
+            external = {
+                ref_key: qualified[ref_key]
+                for ref_repo, ref_service in sorted(refs)
+                if (ref_key := f"{ref_repo}/{ref_service}") in qualified
+            }
+            entry = await manager.ensure(
+                repo_key,
+                cfg,
+                repo_tree,
+                repo_root=base,
+                external_ports=external,
+                launched_out=launched,
+            )
+            entries[repo] = entry
+            for name, handle in entry.items():
+                qualified[f"{repo}/{name}"] = handle.port
+    except BaseException:
+        # A later launch failing must not leak what THIS call started —
+        # including a dead entry it relaunched.  Reused healthy entries are
+        # never in `launched`, so another agent's servers stay untouched.
+        for repo_key in reversed(launched):
+            with contextlib.suppress(Exception):
+                await manager.stop(repo_key)
+        raise
+    return entries
 
 
 # ---------------------------------------------------------------------------

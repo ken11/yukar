@@ -54,6 +54,13 @@ type MessageHandler = (msg: SseMessage<ProjectStreamEvent>) => void;
 interface ProjectEventStreamContextValue {
   /** Register a handler. The return value is an unsubscribe function. */
   subscribe: (handler: MessageHandler) => () => void;
+  /**
+   * Register a reconnect handler. The project stream has NO replay buffer on
+   * the backend — events published while the connection was down (network
+   * blip, hidden-tab suspension) are gone. Consumers holding SSE-accumulated
+   * state must resync from REST here.
+   */
+  subscribeReconnect: (handler: () => void) => () => void;
 }
 
 const ProjectEventStreamContext = createContext<ProjectEventStreamContextValue | null>(null);
@@ -75,6 +82,7 @@ export function ProjectEventStreamProvider({
   children,
 }: ProjectEventStreamProviderProps) {
   const handlersRef = useRef<Set<MessageHandler>>(new Set());
+  const reconnectHandlersRef = useRef<Set<() => void>>(new Set());
 
   const url = `/api/projects/${projectId}/events`;
 
@@ -86,9 +94,19 @@ export function ProjectEventStreamProvider({
     }
   }, []);
 
+  // The backend has no replay for this stream: anything published while the
+  // connection was down is lost. Fan the reconnect out so consumers with
+  // SSE-accumulated state (merge progress) can resync from REST.
+  const onReconnect = useCallback(() => {
+    for (const handler of reconnectHandlersRef.current) {
+      handler();
+    }
+  }, []);
+
   useEventStream<unknown>({
     url,
     onMessage,
+    onReconnect,
   });
 
   const subscribe = useCallback((handler: MessageHandler) => {
@@ -98,7 +116,18 @@ export function ProjectEventStreamProvider({
     };
   }, []);
 
-  return <ProjectEventStreamContext value={{ subscribe }}>{children}</ProjectEventStreamContext>;
+  const subscribeReconnect = useCallback((handler: () => void) => {
+    reconnectHandlersRef.current.add(handler);
+    return () => {
+      reconnectHandlersRef.current.delete(handler);
+    };
+  }, []);
+
+  return (
+    <ProjectEventStreamContext value={{ subscribe, subscribeReconnect }}>
+      {children}
+    </ProjectEventStreamContext>
+  );
 }
 
 // ---- Consumer hook ----

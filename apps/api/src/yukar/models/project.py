@@ -52,9 +52,12 @@ class DevService(BaseModel):
     """One long-running dev process, launched by the host inside a trial worktree.
 
     ``command`` is exec tokens (never a shell line). Tokens and ``env`` values
-    may contain ``{port}`` (this service's assigned port) and ``{port:name}``
-    (a sibling service's port). ``base_port`` is a preference — the host
-    assigns a free port per trial so parallel worktrees never collide.
+    may contain ``{port}`` (this service's assigned port), ``{port:name}`` (a
+    sibling service's port), and ``{port:repo/name}`` (a service declared in
+    ANOTHER repo's dev-server config — that repo's services are launched first
+    and their real ports substituted, so the reference also defines cross-repo
+    start order). ``base_port`` is a preference — the host assigns a free port
+    per trial so parallel worktrees never collide.
 
     Secrets are declared by SOURCE, never by value (design §11): ``env_file``
     names dotenv-style files (absolute, ``~``, or repo-relative — resolved

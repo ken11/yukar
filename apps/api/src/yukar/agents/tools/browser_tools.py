@@ -83,7 +83,9 @@ def make_browser_tools(ctx: AgentContext, owner_id: str) -> list[Any]:
         The host launches the services exactly as configured in the repo's
         dev-server settings and waits until each is ready; you receive the
         resulting URL plus a snapshot of the page. Re-calling is cheap — a
-        healthy server is reused, a crashed one is relaunched.
+        healthy server is reused, a crashed one is relaunched. Services of
+        other repos referenced via {port:repo/service} are started first,
+        automatically, and the page may call their origins.
 
         If the user captured a login for this repo, the page starts already
         authenticated. If you hit a login wall instead, do NOT guess or invent

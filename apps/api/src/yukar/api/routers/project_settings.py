@@ -64,6 +64,7 @@ from yukar.models.roles import ConfigurableAgentRole
 from yukar.models.skill import Skill, SkillMeta
 from yukar.preview.browser import get_browser_session_manager
 from yukar.preview.login import get_login_capture_manager
+from yukar.preview.manager import cross_repo_port_references, unknown_port_references
 from yukar.storage import agent_config_repo, agent_profiles_repo, mcp_repo, skills_repo
 from yukar.storage.project_repo import (
     delete_repo,
@@ -356,8 +357,77 @@ async def put_repo_dev_server(
 
     The config is declarative: the host (never the agents) launches the
     services from it when browser verification is requested for a trial.
+
+    Rejected here (not in the model) so previously-stored configs still load:
+    a ``{port:name}`` reference to a service this config does not declare, a
+    ``{port:repo/service}`` reference whose repo/service does not exist in
+    the project's current configs, and a cross-repo reference cycle this save
+    would create.  Validation is point-in-time and forward-only: it checks
+    THIS config against the others as saved right now — editing or deleting a
+    referenced repo later is not re-checked here, and surfaces as a clear
+    launch-time error instead.
     """
     await get_project_or_404(root, project_id)
+    problems = unknown_port_references(body)
+    cross = cross_repo_port_references(body)
+    if cross:
+        others = {r.name: r for r in await list_repos(root, project_id)}
+        own_services = {s.name for s in body.services}
+        for ref_repo, ref_service in sorted(cross):
+            # The body being saved is the authority for the edited repo itself.
+            if ref_repo == repo_name:
+                declared = own_services
+            else:
+                dep = others.get(ref_repo)
+                declared = (
+                    {s.name for s in dep.dev_server.services}
+                    if dep is not None and dep.dev_server is not None
+                    else None
+                )
+            if declared is None:
+                problems.append(
+                    f"{{port:{ref_repo}/{ref_service}}} references repo {ref_repo!r}, "
+                    "which is not registered in this project or has no dev-server config"
+                )
+            elif ref_service not in declared:
+                problems.append(
+                    f"{{port:{ref_repo}/{ref_service}}}: repo {ref_repo!r} declares no "
+                    f"service {ref_service!r} (declared: {sorted(declared)})"
+                )
+        # Mutual references (A⇄B) would pass the per-reference checks on both
+        # sides yet make every later launch fail with a cycle error mid-agent-
+        # turn — reject the save that closes the cycle instead.
+        configs = {
+            r.name: r.dev_server for r in others.values() if r.dev_server is not None
+        }
+        configs[repo_name] = body
+        trail: list[str] = []
+
+        def _find_cycle(repo: str) -> list[str] | None:
+            if repo in trail:
+                return [*trail[trail.index(repo) :], repo]
+            cfg = configs.get(repo)
+            if cfg is None:
+                return None
+            trail.append(repo)
+            try:
+                for dep_repo in sorted({r for r, _s in cross_repo_port_references(cfg)}):
+                    if dep_repo == repo:
+                        continue
+                    cycle = _find_cycle(dep_repo)
+                    if cycle is not None:
+                        return cycle
+            finally:
+                trail.pop()
+            return None
+
+        cycle = _find_cycle(repo_name)
+        if cycle is not None:
+            problems.append(
+                "circular dev-server dependency between repos: " + " -> ".join(cycle)
+            )
+    if problems:
+        raise HTTPException(status_code=422, detail="; ".join(problems))
     updated = await update_repo_dev_server(root, project_id, repo_name, body)
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Repo not found: {repo_name}")
@@ -493,8 +563,16 @@ async def start_browser_login(
 
     repo = await _repo_or_404(root, project_id, repo_name)
     manager = _login_manager_or_503()
+
+    async def _load_dep_config(name: str) -> tuple[DevServerConfig, Path] | None:
+        # {port:repo/service} dependencies launch from their base checkouts too.
+        dep = await get_repo(root, project_id, name)
+        if dep is None or dep.dev_server is None:
+            return None
+        return dep.dev_server, Path(dep.path)
+
     try:
-        capture = await manager.start(project_id, repo)
+        capture = await manager.start(project_id, repo, load_config=_load_dep_config)
     except LoginCaptureError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return LoginStartResponse(url=capture.url)

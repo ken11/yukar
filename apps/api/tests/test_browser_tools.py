@@ -34,6 +34,7 @@ from yukar.preview.browser import (
 )
 from yukar.preview.manager import (
     DevServerManager,
+    TrialKey,
     init_dev_server_manager,
 )
 from yukar.storage.project_repo import save_project, save_repo
@@ -263,6 +264,74 @@ class TestBrowserFlow:
         # Re-open works after an explicit stop.
         reopened = await tools["browser_open"]()
         assert reopened["status"] == "success", _text_of(reopened)
+
+
+class TestCrossRepoFlow:
+    async def test_open_launches_dependency_and_allows_its_origin(
+        self, ctx: AgentContext, managers: Any, tmp_path: Path
+    ) -> None:
+        dev, _sessions = managers
+        root = ctx.workspace_root
+
+        backend_dir = tmp_path / "backend-repo"
+        backend_dir.mkdir()
+        (backend_dir / "index.html").write_text(
+            "<!DOCTYPE html><html><head><title>Backend API</title></head>"
+            "<body><h1>API root</h1></body></html>"
+        )
+        await save_repo(
+            root,
+            "p",
+            Repo(
+                name="backend",
+                path=str(backend_dir),
+                dev_server=DevServerConfig(
+                    services=[
+                        DevService(
+                            name="api",
+                            command=[
+                                sys.executable,
+                                "-m",
+                                "http.server",
+                                "{port}",
+                                "--bind",
+                                "127.0.0.1",
+                            ],
+                            base_port=43150,
+                            readiness=ServiceReadiness(path="/", timeout_seconds=30),
+                        )
+                    ]
+                ),
+            ),
+        )
+        # Rewire the app's config to reference the backend repo's service —
+        # this is what makes backend a launch dependency of app.
+        config = _dev_server_config()
+        config.services[0].env = {"BACKEND_URL": "http://127.0.0.1:{port:backend/api}"}
+        await save_repo(
+            root, "p", Repo(name="app", path=str(ctx.worktree_path), dev_server=config)
+        )
+
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        opened = await tools["browser_open"]()
+        assert opened["status"] == "success", _text_of(opened)
+        assert "Fixture App" in _text_of(opened)
+
+        # Both repos' servers are up: app under the trial key, backend (no
+        # worktree of its own) under the __base__ sentinel.
+        app_key = TrialKey(project_id="p", epic_id="e1", trial_id="t1", repo_name="app")
+        dep_key = TrialKey(
+            project_id="p", epic_id="e1", trial_id="__base__", repo_name="backend"
+        )
+        assert dev.get_entry(app_key) is not None
+        dep_entry = dev.get_entry(dep_key)
+        assert dep_entry is not None
+
+        # The dependency's origin joined the page's egress allow-set.
+        backend_origin = dep_entry["api"].origin
+        navigated = await tools["browser_navigate"](url=f"{backend_origin}/index.html")
+        assert navigated["status"] == "success", _text_of(navigated)
+        assert "Backend API" in _text_of(navigated)
 
 
 class TestBlockedOriginVisibility:

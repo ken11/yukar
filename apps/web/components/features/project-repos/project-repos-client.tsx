@@ -23,7 +23,7 @@ import {
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
 import type { DevServerDraft, ServiceDraft } from "@/lib/dev-server/draft";
-import { emptyDevServerDraft, emptyServiceDraft } from "@/lib/dev-server/draft";
+import { emptyDevServerDraft, emptyServiceDraft, SERVICE_NAME_RE } from "@/lib/dev-server/draft";
 import { useRepoCommands } from "@/lib/hooks/use-repo-commands";
 import { useRepoDevServer } from "@/lib/hooks/use-repo-dev-server";
 import { useT } from "@/lib/i18n/provider";
@@ -498,9 +498,19 @@ function DevServerSection({
     onPatch({ allowedOriginsText: [...allowedOriginLines, origin].join("\n") });
   }
 
+  // List order IS the start (dependency) order — services launch top to
+  // bottom, each awaiting readiness before the next.
+  function moveService(idx: number, dir: -1 | 1) {
+    const j = idx + dir;
+    if (j < 0 || j >= draft.services.length) return;
+    const next = [...draft.services];
+    [next[idx], next[j]] = [next[j], next[idx]];
+    onPatch({ services: next });
+  }
+
   if (!draft.enabled) {
     return (
-      <div className="mt-4">
+      <div className="mt-5 border-t border-outline-variant/20 pt-4">
         <button
           type="button"
           data-testid={`configure-dev-server-btn-${repo.name}`}
@@ -520,7 +530,7 @@ function DevServerSection({
   }
 
   return (
-    <div className="mt-4">
+    <div className="mt-5 border-t border-outline-variant/20 pt-4">
       {/* Heading row: label + remove */}
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[11px] uppercase tracking-wider text-outline">
@@ -543,6 +553,8 @@ function DevServerSection({
       </div>
 
       <div className="space-y-3">
+        <p className="text-[11px] text-outline">{t("repos.devServer.startOrderNote")}</p>
+
         {/* Services */}
         {draft.services.map((svc, idx) => (
           <div
@@ -572,6 +584,24 @@ function DevServerSection({
                   />
                   <button
                     type="button"
+                    disabled={idx === 0}
+                    onClick={() => moveService(idx, -1)}
+                    aria-label={t("repos.devServer.moveServiceUp")}
+                    className="rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface disabled:opacity-30 md:hidden"
+                  >
+                    <Icon name="arrow_upward" className="text-[16px]" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={idx === draft.services.length - 1}
+                    onClick={() => moveService(idx, 1)}
+                    aria-label={t("repos.devServer.moveServiceDown")}
+                    className="rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface disabled:opacity-30 md:hidden"
+                  >
+                    <Icon name="arrow_downward" className="text-[16px]" />
+                  </button>
+                  <button
+                    type="button"
                     data-testid={`dev-server-remove-service-btn-${repo.name}-${idx}`}
                     onClick={() =>
                       onPatch({ services: draft.services.filter((_, i) => i !== idx) })
@@ -583,7 +613,27 @@ function DevServerSection({
                   </button>
                 </div>
               </div>
-              <div className="hidden justify-end md:flex">
+              <div className="hidden items-start justify-end gap-1 md:flex">
+                <button
+                  type="button"
+                  data-testid={`dev-server-move-service-up-btn-${repo.name}-${idx}`}
+                  disabled={idx === 0}
+                  onClick={() => moveService(idx, -1)}
+                  aria-label={t("repos.devServer.moveServiceUp")}
+                  className="rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface disabled:opacity-30"
+                >
+                  <Icon name="arrow_upward" className="text-[14px]" />
+                </button>
+                <button
+                  type="button"
+                  data-testid={`dev-server-move-service-down-btn-${repo.name}-${idx}`}
+                  disabled={idx === draft.services.length - 1}
+                  onClick={() => moveService(idx, 1)}
+                  aria-label={t("repos.devServer.moveServiceDown")}
+                  className="rounded p-1 text-outline transition-colors hover:bg-surface-variant hover:text-on-surface disabled:opacity-30"
+                >
+                  <Icon name="arrow_downward" className="text-[14px]" />
+                </button>
                 <button
                   type="button"
                   onClick={() => onPatch({ services: draft.services.filter((_, i) => i !== idx) })}
@@ -611,7 +661,17 @@ function DevServerSection({
                 placeholder="pnpm dev --port {port}"
                 className={repoInputClass}
               />
-              <p className="mt-1 text-[11px] text-outline">{t("repos.devServer.portNote")}</p>
+              <p className="mt-1 text-[11px] text-outline">
+                {t("repos.devServer.portNote").replace(
+                  /\{example\}/g,
+                  // Live example: prefer a sibling service's actual name over a
+                  // canned one. Function replacement — never interpret "$&" etc.
+                  () =>
+                    draft.services
+                      .find((other, i) => i !== idx && SERVICE_NAME_RE.test(other.name.trim()))
+                      ?.name.trim() ?? "api",
+                )}
+              </p>
             </div>
 
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -693,26 +753,10 @@ function DevServerSection({
               </div>
             </div>
 
-            <div className="mt-3">
-              <label
-                htmlFor={`dev-server-service-env-${repo.name}-${idx}`}
-                className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline"
-              >
-                {t("repos.devServer.serviceEnv")}
-              </label>
-              <textarea
-                id={`dev-server-service-env-${repo.name}-${idx}`}
-                data-testid={`dev-server-service-env-${repo.name}-${idx}`}
-                rows={3}
-                value={svc.envText}
-                onChange={(e) => onPatchService(idx, { envText: e.target.value })}
-                placeholder={"NODE_ENV=development\nAPI_URL=http://127.0.0.1:{port:api}"}
-                className={textareaClass}
-              />
-              <p className="mt-1 text-[11px] text-outline">{t("repos.devServer.envFormatNote")}</p>
-            </div>
+            {/* Env sources, listed in merge order: files → pass-through → literals. */}
+            <p className="mt-3 text-[11px] text-outline">{t("repos.devServer.envMergeNote")}</p>
 
-            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <label
                   htmlFor={`dev-server-service-env-file-${repo.name}-${idx}`}
@@ -757,6 +801,25 @@ function DevServerSection({
                   {t("repos.devServer.envPassthroughNote")}
                 </p>
               </div>
+            </div>
+
+            <div className="mt-3">
+              <label
+                htmlFor={`dev-server-service-env-${repo.name}-${idx}`}
+                className="mb-1.5 block text-[11px] uppercase tracking-wider text-outline"
+              >
+                {t("repos.devServer.serviceEnv")}
+              </label>
+              <textarea
+                id={`dev-server-service-env-${repo.name}-${idx}`}
+                data-testid={`dev-server-service-env-${repo.name}-${idx}`}
+                rows={3}
+                value={svc.envText}
+                onChange={(e) => onPatchService(idx, { envText: e.target.value })}
+                placeholder={"NODE_ENV=development\nAPI_URL=http://127.0.0.1:{port:api}"}
+                className={textareaClass}
+              />
+              <p className="mt-1 text-[11px] text-outline">{t("repos.devServer.envFormatNote")}</p>
             </div>
           </div>
         ))}
@@ -1102,22 +1165,7 @@ export function ProjectReposClient({
                   </div>
                 </div>
 
-                {/* Dev server launch config */}
-                <DevServerSection
-                  projectId={projectId}
-                  repo={repo}
-                  draft={devServer.drafts[repo.name] ?? emptyDevServerDraft()}
-                  blocked={blockedOrigins.filter((item) => item.repo === repo.name)}
-                  isPending={devServer.pending[repo.name] ?? false}
-                  isSaved={devServer.saved[repo.name] ?? false}
-                  error={devServer.saveErrors[repo.name] ?? ""}
-                  onPatch={(patch) => devServer.patchDraft(repo.name, patch)}
-                  onPatchService={(idx, patch) => devServer.patchService(repo.name, idx, patch)}
-                  onSave={() => devServer.handleSave(repo.name)}
-                  onRemove={() => devServer.handleRemove(repo.name)}
-                />
-
-                {/* Save */}
+                {/* Save (command allow/deny) — sits with its own form, above the dev-server block */}
                 <div className="mt-3 flex items-center gap-3">
                   {error && (
                     <span
@@ -1140,9 +1188,28 @@ export function ProjectReposClient({
                       backgroundColor: "var(--color-on-surface)",
                     }}
                   >
-                    {isPending ? "Saving…" : isSaved ? "Saved" : "Save"}
+                    {isPending
+                      ? t("repos.savingCommands")
+                      : isSaved
+                        ? t("repos.savedCommands")
+                        : t("repos.saveCommands")}
                   </button>
                 </div>
+
+                {/* Dev server launch config */}
+                <DevServerSection
+                  projectId={projectId}
+                  repo={repo}
+                  draft={devServer.drafts[repo.name] ?? emptyDevServerDraft()}
+                  blocked={blockedOrigins.filter((item) => item.repo === repo.name)}
+                  isPending={devServer.pending[repo.name] ?? false}
+                  isSaved={devServer.saved[repo.name] ?? false}
+                  error={devServer.saveErrors[repo.name] ?? ""}
+                  onPatch={(patch) => devServer.patchDraft(repo.name, patch)}
+                  onPatchService={(idx, patch) => devServer.patchService(repo.name, idx, patch)}
+                  onSave={() => devServer.handleSave(repo.name, repos)}
+                  onRemove={() => devServer.handleRemove(repo.name)}
+                />
               </div>
             );
           })}

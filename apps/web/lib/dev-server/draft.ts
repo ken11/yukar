@@ -38,13 +38,35 @@ export type DraftValidationError =
   | { code: "invalidPort"; serviceIndex: number }
   | { code: "invalidTimeout"; serviceIndex: number }
   | { code: "invalidEnvLine"; serviceIndex: number; line: string }
-  | { code: "invalidEnvPassthroughName"; serviceIndex: number; line: string };
+  | { code: "invalidEnvPassthroughName"; serviceIndex: number; line: string }
+  | { code: "unknownPortReference"; serviceIndex: number; line: string }
+  | { code: "unknownRepoReference"; serviceIndex: number; line: string }
+  | { code: "unknownRemoteService"; serviceIndex: number; line: string };
 
 /** Mirrors the backend DevService.name regex (models/project.py). */
-const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+export const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /** Mirrors the backend env-var name regex (models/project.py `_ENV_NAME_RE`). */
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Named {port:service} / {port:repo/service} references (mirrors
+ * preview/manager.py `_PORT_PLACEHOLDER_RE`). Matched LOOSELY on purpose:
+ * repo names have no charset constraint ("next.js", "example.com"), so a
+ * strict class would make such references silently unvalidatable. Anything
+ * inside {port:...} must either validate or be reported.
+ */
+const PORT_REF_RE = /\{port:([^{}]+)\}/g;
+
+/**
+ * Cross-repo validation context for {port:repo/service} references: saved
+ * service names per repo. The edited repo itself is validated against the
+ * DRAFT being saved, not this map.
+ */
+export interface CrossRepoContext {
+  selfRepoName: string;
+  repoServices: Record<string, string[]>;
+}
 
 export type DraftConversionResult =
   | { ok: true; config: DevServerConfig }
@@ -133,7 +155,10 @@ function parseEnvText(
  * number in (0, 600] (blank → default 60); empty readiness path → null (wait
  * for the port only); empty cwd → ".".
  */
-export function configFromDraft(draft: DevServerDraft): DraftConversionResult {
+export function configFromDraft(
+  draft: DevServerDraft,
+  crossRepo?: CrossRepoContext,
+): DraftConversionResult {
   if (draft.services.length === 0) {
     return { ok: false, error: { code: "noServices" } };
   }
@@ -205,6 +230,54 @@ export function configFromDraft(draft: DevServerDraft): DraftConversionResult {
       return { ok: false, error: { code: "duplicateServiceName", serviceIndex } };
     }
     seenNames.set(service.name, serviceIndex);
+  }
+
+  // Port references resolve against THIS config's services ({port:name}) or,
+  // qualified as {port:repo/service}, another repo's saved config — an
+  // undeclared reference would otherwise only explode at launch time,
+  // mid-agent-turn. Mirrors the backend PUT-handler check.
+  for (const [serviceIndex, service] of services.entries()) {
+    for (const text of [...service.command, ...Object.values(service.env ?? {})]) {
+      for (const match of text.matchAll(PORT_REF_RE)) {
+        const ref = match[1];
+        // Repo names cannot contain "/", so the first slash splits the
+        // qualified form; everything after it is the service name.
+        const slash = ref.indexOf("/");
+        if (slash === -1) {
+          if (!seenNames.has(ref)) {
+            return {
+              ok: false,
+              error: { code: "unknownPortReference", serviceIndex, line: ref },
+            };
+          }
+        } else if (crossRepo !== undefined) {
+          // Qualified {port:repo/service}. The draft is the authority for the
+          // edited repo itself; other repos validate against their saved config.
+          const refRepo = ref.slice(0, slash);
+          const refService = ref.slice(slash + 1);
+          if (refRepo === crossRepo.selfRepoName) {
+            if (!seenNames.has(refService)) {
+              return {
+                ok: false,
+                error: { code: "unknownPortReference", serviceIndex, line: refService },
+              };
+            }
+            // Object.hasOwn (not `in`): a repo literally named "toString" or
+            // "constructor" must hit the not-found branch, not the prototype.
+          } else if (!Object.hasOwn(crossRepo.repoServices, refRepo)) {
+            return {
+              ok: false,
+              error: { code: "unknownRepoReference", serviceIndex, line: refRepo },
+            };
+          } else if (!crossRepo.repoServices[refRepo].includes(refService)) {
+            return {
+              ok: false,
+              error: { code: "unknownRemoteService", serviceIndex, line: ref },
+            };
+          }
+        }
+      }
+    }
   }
 
   return {

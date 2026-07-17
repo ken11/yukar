@@ -114,6 +114,74 @@ describe("useMergeProgress", () => {
     expect(p?.isFinished).toBe(false);
   });
 
+  it("drops unfinished progress and refetches the board on SSE reconnect", () => {
+    // The project stream has no replay buffer — a "finished" published while
+    // the connection was down never arrives, so an in-flight panel must not
+    // stay stuck on stale progress after a reconnect.
+    const onInvalidate = vi.fn();
+    const { result } = renderHook(() => useMergeProgress("proj1", onInvalidate), {
+      wrapper: makeWrapper("proj1"),
+    });
+    const es = MockEventSource.instances[0];
+
+    act(() => {
+      es.emit("open", ""); // first open
+      es.emit(
+        "epic_merge_progress",
+        JSON.stringify({
+          type: "epic_merge_progress",
+          project_id: "proj1",
+          epic_id: "EP-1",
+          run_id: "run-1",
+          total: 3,
+          completed: 1,
+          current_epic_id: "EP-2",
+          phase: "merging",
+          results: [],
+        }),
+      );
+    });
+    expect(result.current.progress?.completed).toBe(1);
+
+    act(() => {
+      es.emit("open", ""); // reconnect — anything published in between is lost
+    });
+    expect(onInvalidate).toHaveBeenCalled();
+    expect(result.current.progress).toBeNull();
+  });
+
+  it("keeps finished progress across a reconnect (results stay visible)", () => {
+    const { result } = renderHook(() => useMergeProgress("proj1"), {
+      wrapper: makeWrapper("proj1"),
+    });
+    const es = MockEventSource.instances[0];
+
+    act(() => {
+      es.emit("open", "");
+      es.emit(
+        "epic_merge_progress",
+        JSON.stringify({
+          type: "epic_merge_progress",
+          project_id: "proj1",
+          epic_id: "EP-1",
+          run_id: "run-1",
+          total: 1,
+          completed: 1,
+          current_epic_id: null,
+          phase: "finished",
+          results: [{ epic_id: "EP-1", status: "merged", detail: "", repos: [] }],
+        }),
+      );
+    });
+    expect(result.current.progress?.isFinished).toBe(true);
+
+    act(() => {
+      es.emit("open", "");
+    });
+    expect(result.current.progress?.isFinished).toBe(true);
+    expect(result.current.progress?.results).toHaveLength(1);
+  });
+
   it("sets isFinished when phase is finished", () => {
     const { result } = renderHook(() => useMergeProgress("proj1"), {
       wrapper: makeWrapper("proj1"),

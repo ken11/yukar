@@ -14,6 +14,16 @@ const fullConfig: DevServerConfig = {
       env_file: ["~/secrets/dev.env", ".env.development"],
       env_passthrough: ["DATABASE_URL"],
     },
+    {
+      name: "api",
+      command: ["uvicorn", "main:app", "--port", "{port}"],
+      cwd: ".",
+      base_port: 8000,
+      readiness: { path: null, timeout_seconds: 60 },
+      env: {},
+      env_file: [],
+      env_passthrough: [],
+    },
   ],
   browser: {
     allowed_origins: ["https://fonts.googleapis.com"],
@@ -75,6 +85,17 @@ describe("draftFromConfig", () => {
         envText: "NODE_ENV=development\nAPI_URL=http://127.0.0.1:{port:api}",
         envFileText: "~/secrets/dev.env\n.env.development",
         envPassthroughText: "DATABASE_URL",
+      },
+      {
+        name: "api",
+        commandLine: "uvicorn main:app --port {port}",
+        cwd: ".",
+        basePort: "8000",
+        readinessPath: "",
+        readinessTimeout: "60",
+        envText: "",
+        envFileText: "",
+        envPassthroughText: "",
       },
     ]);
     expect(draft.allowedOriginsText).toBe("https://fonts.googleapis.com");
@@ -204,6 +225,132 @@ describe("configFromDraft", () => {
   it("rejects a service without a command", () => {
     const result = configFromDraft(patchService(validDraft(), { commandLine: "   " }));
     expect(result).toEqual({ ok: false, error: { code: "commandRequired", serviceIndex: 0 } });
+  });
+
+  it("accepts a {port:name} reference to a sibling service", () => {
+    const draft = validDraft();
+    draft.services = [
+      { ...draft.services[0], envText: "API_URL=http://127.0.0.1:{port:api}" },
+      { ...emptyServiceDraft(), name: "api", commandLine: "uvicorn app", basePort: "8000" },
+    ];
+    expect(configFromDraft(draft).ok).toBe(true);
+  });
+
+  it("rejects a {port:name} reference to a service not in this config (env value)", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "API_URL=http://127.0.0.1:{port:api}" }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "unknownPortReference", serviceIndex: 0, line: "api" },
+    });
+  });
+
+  it("rejects a {port:name} reference to a service not in this config (command)", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { commandLine: "serve --upstream {port:backend}" }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "unknownPortReference", serviceIndex: 0, line: "backend" },
+    });
+  });
+
+  it("leaves a bare {port} placeholder untouched by the reference check", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "SELF=http://127.0.0.1:{port}" }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts a {port:repo/service} reference matching another repo's saved config", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "API_URL=http://127.0.0.1:{port:backend/api}" }),
+      { selfRepoName: "frontend", repoServices: { backend: ["api"] } },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a {port:repo/…} reference to an unknown repo", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "API_URL=http://127.0.0.1:{port:ghost/api}" }),
+      { selfRepoName: "frontend", repoServices: { backend: ["api"] } },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "unknownRepoReference", serviceIndex: 0, line: "ghost" },
+    });
+  });
+
+  it("rejects a {port:repo/service} whose service the repo does not declare", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "API_URL=http://127.0.0.1:{port:backend/ghost}" }),
+      { selfRepoName: "frontend", repoServices: { backend: ["api"] } },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "unknownRemoteService", serviceIndex: 0, line: "backend/ghost" },
+    });
+  });
+
+  it("validates a self-qualified {port:self/…} reference against the draft", () => {
+    const ok = configFromDraft(
+      patchService(validDraft(), { envText: "SELF=http://127.0.0.1:{port:frontend/web}" }),
+      { selfRepoName: "frontend", repoServices: {} },
+    );
+    expect(ok.ok).toBe(true);
+    const bad = configFromDraft(
+      patchService(validDraft(), { envText: "SELF=http://127.0.0.1:{port:frontend/ghost}" }),
+      { selfRepoName: "frontend", repoServices: {} },
+    );
+    expect(bad).toEqual({
+      ok: false,
+      error: { code: "unknownPortReference", serviceIndex: 0, line: "ghost" },
+    });
+  });
+
+  it("skips qualified references when no cross-repo context is given", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "API_URL=http://127.0.0.1:{port:backend/api}" }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("validates references to dotted repo names ({port:next.js/api})", () => {
+    const ok = configFromDraft(
+      patchService(validDraft(), { envText: "API_URL=http://127.0.0.1:{port:next.js/api}" }),
+      { selfRepoName: "frontend", repoServices: { "next.js": ["api"] } },
+    );
+    expect(ok.ok).toBe(true);
+    const bad = configFromDraft(
+      patchService(validDraft(), { envText: "API_URL=http://127.0.0.1:{port:ghost.io/api}" }),
+      { selfRepoName: "frontend", repoServices: { "next.js": ["api"] } },
+    );
+    expect(bad).toEqual({
+      ok: false,
+      error: { code: "unknownRepoReference", serviceIndex: 0, line: "ghost.io" },
+    });
+  });
+
+  it("reports a repo named after an Object.prototype member instead of crashing", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "X=http://127.0.0.1:{port:toString/api}" }),
+      { selfRepoName: "frontend", repoServices: { backend: ["api"] } },
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "unknownRepoReference", serviceIndex: 0, line: "toString" },
+    });
+  });
+
+  it("reports a loose unqualified reference ({port: api} with a space)", () => {
+    const result = configFromDraft(
+      patchService(validDraft(), { envText: "X=http://127.0.0.1:{port: api}" }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "unknownPortReference", serviceIndex: 0, line: " api" },
+    });
   });
 
   it.each([

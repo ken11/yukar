@@ -1076,6 +1076,15 @@ export interface paths {
          *
          *     The config is declarative: the host (never the agents) launches the
          *     services from it when browser verification is requested for a trial.
+         *
+         *     Rejected here (not in the model) so previously-stored configs still load:
+         *     a ``{port:name}`` reference to a service this config does not declare, a
+         *     ``{port:repo/service}`` reference whose repo/service does not exist in
+         *     the project's current configs, and a cross-repo reference cycle this save
+         *     would create.  Validation is point-in-time and forward-only: it checks
+         *     THIS config against the others as saved right now — editing or deleting a
+         *     referenced repo later is not re-checked here, and surfaces as a clear
+         *     launch-time error instead.
          */
         put: operations["put_repo_dev_server_api_projects__project_id__repos__repo_name__dev_server_put"];
         post?: never;
@@ -1761,9 +1770,12 @@ export interface components {
          * @description One long-running dev process, launched by the host inside a trial worktree.
          *
          *     ``command`` is exec tokens (never a shell line). Tokens and ``env`` values
-         *     may contain ``{port}`` (this service's assigned port) and ``{port:name}``
-         *     (a sibling service's port). ``base_port`` is a preference — the host
-         *     assigns a free port per trial so parallel worktrees never collide.
+         *     may contain ``{port}`` (this service's assigned port), ``{port:name}`` (a
+         *     sibling service's port), and ``{port:repo/name}`` (a service declared in
+         *     ANOTHER repo's dev-server config — that repo's services are launched first
+         *     and their real ports substituted, so the reference also defines cross-repo
+         *     start order). ``base_port`` is a preference — the host assigns a free port
+         *     per trial so parallel worktrees never collide.
          *
          *     Secrets are declared by SOURCE, never by value (design §11): ``env_file``
          *     names dotenv-style files (absolute, ``~``, or repo-relative — resolved
