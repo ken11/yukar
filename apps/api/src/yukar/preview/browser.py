@@ -61,6 +61,13 @@ COMMON_CDN_ORIGINS: frozenset[str] = frozenset(
     }
 )
 
+# Hostnames that always resolve to the loopback interface in Chromium
+# (RFC 6761: localhost and *.localhost never leave the machine).  They are
+# canonicalised to 127.0.0.1 so the allow-set entry the host builds from a
+# ServiceHandle origin (always 127.0.0.1) also matches the localhost spelling
+# dev servers print in their logs and apps bake into redirects/absolute URLs.
+_LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+
 _CONSOLE_CAP = 200
 _SNAPSHOT_CAP_CHARS = 40_000
 _REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
@@ -73,11 +80,16 @@ def normalize_origin(url: str) -> str:
     """Canonical ``scheme://host[:port]`` of *url* (ws→http for comparison).
 
     Default ports are dropped so ``https://x:443`` and ``https://x`` compare
-    equal; unknown/relative URLs normalize to "" (never matches an allow-set).
+    equal; loopback hostnames (``localhost`` / ``*.localhost`` / ``::1``)
+    canonicalise to ``127.0.0.1`` so every spelling of the same local server
+    compares equal; unknown/relative URLs normalize to "" (never matches an
+    allow-set).
     """
     parsed = urlparse(url)
     scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
     host = (parsed.hostname or "").lower()
+    if host in _LOOPBACK_HOSTS or host.endswith(".localhost"):
+        host = "127.0.0.1"
     if not scheme or not host:
         return ""
     try:

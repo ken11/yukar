@@ -60,6 +60,7 @@ async def run_worker(
     extra_system_prompt: str = "",
     extra_tools: list[Any] | None = None,
     plugins: list[Any] | None = None,
+    ensure_tree: Any = None,
 ) -> dict[str, Any]:
     """Run a Worker agent for one task attempt.
 
@@ -105,7 +106,7 @@ async def run_worker(
 
     # Browser verification bundle — present only when the assigned repo
     # declares a dev_server config (empty list otherwise).
-    browser_tools_list = await make_browser_tools_if_configured(ctx, worker_id)
+    browser_tools_list = await make_browser_tools_if_configured(ctx, worker_id, ensure_tree)
 
     worker_agent = Agent(
         model=worker_model,

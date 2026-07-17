@@ -17,6 +17,7 @@ response_builder) so wrappers only add the LLM-facing docstrings.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,18 @@ _NOT_OPEN = "No dev server is running for this trial. Call browser_open first."
 # overview bundle).  Real trial ids are the legacy literal "manager" or
 # generated thread ids, so this cannot collide.
 BASE_TRIAL_ID = "__base__"
+
+TreeEnsurer = Callable[[str], Awaitable[Path]]
+"""repo name → the ACTIVE trial's worktree path, created (branch + worktree)
+when missing.  Provided by the orchestrator, which owns the epic object and
+state lock the bookkeeping (``epic.touched_repos``) must go through.  Raises
+DevServerError when the worktree cannot be provided.
+
+Dev servers must NEVER launch in a repo's base checkout when a trial is
+active: the base checkout is a shared directory (the user's own dev server
+may already run there, and every epic would otherwise target the same tree),
+so a second launch collides — Next.js detects the duplicate instance and
+refuses to start — and build artifacts would pollute the user's checkout."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,13 +145,24 @@ async def _page_result(session: BrowserSession) -> dict[str, Any]:
     return make_success(text)
 
 
-async def open_app(target: BrowserTarget, service: str | None = None) -> dict[str, Any]:
+async def open_app(
+    target: BrowserTarget,
+    service: str | None = None,
+    *,
+    ensure_tree: TreeEnsurer | None = None,
+) -> dict[str, Any]:
     """Ensure the declared services and open one of them (default: first).
 
     ``{port:repo/service}`` references in the config pull in OTHER repos'
     services as dependencies: they are launched first (awaiting readiness),
     their real ports substitute into this repo's command/env, and their
     origins join the page's egress allow-set so the app can call them.
+
+    ``ensure_tree`` lets dependency repos without a worktree get one created
+    for the active trial instead of falling back to the shared base checkout
+    (see :data:`TreeEnsurer` for why base launches are a collision hazard).
+    Without it (or when the target itself is a base-checkout sentinel) the
+    base fallback remains.
     """
     manager = get_dev_server_manager()
     sessions = get_browser_session_manager()
@@ -165,10 +189,10 @@ async def open_app(target: BrowserTarget, service: str | None = None) -> dict[st
 
     async def _resolve(name: str, base: Path) -> tuple[TrialKey, Path]:
         # Dependency repos follow the overview-bundle rule: the SAME trial's
-        # worktree when one exists on disk, else the base checkout under the
-        # BASE_TRIAL_ID sentinel (so a base-tree server is never mistaken for
-        # the branch server once a worktree appears — run-end sweep covers
-        # both).
+        # worktree, created via ensure_tree when it does not exist yet.  The
+        # base checkout (BASE_TRIAL_ID sentinel) is only a fallback when no
+        # ensurer is wired or the target itself is a base sentinel — launching
+        # there risks colliding with the user's own dev server (TreeEnsurer).
         if target.trial_id != BASE_TRIAL_ID:
             worktree = paths.worktree_dir(
                 target.workspace_root,
@@ -177,6 +201,8 @@ async def open_app(target: BrowserTarget, service: str | None = None) -> dict[st
                 target.trial_id,
                 name,
             )
+            if not await asyncio.to_thread(worktree.is_dir) and ensure_tree is not None:
+                worktree = await ensure_tree(name)
             if await asyncio.to_thread(worktree.is_dir):
                 return (
                     TrialKey(

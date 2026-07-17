@@ -72,6 +72,7 @@ async def run_evaluator(
     extra_system_prompt: str = "",
     extra_tools: list[Any] | None = None,
     plugins: list[Any] | None = None,
+    ensure_tree: Any = None,
 ) -> dict[str, Any]:
     """Run an Evaluator agent.
 
@@ -111,7 +112,7 @@ async def run_evaluator(
     # Browser verification bundle (only when the repo declares dev_server).
     # Interaction included by design: the Evaluator's read-only invariant is
     # about the repository, and browser use never writes the worktree.
-    browser_tools_list = await make_browser_tools_if_configured(ctx, eval_id)
+    browser_tools_list = await make_browser_tools_if_configured(ctx, eval_id, ensure_tree)
     eval_tools = [*eval_tools, *browser_tools_list]
 
     translator = StreamTranslator(

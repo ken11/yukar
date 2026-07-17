@@ -966,7 +966,12 @@ class EpicOrchestrator:
         # base checkout before any work does (browser_overview_tools).  Empty
         # when no registered repo declares a dev_server config.
         browser_overview_tools = await make_browser_overview_tools(
-            root, project_id, epic_id, epic, owner_id=manager_thread_id
+            root,
+            project_id,
+            epic_id,
+            epic,
+            owner_id=manager_thread_id,
+            ensure_tree=self._make_tree_ensurer(),
         )
 
         if self._agent_role == "reviewer":
@@ -1656,6 +1661,59 @@ class EpicOrchestrator:
             sorted(repos_by_name), _resolve_ctx, include_run_tests=include_run_tests
         )
 
+    def _make_tree_ensurer(self) -> Any:
+        """Build a ``TreeEnsurer`` that creates the active trial's worktree.
+
+        Handed to the browser bundles so ``browser_open`` on a repo without a
+        worktree yet (Manager turn 0, or a not-yet-touched dependency repo)
+        creates the trial worktree via the same ``ensure_worktree_for_repo``
+        machinery dispatch uses — instead of launching the dev server in the
+        repo's shared base checkout (duplicate-instance collision + build
+        artifacts leaking into the user's checkout; see
+        ``browser_core.TreeEnsurer``).
+
+        The worktree is created under the SAME trial id the browser bundle
+        resolves (``resolve_active_trial_id``), so the eager creation and the
+        subsequent existence re-check agree.  Raises ``DevServerError`` when no
+        active trial owns a worktree (every manager trial archived) — the
+        caller then keeps the base-checkout fallback.
+        """
+        from pathlib import Path
+
+        from yukar.agents.dispatch_attempt import ensure_worktree_for_repo
+        from yukar.agents.trials import resolve_active_trial_id, trial_id_of
+        from yukar.preview.manager import DevServerError
+
+        async def _ensure(repo_name: str) -> Path:
+            assert self._epic is not None
+            trial_id = await resolve_active_trial_id(
+                self._root, self._project_id, self._epic_id, self._epic
+            )
+            if trial_id is None:
+                raise DevServerError(
+                    f"No active trial owns a worktree for {repo_name!r}; "
+                    "cannot create one to launch the dev server in."
+                )
+            # Branch for this trial: prefer the trial's own ThreadEntry.branch,
+            # fall back to epic.branch (legacy/lazy-registered trials).
+            branch = self._epic.branch
+            tf = await threads_repo.get_threads(self._root, self._project_id, self._epic_id)
+            entry = next((t for t in tf.threads if trial_id_of(t) == trial_id), None)
+            if entry is not None and entry.branch is not None:
+                branch = entry.branch
+            return await ensure_worktree_for_repo(
+                self._root,
+                self._project_id,
+                self._epic_id,
+                trial_id,
+                branch,
+                repo_name,
+                self._state_lock,
+                self._epic,
+            )
+
+        return _ensure
+
     def _resolve_mcp_tools_for_profile(self, server_names: list[str]) -> list[Any]:
         """Return MCP tools filtered to the given server names.
 
@@ -1742,6 +1800,7 @@ class EpicOrchestrator:
             extra_system_prompt=worker_extra_prompt,
             extra_tools=worker_mcp_tools,
             plugins=worker_plugins,
+            ensure_tree=self._make_tree_ensurer(),
         )
 
     async def _run_evaluator(
@@ -1816,6 +1875,7 @@ class EpicOrchestrator:
             extra_system_prompt=eval_extra_prompt,
             extra_tools=eval_mcp_tools,
             plugins=eval_plugins,
+            ensure_tree=self._make_tree_ensurer(),
         )
 
     # ------------------------------------------------------------------

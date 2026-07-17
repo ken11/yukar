@@ -32,6 +32,7 @@ from yukar.preview.browser import (
     init_browser_session_manager,
 )
 from yukar.preview.manager import (
+    DevServerError,
     DevServerManager,
     TrialKey,
     init_dev_server_manager,
@@ -303,3 +304,59 @@ class TestTargetResolution:
         again = await tools["server_stop"](repo="app")
         assert again["status"] == "success"
         assert "No dev server" in _text_of(again)
+
+
+class TestEagerWorktreeCreation:
+    """With an ``ensure_tree`` callback wired, browser_open on a repo with no
+    worktree yet CREATES the trial worktree instead of launching in the shared
+    base checkout (avoids the Next.js duplicate-instance collision + build
+    artifacts leaking into the user's checkout)."""
+
+    async def test_creates_trial_worktree_instead_of_base(
+        self, workspace: tuple[str, Epic, Path], managers: Any
+    ) -> None:
+        root, epic, _base = workspace
+        dev, _sessions = managers
+
+        async def _ensure(repo: str) -> Path:
+            wt = paths.worktree_dir(root, "p", "e1", "t1", repo)
+            wt.mkdir(parents=True, exist_ok=True)
+            (wt / "index.html").write_text(_BRANCH_HTML)
+            return wt
+
+        tools = {
+            t.tool_name: t
+            for t in await make_browser_overview_tools(
+                root, "p", "e1", epic, owner_id="manager-1", ensure_tree=_ensure
+            )
+        }
+
+        opened = await tools["browser_open"](repo="app")
+        assert opened["status"] == "success", _text_of(opened)
+        # Served the freshly-created worktree, NOT the base checkout.
+        assert "Branch App" in _text_of(opened)
+        assert dev.get_entry(_TRIAL_KEY) is not None
+        assert dev.get_entry(_BASE_KEY) is None
+
+    async def test_ensure_tree_failure_surfaces_as_tool_error(
+        self, workspace: tuple[str, Epic, Path], managers: Any
+    ) -> None:
+        root, epic, _base = workspace
+        dev, _sessions = managers
+
+        async def _ensure(repo: str) -> Path:
+            raise DevServerError("no active trial owns a worktree")
+
+        tools = {
+            t.tool_name: t
+            for t in await make_browser_overview_tools(
+                root, "p", "e1", epic, owner_id="manager-1", ensure_tree=_ensure
+            )
+        }
+
+        opened = await tools["browser_open"](repo="app")
+        assert opened["status"] == "error"
+        assert "no active trial" in _text_of(opened)
+        # Nothing launched — neither the worktree nor the base fallback.
+        assert dev.get_entry(_TRIAL_KEY) is None
+        assert dev.get_entry(_BASE_KEY) is None

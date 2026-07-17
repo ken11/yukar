@@ -30,7 +30,7 @@ from strands import tool
 
 from yukar.agents.context import AgentContext
 from yukar.agents.tools import browser_core
-from yukar.agents.tools.browser_core import BrowserTarget, load_dev_server_config
+from yukar.agents.tools.browser_core import BrowserTarget, TreeEnsurer, load_dev_server_config
 from yukar.config import paths
 from yukar.preview.browser import get_browser_session_manager
 from yukar.preview.manager import get_dev_server_manager
@@ -48,7 +48,9 @@ def _target_from_ctx(ctx: AgentContext, owner_id: str) -> BrowserTarget:
     )
 
 
-async def make_browser_tools_if_configured(ctx: AgentContext, owner_id: str) -> list[Any]:
+async def make_browser_tools_if_configured(
+    ctx: AgentContext, owner_id: str, ensure_tree: TreeEnsurer | None = None
+) -> list[Any]:
     """Return the browser bundle only when the assigned repo declares dev_server.
 
     Repos without a launch config never expose these tools, so the agent has
@@ -56,16 +58,23 @@ async def make_browser_tools_if_configured(ctx: AgentContext, owner_id: str) -> 
     """
     if await load_dev_server_config(ctx.workspace_root, ctx.project_id, ctx.repo_name) is None:
         return []
-    return make_browser_tools(ctx, owner_id)
+    return make_browser_tools(ctx, owner_id, ensure_tree=ensure_tree)
 
 
-def make_browser_tools(ctx: AgentContext, owner_id: str) -> list[Any]:
+def make_browser_tools(
+    ctx: AgentContext, owner_id: str, ensure_tree: TreeEnsurer | None = None
+) -> list[Any]:
     """Build the browser bundle for one agent, bound to its trial worktree.
 
     Args:
         ctx: Agent context (fixes project/epic/repo/worktree).
         owner_id: Worker/Evaluator thread id — keys this agent's own page so
             parallel agents never share navigation state.
+        ensure_tree: Creates a DEPENDENCY repo's worktree for this trial when a
+            ``{port:repo/service}`` reference targets a repo with no worktree
+            yet (the agent's OWN repo always has one — it runs inside it).
+            Without it a missing dependency worktree falls back to the base
+            checkout (see :data:`~yukar.agents.tools.browser_core.TreeEnsurer`).
 
     Returns:
         The tool list, or ``[]`` when the singletons are not initialised
@@ -99,7 +108,7 @@ def make_browser_tools(ctx: AgentContext, owner_id: str) -> list[Any]:
         Returns:
             url, title, and a ref-annotated page snapshot (see browser_read).
         """
-        return await browser_core.open_app(target, service)
+        return await browser_core.open_app(target, service, ensure_tree=ensure_tree)
 
     @tool
     async def browser_navigate(url: str) -> dict[str, Any]:

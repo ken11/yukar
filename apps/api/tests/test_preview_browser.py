@@ -260,6 +260,23 @@ class TestNormalizeOrigin:
         assert normalize_origin("not a url") == ""
         assert normalize_origin("/relative/path") == ""
 
+    def test_loopback_hosts_canonicalise_to_127(self) -> None:
+        # localhost / *.localhost / ::1 all fold to 127.0.0.1 so every spelling
+        # of the same local dev server compares equal to the allow-set entry
+        # (which the host always builds as http://127.0.0.1:PORT).
+        assert normalize_origin("http://localhost:3000/x") == "http://127.0.0.1:3000"
+        assert normalize_origin("http://LocalHost:3000") == "http://127.0.0.1:3000"
+        assert normalize_origin("http://app.localhost:5173/") == "http://127.0.0.1:5173"
+        assert normalize_origin("http://[::1]:8080/") == "http://127.0.0.1:8080"
+        assert normalize_origin("ws://localhost:3000/hmr") == "http://127.0.0.1:3000"
+
+    def test_loopback_matches_127_allow_set(self) -> None:
+        # The concrete bug: the browser navigates to the localhost URL a dev
+        # server prints, but the allow-set entry is 127.0.0.1 — they must match.
+        assert normalize_origin("http://localhost:3000") == normalize_origin(
+            "http://127.0.0.1:3000"
+        )
+
 
 class TestIsAllowed:
     def _session(self) -> BrowserSession:

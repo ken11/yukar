@@ -18,13 +18,19 @@ Resolving on every call gives:
 
 - trial worktree exists → verify the branch's actual state (the real trial id
   keys the servers, so a Worker/Evaluator of the same trial shares them);
-- no worktree yet (turn 0, or all trials archived) → fall back to the repo's
-  base checkout — the same "tools always work from turn 0" rule as
-  ``fs_read`` / ``repo_grep`` / ``run_tests`` in ``overview_tools``.  The
-  entry is keyed under the ``__base__`` sentinel trial id so a base-tree
-  server is never mistaken for (or reused as) the branch server once the
-  worktree appears mid-run.  A lingering base entry is swept by the run-end
-  ``stop_for_epic`` hook like every other entry of the epic.
+- no worktree yet (turn 0) → the worktree is CREATED eagerly via the
+  ``ensure_tree`` callback (same machinery as dispatch), so the server always
+  runs in an isolated per-trial tree.  Launching in the repo's base checkout
+  is a collision hazard: the base is a shared directory — the user's own dev
+  server may already run there, every epic would target the same tree, and
+  Next.js refuses a second dev instance from one directory — and the launch
+  would write build artifacts into the user's checkout.  At turn 0 the fresh
+  worktree equals the default-branch tip, so "reproduce current behaviour
+  before planning" still works.
+- no active trial at all (every manager trial archived) → fall back to the
+  repo's base checkout, keyed under the ``__base__`` sentinel trial id (no
+  trial exists to own a worktree).  A lingering base entry is swept by the
+  run-end ``stop_for_epic`` hook like every other entry of the epic.
 
 Only repos that declare a ``dev_server`` config are dispatchable; when no
 registered repo declares one the bundle is not built at all, so the agent has
@@ -40,13 +46,13 @@ from typing import Any
 from strands import tool
 
 from yukar.agents.tools import browser_core
-from yukar.agents.tools.browser_core import BASE_TRIAL_ID, BrowserTarget
+from yukar.agents.tools.browser_core import BASE_TRIAL_ID, BrowserTarget, TreeEnsurer
 from yukar.agents.tools.response_builder import make_error
 from yukar.agents.trials import resolve_active_trial_id
 from yukar.config import paths
 from yukar.models.epic import Epic
 from yukar.preview.browser import get_browser_session_manager
-from yukar.preview.manager import get_dev_server_manager
+from yukar.preview.manager import DevServerError, get_dev_server_manager
 from yukar.storage import project_repo
 
 # Registry/session key for base-checkout targets — shared with browser_core so
@@ -60,6 +66,7 @@ async def make_browser_overview_tools(
     epic_id: str,
     epic: Epic,
     owner_id: str,
+    ensure_tree: TreeEnsurer | None = None,
 ) -> list[Any]:
     """Build the repo-dispatching browser bundle for a Manager / Reviewer.
 
@@ -70,6 +77,11 @@ async def make_browser_overview_tools(
         epic: The loaded epic (active-trial resolution needs it).
         owner_id: Manager/Reviewer thread id — keys this agent's own page so
             it never shares navigation state with Workers/Evaluators.
+        ensure_tree: Creates the active trial's worktree for a repo when it
+            does not exist yet (orchestrator-provided; see
+            :data:`~yukar.agents.tools.browser_core.TreeEnsurer`).  Without it
+            a missing worktree falls back to the repo's base checkout — the
+            pre-eager-creation behaviour kept for callers outside a run.
 
     Returns:
         The tool list, or ``[]`` when the preview singletons are not
@@ -120,6 +132,14 @@ async def make_browser_overview_tools(
             )
         if trial_id is not None:
             worktree = paths.worktree_dir(root, project_id, epic_id, trial_id, repo)
+            if not await asyncio.to_thread(worktree.is_dir) and ensure_tree is not None:
+                # Eagerly create the trial worktree rather than launching in
+                # the shared base checkout (duplicate-instance collision +
+                # build-artifact pollution — see module docstring).
+                try:
+                    worktree = await ensure_tree(repo)
+                except DevServerError as exc:
+                    return None, make_error(str(exc))
             if await asyncio.to_thread(worktree.is_dir):
                 return (
                     BrowserTarget(
@@ -175,7 +195,7 @@ async def make_browser_overview_tools(
         if err is not None:
             return err
         assert target is not None  # _target_for returns a target whenever err is None
-        return await browser_core.open_app(target, service)
+        return await browser_core.open_app(target, service, ensure_tree=ensure_tree)
 
     @tool
     async def browser_navigate(url: str, repo: str = "") -> dict[str, Any]:
