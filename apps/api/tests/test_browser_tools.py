@@ -21,6 +21,7 @@ from yukar.agents.tools.browser_tools import (
     make_browser_tools,
     make_browser_tools_if_configured,
 )
+from yukar.config import paths
 from yukar.models.project import (
     DevServerConfig,
     DevService,
@@ -205,6 +206,18 @@ class TestBrowserFlow:
         image = shot["content"][1]["image"]
         assert image["format"] == "jpeg"
         assert image["source"]["bytes"][:2] == b"\xff\xd8"  # JPEG magic
+        # Unsaved shots leave no file behind.
+        shots_dir = paths.epic_screenshots_dir(ctx.workspace_root, ctx.project_id, ctx.epic_id)
+        assert not shots_dir.exists()
+
+        # save=True persists the same bytes under the epic docs folder.
+        saved = await tools["browser_screenshot"](save=True, label="my-shot")
+        assert saved["status"] == "success"
+        assert "docs/screenshots/" in _text_of(saved)
+        files = list(shots_dir.glob("*.jpg"))
+        assert len(files) == 1
+        assert "my-shot" in files[0].name
+        assert files[0].read_bytes()[:2] == b"\xff\xd8"
 
         console = await tools["browser_console"]()
         assert "hello-from-page" in _text_of(console)

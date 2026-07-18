@@ -285,22 +285,32 @@ async def make_browser_overview_tools(
         return await browser_core.press_key(target, key)
 
     @tool
-    async def browser_screenshot(full_page: bool = False, repo: str = "") -> dict[str, Any]:
+    async def browser_screenshot(
+        full_page: bool = False, save: bool = False, label: str = "", repo: str = ""
+    ) -> dict[str, Any]:
         """Take a screenshot of the current page (returns an image).
 
         Costs far more tokens than browser_read — use it when you need to
         judge visual design/layout, not to locate elements or read text.
 
+        Set save=True to also keep this screenshot in the epic's docs (the
+        user can then review it on the Docs page). Only save shots worth
+        keeping — saving every one wastes disk. Unsaved shots are still shown
+        to you here; they just leave no file behind.
+
         Args:
             full_page: Capture the whole scrollable page instead of the
                 1280x800 viewport.
+            save: Persist this screenshot under the epic docs folder.
+            label: Short slug for the saved file's name (e.g. "login-page");
+                defaults to the repo name. Ignored unless save=True.
             repo: Required — the repo whose page to capture (see browser_open).
         """
         target, err = await _target_for(repo)
         if err is not None:
             return err
         assert target is not None  # _target_for returns a target whenever err is None
-        return await browser_core.screenshot(target, full_page)
+        return await browser_core.screenshot(target, full_page, save=save, label=label or None)
 
     @tool
     async def browser_console(lines: int = 50, repo: str = "") -> dict[str, Any]:

@@ -168,6 +168,21 @@ def epic_doc_path(root: str, project_id: str, epic_id: str, filename: str) -> Pa
     return epic_docs_dir(root, project_id, epic_id) / filename
 
 
+def epic_screenshots_dir(root: str, project_id: str, epic_id: str) -> Path:
+    """Directory for browser-verification screenshots the agent chose to keep.
+
+    A subdirectory of the epic docs folder so the markdown doc loaders (which
+    glob ``docs/*.md`` non-recursively) never pick these binary files up, while
+    the screenshots still live "under the epic docs folder" the user browses.
+    """
+    return epic_docs_dir(root, project_id, epic_id) / "screenshots"
+
+
+def epic_screenshot_path(root: str, project_id: str, epic_id: str, filename: str) -> Path:
+    _validate_segment(filename, "screenshot filename")
+    return epic_screenshots_dir(root, project_id, epic_id) / filename
+
+
 # ---------------------------------------------------------------------------
 # Sessions (Strands FileSessionManager compatible layout)
 # ---------------------------------------------------------------------------

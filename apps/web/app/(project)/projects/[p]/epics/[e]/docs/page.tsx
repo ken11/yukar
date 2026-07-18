@@ -1,6 +1,12 @@
 import { DocsPageClient } from "@/components/features/editor/docs-page-client";
-import type { DocResponse } from "@/lib/api/endpoints";
-import { getEpicDoc, getProjectDoc, listEpicDocs, listProjectDocs } from "@/lib/api/endpoints";
+import type { DocResponse, ScreenshotMeta } from "@/lib/api/endpoints";
+import {
+  getEpicDoc,
+  getProjectDoc,
+  listEpicDocs,
+  listEpicScreenshots,
+  listProjectDocs,
+} from "@/lib/api/endpoints";
 import { isDefined } from "@/lib/type-guards";
 
 export default async function DocsPage({ params }: { params: Promise<{ p: string; e: string }> }) {
@@ -9,6 +15,7 @@ export default async function DocsPage({ params }: { params: Promise<{ p: string
   // Fetch project docs
   const projectFilenames = await listProjectDocs(p).catch(() => [] as string[]);
   const epicFilenames = await listEpicDocs(p, e).catch(() => [] as string[]);
+  const screenshots = await listEpicScreenshots(p, e).catch(() => [] as ScreenshotMeta[]);
 
   // Fetch content for first doc of each scope (lazy-load rest in client)
   const projectDocs = await Promise.all(
@@ -23,5 +30,12 @@ export default async function DocsPage({ params }: { params: Promise<{ p: string
     ...epicDocs.filter(isDefined).map((d) => ({ ...d, scope: "epic" as const })),
   ];
 
-  return <DocsPageClient projectId={p} epicId={e} initialDocs={allDocs} />;
+  return (
+    <DocsPageClient
+      projectId={p}
+      epicId={e}
+      initialDocs={allDocs}
+      initialScreenshots={screenshots}
+    />
+  );
 }

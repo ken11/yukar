@@ -270,6 +270,21 @@ const ja = {
     fileListLabel: "ドキュメントファイル一覧",
     saveDocLabel: "ドキュメントを保存",
   },
+  docsEditor: {
+    emptyMessage: "この Epic とプロジェクトにはドキュメントもスクリーンショットもありません。",
+    saveChanges: "変更を保存",
+    saving: "保存中…",
+    saved: "保存しました",
+    saveError: "保存に失敗しました",
+    screenshotsTab: "スクリーンショット",
+    screenshotsHeading: "保存されたスクリーンショット",
+    screenshotsEmpty:
+      "まだスクリーンショットはありません。ブラウザ検証中に、エージェントが残す価値のある一枚をここへ保存します。",
+    openFull: "原寸で開く",
+    deleteLabel: "スクリーンショットを削除",
+    deleteConfirm: "このスクリーンショットを削除しますか？",
+    deleteFailed: "削除に失敗しました",
+  },
   repos: {
     notConfigured: "このプロジェクトにリポジトリが設定されていません。",
     allowLabel: "許可",

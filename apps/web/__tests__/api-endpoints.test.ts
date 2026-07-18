@@ -2,7 +2,15 @@
  * Type-level behavior tests for endpoints.ts (fetch mock)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, createProject, getSettings, listProjects } from "../lib/api/endpoints";
+import {
+  ApiError,
+  createProject,
+  deleteEpicScreenshot,
+  epicScreenshotUrl,
+  getSettings,
+  listEpicScreenshots,
+  listProjects,
+} from "../lib/api/endpoints";
 
 // Mock global.fetch
 const mockFetch = vi.fn();
@@ -99,6 +107,37 @@ describe("getSettings", () => {
     const result = await getSettings();
     expect(result.workspace_root).toBe("~/yukar-projects");
     expect(result.llm?.provider).toBe("bedrock");
+  });
+});
+
+describe("epic screenshots", () => {
+  it("lists screenshots for an epic", async () => {
+    const shots = [{ filename: "20260718-143022-web.jpg", size_bytes: 4096, captured_at: "x" }];
+    mockFetch.mockResolvedValueOnce(mockResponse(200, shots));
+
+    const result = await listEpicScreenshots("p1", "EP-1");
+    expect(result).toHaveLength(1);
+    expect(result[0].filename).toBe("20260718-143022-web.jpg");
+
+    const call = mockFetch.mock.calls[0];
+    expect(call[0]).toContain("/api/projects/p1/epics/EP-1/screenshots");
+    expect(call[1].method).toBeUndefined();
+  });
+
+  it("builds a same-origin img URL with an encoded filename", () => {
+    expect(epicScreenshotUrl("p1", "EP-1", "a b.jpg")).toBe(
+      "/api/projects/p1/epics/EP-1/screenshots/a%20b.jpg",
+    );
+  });
+
+  it("deletes a screenshot via DELETE", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse(204, null));
+
+    await deleteEpicScreenshot("p1", "EP-1", "shot.jpg");
+
+    const call = mockFetch.mock.calls[0];
+    expect(call[0]).toContain("/api/projects/p1/epics/EP-1/screenshots/shot.jpg");
+    expect(call[1].method).toBe("DELETE");
   });
 });
 

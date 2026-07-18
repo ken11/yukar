@@ -38,6 +38,7 @@ from yukar.preview.manager import (
     get_dev_server_manager,
 )
 from yukar.storage.project_repo import get_repo
+from yukar.storage.screenshots_repo import save_epic_screenshot
 
 _ACTION_TIMEOUT_MS = 10_000
 _GOTO_TIMEOUT_MS = 30_000
@@ -363,8 +364,21 @@ async def press_key(target: BrowserTarget, key: str) -> dict[str, Any]:
     return make_success(f"Pressed {key}.")
 
 
-async def screenshot(target: BrowserTarget, full_page: bool = False) -> dict[str, Any]:
-    """JPEG screenshot of the current page as an image content block."""
+async def screenshot(
+    target: BrowserTarget,
+    full_page: bool = False,
+    *,
+    save: bool = False,
+    label: str | None = None,
+) -> dict[str, Any]:
+    """JPEG screenshot of the current page as an image content block.
+
+    When ``save`` is set the same bytes are also persisted under the epic docs
+    folder (``docs/screenshots/``) so the user can review them on the Docs
+    page; the saved relative path is appended to the result text.  Persisting
+    is opt-in on purpose — keeping every shot would waste disk, so the caller
+    decides which ones are worth retaining.
+    """
     session, err = await _session_or_error(target)
     if err is not None or session is None:
         return err or make_error(_NOT_AVAILABLE)
@@ -374,10 +388,24 @@ async def screenshot(target: BrowserTarget, full_page: bool = False) -> dict[str
         )
     except Exception as exc:
         return make_error(f"Screenshot failed: {exc}")
+
+    text = f"Screenshot of {session.page.url}"
+    if save:
+        try:
+            filename = await save_epic_screenshot(
+                target.workspace_root,
+                target.project_id,
+                target.epic_id,
+                data,
+                label=label or target.repo_name,
+            )
+            text += f"\nSaved to epic docs: docs/screenshots/{filename}"
+        except (OSError, ValueError) as exc:
+            text += f"\n(Could not save to epic docs: {exc})"
     return {
         "status": "success",
         "content": [
-            {"text": f"Screenshot of {session.page.url}"},
+            {"text": text},
             {"image": {"format": "jpeg", "source": {"bytes": data}}},
         ],
     }

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from httpx import AsyncClient
+
+from yukar.storage import screenshots_repo
+
+# Smallest bytes that start with the JPEG magic — enough to round-trip.
+_FAKE_JPEG = b"\xff\xd8\xff\xe0fake-jpeg-body"
 
 
 class TestDocsCRUD:
@@ -56,6 +63,67 @@ class TestDocsCRUD:
         r2 = await app_client.get("/api/projects/proj/epics/EP-1/docs/plan.md")
         assert r2.status_code == 200
         assert "Plan" in r2.json()["content"]
+
+
+class TestScreenshotsCRUD:
+    async def _setup(self, client: AsyncClient) -> None:
+        await client.post("/api/projects", json={"id": "proj", "name": "Proj", "repos": []})
+        await client.post("/api/projects/proj/epics", json={"title": "Epic"})
+
+    async def test_list_empty(self, app_client: AsyncClient) -> None:
+        await self._setup(app_client)
+        r = await app_client.get("/api/projects/proj/epics/EP-1/screenshots")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    async def test_list_after_save(
+        self, app_client: AsyncClient, tmp_workspace: Path
+    ) -> None:
+        await self._setup(app_client)
+        name = await screenshots_repo.save_epic_screenshot(
+            str(tmp_workspace), "proj", "EP-1", _FAKE_JPEG, label="login"
+        )
+        r = await app_client.get("/api/projects/proj/epics/EP-1/screenshots")
+        assert r.status_code == 200
+        rows = r.json()
+        assert [row["filename"] for row in rows] == [name]
+        assert rows[0]["size_bytes"] == len(_FAKE_JPEG)
+        assert "login" in name
+
+    async def test_get_bytes(self, app_client: AsyncClient, tmp_workspace: Path) -> None:
+        await self._setup(app_client)
+        name = await screenshots_repo.save_epic_screenshot(
+            str(tmp_workspace), "proj", "EP-1", _FAKE_JPEG
+        )
+        r = await app_client.get(f"/api/projects/proj/epics/EP-1/screenshots/{name}")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/jpeg"
+        assert r.content == _FAKE_JPEG
+
+    async def test_get_missing(self, app_client: AsyncClient) -> None:
+        await self._setup(app_client)
+        r = await app_client.get("/api/projects/proj/epics/EP-1/screenshots/nope.jpg")
+        assert r.status_code == 404
+
+    async def test_get_non_image_rejected(self, app_client: AsyncClient) -> None:
+        await self._setup(app_client)
+        r = await app_client.get("/api/projects/proj/epics/EP-1/screenshots/evil.txt")
+        assert r.status_code == 422
+
+    async def test_delete(self, app_client: AsyncClient, tmp_workspace: Path) -> None:
+        await self._setup(app_client)
+        name = await screenshots_repo.save_epic_screenshot(
+            str(tmp_workspace), "proj", "EP-1", _FAKE_JPEG
+        )
+        r = await app_client.delete(f"/api/projects/proj/epics/EP-1/screenshots/{name}")
+        assert r.status_code == 204
+        r2 = await app_client.get("/api/projects/proj/epics/EP-1/screenshots")
+        assert r2.json() == []
+
+    async def test_delete_missing(self, app_client: AsyncClient) -> None:
+        await self._setup(app_client)
+        r = await app_client.delete("/api/projects/proj/epics/EP-1/screenshots/nope.jpg")
+        assert r.status_code == 404
 
 
 class TestTasksCRUD:

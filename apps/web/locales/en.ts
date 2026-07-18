@@ -279,6 +279,21 @@ const en = {
     fileListLabel: "Document file list",
     saveDocLabel: "Save document",
   },
+  docsEditor: {
+    emptyMessage: "No documents or screenshots found for this epic or project.",
+    saveChanges: "Save Changes",
+    saving: "Saving…",
+    saved: "Saved",
+    saveError: "Save failed",
+    screenshotsTab: "Screenshots",
+    screenshotsHeading: "Saved screenshots",
+    screenshotsEmpty:
+      "No screenshots saved yet. During browser verification, an agent keeps the shots worth showing here.",
+    openFull: "Open full size",
+    deleteLabel: "Delete screenshot",
+    deleteConfirm: "Delete this screenshot?",
+    deleteFailed: "Delete failed",
+  },
   repos: {
     notConfigured: "No repositories configured for this project.",
     allowLabel: "Allow",

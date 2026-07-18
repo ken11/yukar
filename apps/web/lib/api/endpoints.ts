@@ -24,6 +24,7 @@ export type Task = components["schemas"]["Task"];
 export type PlanApproval = components["schemas"]["PlanApproval"];
 export type PlanApprovalRequest = components["schemas"]["PlanApprovalRequest"];
 export type DocResponse = components["schemas"]["DocResponse"];
+export type ScreenshotMeta = components["schemas"]["ScreenshotMeta"];
 export type DiffResult = components["schemas"]["DiffResult"];
 export type Settings = components["schemas"]["Settings"];
 export type LLMSettings = components["schemas"]["LLMSettings"];
@@ -393,6 +394,25 @@ export function putEpicDoc(
     method: "PUT",
     body,
   });
+}
+
+// ---- Screenshots (epic browser-verification captures) ----
+
+export function listEpicScreenshots(projectId: string, epicId: string): Promise<ScreenshotMeta[]> {
+  return apiFetch(`/api/projects/${projectId}/epics/${epicId}/screenshots`);
+}
+
+/** Same-origin URL for an `<img src>` — served as raw image bytes, not JSON. */
+export function epicScreenshotUrl(projectId: string, epicId: string, filename: string): string {
+  return `/api/projects/${projectId}/epics/${epicId}/screenshots/${encodeURIComponent(filename)}`;
+}
+
+export function deleteEpicScreenshot(
+  projectId: string,
+  epicId: string,
+  filename: string,
+): Promise<void> {
+  return apiFetch(epicScreenshotUrl(projectId, epicId, filename), { method: "DELETE" });
 }
 
 // ---- Git ----
