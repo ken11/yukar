@@ -25,6 +25,7 @@ export type PlanApproval = components["schemas"]["PlanApproval"];
 export type PlanApprovalRequest = components["schemas"]["PlanApprovalRequest"];
 export type DocResponse = components["schemas"]["DocResponse"];
 export type ScreenshotMeta = components["schemas"]["ScreenshotMeta"];
+export type DeckMeta = components["schemas"]["DeckMeta"];
 export type DiffResult = components["schemas"]["DiffResult"];
 export type Settings = components["schemas"]["Settings"];
 export type LLMSettings = components["schemas"]["LLMSettings"];
@@ -413,6 +414,27 @@ export function deleteEpicScreenshot(
   filename: string,
 ): Promise<void> {
   return apiFetch(epicScreenshotUrl(projectId, epicId, filename), { method: "DELETE" });
+}
+
+// ---- Decks (Manager-rendered .pptx under epic docs) ----
+
+export function listEpicDecks(projectId: string, epicId: string): Promise<DeckMeta[]> {
+  return apiFetch(`/api/projects/${projectId}/epics/${epicId}/decks`);
+}
+
+/** Same-origin URL for the .pptx download (served with Content-Disposition). */
+export function epicDeckUrl(projectId: string, epicId: string, path: string): string {
+  return `/api/projects/${projectId}/epics/${epicId}/decks/content?path=${encodeURIComponent(path)}`;
+}
+
+/** Same-origin URL for one slide preview `<img src>` — raw JPEG bytes. */
+export function epicDeckPreviewUrl(
+  projectId: string,
+  epicId: string,
+  path: string,
+  name: string,
+): string {
+  return `/api/projects/${projectId}/epics/${epicId}/decks/preview?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`;
 }
 
 // ---- Git ----

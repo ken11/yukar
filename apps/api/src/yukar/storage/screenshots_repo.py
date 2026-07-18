@@ -11,6 +11,7 @@ and listing are plain synchronous stats, matching ``docs_repo``.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +27,12 @@ _JST = ZoneInfo("Asia/Tokyo")
 
 _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 _LABEL_MAX = 40
+
+# Filename allocation is check-then-act (exists() loop → write); two agents
+# saving in the same JST second with the same label would otherwise compute
+# the same name and the later os.replace would clobber the earlier capture.
+# One process-wide lock serialises allocation+write (saves are rare).
+_save_lock = asyncio.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,14 +87,15 @@ async def save_epic_screenshot(
     slug = _slugify(label or "shot")
     stamp = datetime.now(_JST).strftime("%Y%m%d-%H%M%S")
     directory = paths.epic_screenshots_dir(root, project_id, epic_id)
-    base = f"{stamp}-{slug}"
-    filename = f"{base}.jpg"
-    counter = 2
-    while (directory / filename).exists():
-        filename = f"{base}-{counter}.jpg"
-        counter += 1
-    path = paths.epic_screenshot_path(root, project_id, epic_id, filename)
-    await atomic_write_bytes(path, data)
+    async with _save_lock:
+        base = f"{stamp}-{slug}"
+        filename = f"{base}.jpg"
+        counter = 2
+        while (directory / filename).exists():
+            filename = f"{base}-{counter}.jpg"
+            counter += 1
+        path = paths.epic_screenshot_path(root, project_id, epic_id, filename)
+        await atomic_write_bytes(path, data)
     return filename
 
 

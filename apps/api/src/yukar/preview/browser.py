@@ -361,6 +361,43 @@ class BrowserSessionManager:
         )
         return self._browser
 
+    async def rendering_context(self, *, width: int, height: int) -> BrowserContext:
+        """Fresh context on the shared Chromium for HOST-side HTML rendering.
+
+        Used by the slide-preview renderer (slides/preview.py): the host feeds
+        it fully self-contained content via ``page.set_content``.  Unlike agent
+        sessions there is no allow-set to consult, so the gate is absolute —
+        every network request is aborted (data: URIs never hit the router).
+        The caller owns the context and must close it.
+        """
+        async with self._lock:
+            browser = await self._ensure_browser()
+        context = await browser.new_context(
+            viewport={"width": width, "height": height}, service_workers="block"
+        )
+        # Setup awaits can be interrupted (run-stop cancellation, browser
+        # crash); close the just-created context on ANY exit so it never
+        # lingers unreferenced in the shared Chromium until close_all.
+        try:
+            # Same non-HTTP egress neutering as agent sessions: route
+            # interception cannot see WebRTC data channels, so the init script
+            # closes that hole even though rendered content is host-authored.
+            await context.add_init_script(_NEUTER_NON_HTTP_EGRESS_JS)
+
+            async def _deny(route: Route) -> None:
+                await route.abort("blockedbyclient")
+
+            async def _deny_ws(ws: WebSocketRoute) -> None:
+                await ws.close()
+
+            await context.route("**/*", _deny)
+            await context.route_web_socket("**/*", _deny_ws)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await context.close()
+            raise
+        return context
+
     def get_open_session(self, key: SessionKey) -> BrowserSession | None:
         """Return the owner's session iff it exists with a live page, else None.
 

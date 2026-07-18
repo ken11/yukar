@@ -293,6 +293,11 @@ const en = {
     deleteLabel: "Delete screenshot",
     deleteConfirm: "Delete this screenshot?",
     deleteFailed: "Delete failed",
+    decksTab: "Slides",
+    decksEmpty:
+      "No slide decks yet. When the Manager builds a deck, the .pptx and its previews appear here.",
+    deckDownload: "Download",
+    deckNoPreviews: "No previews yet (they are generated on the next render).",
   },
   repos: {
     notConfigured: "No repositories configured for this project.",

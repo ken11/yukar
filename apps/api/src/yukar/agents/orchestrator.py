@@ -807,6 +807,12 @@ class EpicOrchestrator:
         # Manager gets read/write docs tools (project + epic level).
         manager_docs_tools = make_manager_docs_tools(root, project_id, epic_id)
 
+        # Manager-only slide-deck tools: decks are epic artifacts authored and
+        # rendered inside the epic docs folder (never a worktree/branch).
+        from yukar.agents.tools.pptx_tools import make_manager_pptx_tools
+
+        manager_pptx_tools = make_manager_pptx_tools(root, project_id, epic_id)
+
         # A3-01: Sensitive-file write event publisher.
         # Used by write_agent_config, write_skill, write_agent_profile, and
         # remember to surface writes as SSE events.
@@ -1011,6 +1017,7 @@ class EpicOrchestrator:
                 *manager_ctx_tools,
                 *browser_overview_tools,
                 *manager_docs_tools,
+                *manager_pptx_tools,
                 *manager_agent_config_tools,
                 *manager_profile_tools,
                 *manager_skill_mcp_tools,

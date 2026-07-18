@@ -19,6 +19,7 @@ dependencies = [
     "httpx>=0.28.1",
     "anthropic>=0.105.2",
     "playwright>=1.61.0",
+    "python-pptx>=1.0.2",
 ]
 
 [project.scripts]

@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from yukar.api.routers import (
+    decks,
     docs,
     epics,
     git,
@@ -324,6 +325,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router)
     app.include_router(docs.router)
     app.include_router(screenshots.router)
+    app.include_router(decks.router)
     app.include_router(git.router)
     app.include_router(search.router)
     app.include_router(settings_router.router)

@@ -284,6 +284,11 @@ const ja = {
     deleteLabel: "スクリーンショットを削除",
     deleteConfirm: "このスクリーンショットを削除しますか？",
     deleteFailed: "削除に失敗しました",
+    decksTab: "スライド",
+    decksEmpty:
+      "まだスライドはありません。Manager がスライド資料を作成すると、ここに .pptx とプレビューが並びます。",
+    deckDownload: "ダウンロード",
+    deckNoPreviews: "プレビューはまだありません(次のレンダリングで生成されます)。",
   },
   repos: {
     notConfigured: "このプロジェクトにリポジトリが設定されていません。",

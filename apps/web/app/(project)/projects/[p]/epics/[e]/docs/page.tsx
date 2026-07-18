@@ -1,8 +1,9 @@
 import { DocsPageClient } from "@/components/features/editor/docs-page-client";
-import type { DocResponse, ScreenshotMeta } from "@/lib/api/endpoints";
+import type { DeckMeta, DocResponse, ScreenshotMeta } from "@/lib/api/endpoints";
 import {
   getEpicDoc,
   getProjectDoc,
+  listEpicDecks,
   listEpicDocs,
   listEpicScreenshots,
   listProjectDocs,
@@ -16,6 +17,7 @@ export default async function DocsPage({ params }: { params: Promise<{ p: string
   const projectFilenames = await listProjectDocs(p).catch(() => [] as string[]);
   const epicFilenames = await listEpicDocs(p, e).catch(() => [] as string[]);
   const screenshots = await listEpicScreenshots(p, e).catch(() => [] as ScreenshotMeta[]);
+  const decks = await listEpicDecks(p, e).catch(() => [] as DeckMeta[]);
 
   // Fetch content for first doc of each scope (lazy-load rest in client)
   const projectDocs = await Promise.all(
@@ -36,6 +38,7 @@ export default async function DocsPage({ params }: { params: Promise<{ p: string
       epicId={e}
       initialDocs={allDocs}
       initialScreenshots={screenshots}
+      initialDecks={decks}
     />
   );
 }
