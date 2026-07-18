@@ -292,6 +292,8 @@ async def make_browser_overview_tools(
 
         Costs far more tokens than browser_read — use it when you need to
         judge visual design/layout, not to locate elements or read text.
+        Animations are frozen at their settled end state for a deterministic
+        image.
 
         Set save=True to also keep this screenshot in the epic's docs (the
         user can then review it on the Docs page). Only save shots worth
@@ -299,8 +301,12 @@ async def make_browser_overview_tools(
         to you here; they just leave no file behind.
 
         Args:
-            full_page: Capture the whole scrollable page instead of the
-                1280x800 viewport.
+            full_page: False (default) captures only what is visible in the
+                1280x800 viewport. True captures the whole scrollable page:
+                the page is scrolled once to trigger lazy-loaded content,
+                captured from the top, and cut at 6000px tall for very long
+                pages (the result says so — scroll and take viewport shots
+                to inspect the rest).
             save: Persist this screenshot under the epic docs folder.
             label: Short slug for the saved file's name (e.g. "login-page");
                 defaults to the repo name. Ignored unless save=True.

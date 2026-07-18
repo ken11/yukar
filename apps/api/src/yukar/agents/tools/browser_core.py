@@ -17,6 +17,7 @@ response_builder) so wrappers only add the LLM-facing docstrings.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,53 @@ from yukar.storage.screenshots_repo import save_epic_screenshot
 _ACTION_TIMEOUT_MS = 10_000
 _GOTO_TIMEOUT_MS = 30_000
 _SCREENSHOT_JPEG_QUALITY = 70
+
+_FULL_PAGE_MAX_PX = 6000
+"""Size cap (both dimensions — in practice height is the one exceeded) for
+full-page captures.  Chromium rasterises beyond-viewport shots as one surface
+(corrupt past its ~16k texture limit), vision APIs reject images with any
+dimension over 8000px, and a taller strip is downscaled into illegibility
+anyway — past a few viewports the agent should scroll and take viewport shots
+instead.  The wrapper docstrings in browser_tools/browser_overview_tools
+mention this value; keep them in sync."""
+
+_READ_SCROLL_JS = "() => ({ x: window.scrollX, y: window.scrollY })"
+
+# behavior:"instant" everywhere — plain scrollTo obeys a page's CSS
+# `scroll-behavior: smooth`, which would animate for hundreds of ms and let
+# the capture fire before the page actually reaches the target position.
+_RESTORE_SCROLL_JS = '({x, y}) => window.scrollTo({ top: y, left: x, behavior: "instant" })'
+
+_PREPARE_FULL_PAGE_JS = """
+async (maxPx) => {
+  const doc = document.documentElement;
+  const body = document.body;
+  const frame = () =>
+    new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const jump = (top) => window.scrollTo({ top, left: 0, behavior: "instant" });
+  const pageHeight = () =>
+    Math.max(doc.scrollHeight, body ? body.scrollHeight : 0);
+  // Walk down the page once so lazy-loaded content (loading="lazy",
+  // IntersectionObserver mounts) actually renders in the capture.  The limit
+  // is measured ONCE up front so infinite-scroll feeds cannot keep growing
+  // the walk.
+  const step = Math.max(window.innerHeight, 1);
+  const limit = Math.min(pageHeight(), maxPx);
+  for (let y = 0; y <= limit; y += step) {
+    jump(y);
+    await frame();
+  }
+  // Park at the top: captureBeyondViewport paints fixed/sticky elements at
+  // the CURRENT scroll offset, so capturing while scrolled mid-page floats
+  // them into the middle of the image.
+  jump(0);
+  await frame();
+  return {
+    width: Math.max(doc.scrollWidth, body ? body.scrollWidth : 0),
+    height: pageHeight(),
+  };
+}
+"""
 
 _NOT_AVAILABLE = "Browser verification is not available in this process."
 _NOT_OPEN = "No dev server is running for this trial. Call browser_open first."
@@ -373,6 +421,13 @@ async def screenshot(
 ) -> dict[str, Any]:
     """JPEG screenshot of the current page as an image content block.
 
+    Full-page captures are hardened against the ways Chromium's single-pass
+    beyond-viewport render breaks on long pages: the page is walked once to
+    trigger lazy-loaded content and parked at the top (fixed/sticky elements
+    paint at the current scroll offset), animations are frozen, the capture
+    is clipped at ``_FULL_PAGE_MAX_PX`` (with a note when the page was cut),
+    and the original scroll position is restored afterwards.
+
     When ``save`` is set the same bytes are also persisted under the epic docs
     folder (``docs/screenshots/``) so the user can review them on the Docs
     page; the saved relative path is appended to the result text.  Persisting
@@ -382,14 +437,66 @@ async def screenshot(
     session, err = await _session_or_error(target)
     if err is not None or session is None:
         return err or make_error(_NOT_AVAILABLE)
+
+    kwargs: dict[str, Any] = {
+        "type": "jpeg",
+        "quality": _SCREENSHOT_JPEG_QUALITY,
+        "full_page": full_page,
+        "animations": "disabled",
+    }
+    truncation_note = ""
+    restore_scroll: dict[str, Any] | None = None
+    if full_page:
+        # Every evaluate gets an outer wait_for: Playwright's evaluate is not
+        # covered by the default timeout, and a page that starves rAF (busy
+        # renderer loop) would otherwise hang the tool call forever.
+        evaluate_timeout = _ACTION_TIMEOUT_MS / 1000
+        # Scroll position is read SEPARATELY before the walk so a failure
+        # mid-walk still leaves us able to restore where the agent was.
+        with contextlib.suppress(Exception):
+            restore_scroll = await asyncio.wait_for(
+                session.page.evaluate(_READ_SCROLL_JS), timeout=evaluate_timeout
+            )
+        metrics: dict[str, Any] | None = None
+        try:
+            metrics = await asyncio.wait_for(
+                session.page.evaluate(_PREPARE_FULL_PAGE_JS, _FULL_PAGE_MAX_PX),
+                timeout=evaluate_timeout,
+            )
+            # Give lazy-loaded images the scroll walk just requested a moment
+            # to arrive and decode before the capture.
+            await asyncio.sleep(0.2)
+        except Exception:
+            # Best effort — a mid-navigation page can kill the evaluate; the
+            # capped capture below still stands a chance.
+            metrics = None
+        # The clip is applied UNCONDITIONALLY (the driver trims it to the
+        # document rect, so short pages are unaffected): even when the prepare
+        # walk failed and the page size is unknown, an over-tall capture must
+        # never reach Chromium's raster limit or the vision API's 8000px cap.
+        clip_width = _FULL_PAGE_MAX_PX
+        if metrics is not None:
+            clip_width = min(metrics["width"], _FULL_PAGE_MAX_PX)
+            if metrics["height"] > _FULL_PAGE_MAX_PX:
+                truncation_note = (
+                    f"\n(Page is {metrics['height']}px tall — captured the top "
+                    f"{_FULL_PAGE_MAX_PX}px. Scroll down and take viewport "
+                    "screenshots to inspect the rest.)"
+                )
+        kwargs["clip"] = {"x": 0, "y": 0, "width": clip_width, "height": _FULL_PAGE_MAX_PX}
     try:
-        data = await session.page.screenshot(
-            type="jpeg", quality=_SCREENSHOT_JPEG_QUALITY, full_page=full_page
-        )
+        data = await session.page.screenshot(**kwargs)
     except Exception as exc:
         return make_error(f"Screenshot failed: {exc}")
+    finally:
+        if restore_scroll is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    session.page.evaluate(_RESTORE_SCROLL_JS, restore_scroll),
+                    timeout=_ACTION_TIMEOUT_MS / 1000,
+                )
 
-    text = f"Screenshot of {session.page.url}"
+    text = f"Screenshot of {session.page.url}{truncation_note}"
     if save:
         try:
             filename = await save_epic_screenshot(

@@ -58,6 +58,22 @@ _PAGE2_HTML = (
     "<body><h1>Second</h1></body></html>"
 )
 
+_MID_HTML = (
+    "<!DOCTYPE html><html><head><title>Mid</title><style>body{margin:0}</style></head>"
+    '<body><div style="height:3000px;background:#00f"></div></body></html>'
+)
+
+_TALL_HTML = (
+    # scroll-behavior:smooth is part of the fixture on purpose: plain
+    # scrollTo would animate under it, letting the capture fire before the
+    # page reaches the top — the prepare walk must use instant jumps.
+    "<!DOCTYPE html><html><head><title>Tall</title>"
+    "<style>body{margin:0}html{scroll-behavior:smooth}</style></head>"
+    '<body><header style="position:fixed;top:0;left:0;right:0;height:100px;'
+    'background:#f00"></header>'
+    '<div style="height:20000px;background:#00f"></div></body></html>'
+)
+
 
 def _dev_server_config() -> DevServerConfig:
     return DevServerConfig(
@@ -277,6 +293,69 @@ class TestBrowserFlow:
         # Re-open works after an explicit stop.
         reopened = await tools["browser_open"]()
         assert reopened["status"] == "success", _text_of(reopened)
+
+
+class TestFullPageScreenshot:
+    """Long-page captures — the beyond-viewport render path that used to break."""
+
+    async def test_full_page_capture_on_long_pages(
+        self, ctx: AgentContext, managers: Any
+    ) -> None:
+        from io import BytesIO
+
+        from PIL import Image
+
+        from yukar.agents.tools.browser_core import _FULL_PAGE_MAX_PX
+        from yukar.preview.browser import SessionKey
+
+        _dev, sessions = managers
+        (ctx.worktree_path / "mid.html").write_text(_MID_HTML)
+        (ctx.worktree_path / "tall.html").write_text(_TALL_HTML)
+        tools = _tools_by_name(make_browser_tools(ctx, "worker-1"))
+        opened = await tools["browser_open"]()
+        assert opened["status"] == "success", _text_of(opened)
+
+        # Page under the cap: the whole 3000px document lands in one image.
+        navigated = await tools["browser_navigate"](url="/mid.html")
+        assert navigated["status"] == "success", _text_of(navigated)
+        shot = await tools["browser_screenshot"](full_page=True)
+        assert shot["status"] == "success", _text_of(shot)
+        image = Image.open(BytesIO(shot["content"][1]["image"]["source"]["bytes"]))
+        assert image.height == 3000
+        assert "captured the top" not in _text_of(shot)
+
+        # Page over the cap, scrolled mid-way beforehand: the capture starts
+        # at the top of the document, is cut at the cap (and says so), the
+        # fixed header paints at y=0 rather than at the scroll offset, and
+        # the agent's scroll position survives the shot.
+        navigated = await tools["browser_navigate"](url="/tall.html")
+        assert navigated["status"] == "success", _text_of(navigated)
+        session = sessions.get_open_session(
+            SessionKey(project_id="p", epic_id="e1", trial_id="t1", owner_id="worker-1")
+        )
+        assert session is not None
+        # instant: the fixture's smooth scrolling would otherwise still be
+        # animating when the tool reads the position it must restore.
+        await session.page.evaluate(
+            'window.scrollTo({top: 3000, behavior: "instant"})'
+        )
+
+        shot = await tools["browser_screenshot"](full_page=True)
+        assert shot["status"] == "success", _text_of(shot)
+        assert f"captured the top {_FULL_PAGE_MAX_PX}px" in _text_of(shot)
+        image = Image.open(BytesIO(shot["content"][1]["image"]["source"]["bytes"]))
+        assert image.height == _FULL_PAGE_MAX_PX
+        rgb = image.convert("RGB")
+        header_pixel = rgb.getpixel((10, 10))
+        assert isinstance(header_pixel, tuple)
+        red_r, _g, red_b = header_pixel
+        assert red_r > 150 and red_b < 100  # fixed header at the very top
+        # Where the header would land if painted at the 3000px scroll offset.
+        body_pixel = rgb.getpixel((10, 3050))
+        assert isinstance(body_pixel, tuple)
+        body_r, _g, body_b = body_pixel
+        assert body_b > 150 and body_r < 100
+        assert await session.page.evaluate("window.scrollY") == 3000
 
 
 class TestCrossRepoFlow:
