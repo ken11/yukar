@@ -765,6 +765,7 @@ class EpicOrchestrator:
             epic_id,
             run_id,
             self._tasks_holder,
+            state_lock=self._state_lock,
         )
         dispatch_tool = self._make_dispatch_tool()
         read_branch_diff_tool = self._make_read_branch_diff_tool()
@@ -1277,11 +1278,19 @@ class EpicOrchestrator:
     async def _is_plan_approved(self) -> bool:
         """Whether the CURRENT task plan snapshot has a recorded user approval.
 
-        Reads ``plan_approval.yaml`` from disk on every call (no in-memory
-        cache) so an approval recorded via REST while this run is live — or
-        parked awaiting input — takes effect on the very next check.  With the
-        gate disabled (``require_plan_approval=False`` / reviewer role) every
-        plan counts as approved.
+        Reads BOTH ``plan_approval.yaml`` AND ``tasks.yaml`` from disk on every
+        call (no in-memory cache).  The tasks must come from disk, not from
+        ``_tasks_holder``: the REST surface the user approves through hashes the
+        on-disk plan, so hashing anything else lets the two verdicts diverge
+        (e.g. a plan string that YAML round-trips inexactly, or a task_update
+        whose disk write failed) — the UI then shows "approved" while dispatch
+        rejects forever.  Disk is the single source of truth for the approval
+        question: "did the user approve the plan as they saw it?".
+
+        An approval recorded via REST while this run is live — or parked
+        awaiting input — takes effect on the very next check.  With the gate
+        disabled (``require_plan_approval=False`` / reviewer role) every plan
+        counts as approved.
         """
         if not self._require_plan_approval:
             return True
@@ -1290,7 +1299,8 @@ class EpicOrchestrator:
         )
         if approval is None:
             return False
-        return approval.tasks_hash == compute_plan_hash(self._tasks_holder[0].tasks)
+        tasks_file = await tasks_repo.get_tasks(self._root, self._project_id, self._epic_id)
+        return approval.tasks_hash == compute_plan_hash(tasks_file.tasks)
 
     def _make_dispatch_tool(self) -> Any:
         """Return the ``dispatch`` Strands tool bound to this orchestrator."""

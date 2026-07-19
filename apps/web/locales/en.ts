@@ -273,6 +273,11 @@ const en = {
     noTasks: "No tasks yet.",
     planApproved: "Plan approved",
     planNotApproved: "Plan not approved",
+    revokeApproval: "Revoke approval",
+    approvalRevoked: "Plan approval revoked.",
+    revokeFailed: "Failed to revoke the approval",
+    approvedButWakeFailed:
+      "Approval recorded. The agent could not be notified — reply in the conversation to resume.",
   },
   projectDocs: {
     emptyMessage: "No documents found for this project.",

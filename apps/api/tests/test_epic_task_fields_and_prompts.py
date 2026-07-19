@@ -233,6 +233,35 @@ class TestTaskUpdateToolContract:
 
         assert tasks_holder[0].tasks[0].contract == "new contract"
 
+    async def test_concurrent_task_updates_lose_nothing(self, tmp_path: Path) -> None:
+        """Strands executes one assistant message's tool calls CONCURRENTLY:
+        two task_update calls each snapshot the shared TasksFile for the
+        disk-first write, so without serialisation the later write lands
+        WITHOUT the earlier call's task (lost update on disk while memory
+        keeps both — the plan the user then approves is missing a task)."""
+        import asyncio
+
+        from yukar.agents.orchestrator import _make_task_update_tool
+        from yukar.events import bus as event_bus
+        from yukar.models.task import TasksFile
+        from yukar.storage import tasks_repo
+
+        root = str(tmp_path / "ws")
+        tasks_holder: list[TasksFile] = [TasksFile()]
+        tool = _make_task_update_tool(root, "p", "EP-1", "r1", tasks_holder)
+
+        async with event_bus.subscribe("p", "EP-1"):
+            await asyncio.gather(
+                tool(task_id="T1", title="one", contract="a"),
+                tool(task_id="T2", title="two", contract="b"),
+                tool(task_id="T3", title="three", contract="c"),
+            )
+
+        on_disk = await tasks_repo.get_tasks(root, "p", "EP-1")
+        assert sorted(t.id for t in on_disk.tasks) == ["T1", "T2", "T3"]
+        assert sorted(t.id for t in tasks_holder[0].tasks) == ["T1", "T2", "T3"]
+        assert on_disk.progress.total == 3
+
 
 # ---------------------------------------------------------------------------
 # 4. Manager prompt: acceptance_criteria injection

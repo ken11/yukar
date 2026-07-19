@@ -23,6 +23,14 @@ def _make_yaml() -> YAML:
     yaml = YAML()
     yaml.default_flow_style = False
     yaml.preserve_quotes = True
+    # Never wrap long lines.  ruamel's emitter folds long double-quoted
+    # scalars at ~80 columns, and a fold landing right after an escaped
+    # backslash (e.g. a contract containing `rg '\bfoo\b'`) is emitted
+    # WITHOUT a continuation backslash — the physical line break then reads
+    # back as a phantom space (`settings\.yaml` → `settings\ .yaml`), so the
+    # stored string no longer equals the written one (plan-hash divergence,
+    # corrupted shell commands).  Content fidelity beats pretty wrapping.
+    yaml.width = 2**31
     return yaml
 
 

@@ -7,6 +7,7 @@ import type { RunState, Task, TasksResponse } from "@/lib/api/endpoints";
 import { getRunState, getTasks } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { useT } from "@/lib/i18n/provider";
+import { PlanApprovalControl } from "./plan-approval-control";
 import { TaskList } from "./task-list";
 
 interface TasksPageClientProps {
@@ -43,7 +44,9 @@ export function TasksPageClient({ projectId, epicId, initialTasksFile }: TasksPa
   return (
     <div className="p-6">
       <div className="mb-6 flex items-start justify-between">
-        <div className="flex items-center gap-3">
+        {/* flex-wrap: on narrow (mobile) widths the approval control wraps
+            below the counters instead of overflowing the row. */}
+        <div className="flex flex-wrap items-center gap-3">
           <p className="text-body-sm text-on-surface-variant">
             {done}/{total} completed
           </p>
@@ -71,6 +74,9 @@ export function TasksPageClient({ projectId, epicId, initialTasksFile }: TasksPa
               {tasksFile.plan_approved ? t("tasks.planApproved") : t("tasks.planNotApproved")}
             </span>
           )}
+          {/* Always-available approval lever — works from backend truth even
+              when the conversation banner's conditions fail to line up. */}
+          <PlanApprovalControl projectId={projectId} epicId={epicId} tasksFile={tasksFile} />
           {runState?.run_id && (
             <RunCostBadge
               projectId={projectId}

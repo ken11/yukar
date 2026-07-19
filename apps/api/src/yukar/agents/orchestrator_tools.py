@@ -15,6 +15,7 @@ resolvable regardless of which module calls the factory.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -35,6 +36,7 @@ def _make_task_update_tool(
     run_id: str,
     _tasks_holder: list[TasksFile],
     on_change: Callable[[], None] | None = None,
+    state_lock: asyncio.Lock | None = None,
 ) -> Any:
     """Return a Strands tool that lets the Manager update tasks.yaml.
 
@@ -46,8 +48,17 @@ def _make_task_update_tool(
     a caller can react to a plan change.  Approval needs no invalidation hook:
     the dispatch gate compares the CURRENT plan hash against the recorded
     approval on every call, so a changed plan simply stops matching.
+
+    ``state_lock`` serialises the copy→save→commit cycle.  Strands runs the
+    tool calls of one assistant message CONCURRENTLY, so two task_update calls
+    would otherwise each snapshot the shared TasksFile before the other's
+    commit — the later disk write then lacks the earlier task (lost update).
+    Passing the orchestrator's state lock also serialises against dispatch's
+    status flips, which mutate the same shared file under that lock.
     """
     from strands import tool
+
+    lock = state_lock or asyncio.Lock()
 
     @tool
     async def task_update(
@@ -81,38 +92,49 @@ def _make_task_update_tool(
         Returns:
             Confirmation dict with ``task_id`` and ``status``.
         """
-        tf = _tasks_holder[0]
-        # Find existing or create new.
-        existing = next((t for t in tf.tasks if t.id == task_id), None)
-        if existing is not None:
-            existing.title = title
-            existing.status = status
-            if repo is not None:
-                existing.repo = repo
-            if depends_on is not None:
-                existing.depends_on = depends_on
-            if contract:
-                existing.contract = contract
-            if agent_profile:
-                existing.agent = agent_profile
-        else:
-            tf.tasks.append(
-                Task(
-                    id=task_id,
-                    title=title,
-                    status=status,
-                    repo=repo,
-                    depends_on=depends_on or [],
-                    contract=contract,
-                    agent=agent_profile or None,
+        def _apply(target: TasksFile) -> None:
+            """Find-or-create the task on *target* and recompute progress."""
+            existing = next((t for t in target.tasks if t.id == task_id), None)
+            if existing is not None:
+                existing.title = title
+                existing.status = status
+                if repo is not None:
+                    existing.repo = repo
+                if depends_on is not None:
+                    existing.depends_on = depends_on
+                if contract:
+                    existing.contract = contract
+                if agent_profile:
+                    existing.agent = agent_profile
+            else:
+                target.tasks.append(
+                    Task(
+                        id=task_id,
+                        title=title,
+                        status=status,
+                        repo=repo,
+                        depends_on=depends_on or [],
+                        contract=contract,
+                        agent=agent_profile or None,
+                    )
                 )
-            )
-        # Recompute progress.
-        done_count = sum(1 for t in tf.tasks if t.status == "done")
-        tf.progress = TaskProgress(done=done_count, total=len(tf.tasks))
-        _tasks_holder[0] = tf
-        # Persist.
-        await tasks_repo.save_tasks(root, project_id, epic_id, tf)
+            done_count = sum(1 for t in target.tasks if t.status == "done")
+            target.progress = TaskProgress(done=done_count, total=len(target.tasks))
+
+        # Persist FIRST (on a copy), then commit to the shared in-memory file.
+        # The reverse order let a failed disk write leave the holder ahead of
+        # tasks.yaml: the plan-approval gate and the REST surface then disagree
+        # until the run is restarted.  Memory must never be ahead of disk.
+        # The commit re-applies the same change in place so Task references
+        # held by a concurrently running dispatch stay valid.  The whole cycle
+        # runs under the lock — see the factory docstring for why.
+        async with lock:
+            tf = _tasks_holder[0]
+            persisted = tf.model_copy(deep=True)
+            _apply(persisted)
+            await tasks_repo.save_tasks(root, project_id, epic_id, persisted)
+            _apply(tf)
+            _tasks_holder[0] = tf
         # Notify the orchestrator that the plan may have changed.
         if on_change is not None:
             on_change()

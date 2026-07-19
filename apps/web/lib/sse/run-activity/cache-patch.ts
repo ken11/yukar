@@ -138,7 +138,7 @@ export function applyRunCachePatch(
       const key = queryKeys.tasks.get(projectId, epicId);
       const prevTasks = qc.getQueryData<TasksFile>(key);
       const cachedTask = (prevTasks?.tasks ?? []).find((t) => t.id === event.task_id);
-      if (prevTasks && (event.plan_changed || !cachedTask)) {
+      if (event.plan_changed || !cachedTask) {
         // The plan SNAPSHOT may have changed — the Manager's task_update tool
         // (plan_changed=true) can touch any plan-defining field (title/repo/
         // depends_on/contract/agent), most of which this event does not carry,

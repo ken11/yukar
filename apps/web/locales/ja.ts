@@ -264,6 +264,11 @@ const ja = {
     noTasks: "まだタスクがありません。",
     planApproved: "プラン承認済み",
     planNotApproved: "プラン未承認",
+    revokeApproval: "承認を取り消す",
+    approvalRevoked: "プランの承認を取り消しました。",
+    revokeFailed: "承認の取り消しに失敗しました",
+    approvedButWakeFailed:
+      "承認を記録しました。エージェントへの通知は送れなかったので、会話から返信すると再開します。",
   },
   projectDocs: {
     emptyMessage: "このプロジェクトにはドキュメントがありません。",

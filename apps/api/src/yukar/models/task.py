@@ -15,10 +15,27 @@ import json
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _normalize_line_breaks(value: str) -> str:
+    """Collapse CR/CRLF and U+0085 (NEL) to plain ``\\n``.
+
+    ruamel emits U+0085 raw inside a scalar, and the YAML parser then folds it
+    into a space on reload — so a plan field containing NEL hashes differently
+    in memory than after a disk round-trip, and the plan-approval gate and the
+    REST surface disagree forever ("UI says approved, dispatch says not").
+    Normalising at the model boundary makes every constructed Task identical
+    to its persisted form.
+    """
+    return value.replace("\r\n", "\n").replace("\r", "\n").replace("\x85", "\n")
 
 
 class Task(BaseModel):
+    # validate_assignment: task_update mutates existing tasks via attribute
+    # assignment — normalisation must apply there too, not only on construction.
+    model_config = ConfigDict(validate_assignment=True)
+
     id: str  # e.g. "T1"
     title: str
     status: Literal["todo", "in_progress", "done", "blocked"] = "todo"
@@ -27,6 +44,15 @@ class Task(BaseModel):
     thread: str | None = None  # linked thread id
     contract: str = ""  # what to build + how to verify it (spec B2/F3)
     agent: str | None = None  # assigned AgentProfile name; None = default role config
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _stable_yaml_round_trip(cls, v: object) -> object:
+        if isinstance(v, str):
+            return _normalize_line_breaks(v)
+        if isinstance(v, list):
+            return [_normalize_line_breaks(x) if isinstance(x, str) else x for x in v]
+        return v
 
 
 class TaskProgress(BaseModel):

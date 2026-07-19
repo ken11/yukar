@@ -346,6 +346,14 @@ export function useRunActivity({
       for (const threadId of Object.keys(currentBuffers)) {
         dispatch({ type: "CLEAR_LIVE_BUFFER", threadId });
       }
+      // Catch-up: events published while the stream was down (hidden-tab
+      // suspension, network blip) are gone — and `task_update` exists ONLY on
+      // this stream. A missed plan_changed=true would otherwise strand the
+      // cached plan_hash/plan_approved (the approve banner never reappears).
+      // Refetch the REST snapshots that those events keep fresh.
+      qc.invalidateQueries({ queryKey: queryKeys.tasks.get(projectId, epicId) });
+      qc.invalidateQueries({ queryKey: queryKeys.runState.get(projectId, epicId) });
+      qc.invalidateQueries({ queryKey: queryKeys.epics.detail(projectId, epicId) });
     },
   });
 

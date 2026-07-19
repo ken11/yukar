@@ -1295,12 +1295,21 @@ class TestPlanApprovalGate:
         return orch
 
     async def _record_approval_of_current_plan(self, orch: Any) -> None:
-        """Simulate the user's explicit Approve-plan operation (POST /plan/approval)."""
+        """Simulate the user's explicit Approve-plan operation (POST /plan/approval).
+
+        Persists the current plan to tasks.yaml first: the user approves the
+        plan the REST surface showed them, and REST reads disk — the gate now
+        compares against the same on-disk bytes, so an approval of a plan that
+        never reached disk would (correctly) not open the gate.
+        """
         from datetime import UTC, datetime
 
         from yukar.models.task import PlanApproval, compute_plan_hash
-        from yukar.storage import plan_approval_repo
+        from yukar.storage import plan_approval_repo, tasks_repo
 
+        await tasks_repo.save_tasks(
+            orch._root, orch._project_id, orch._epic_id, orch._tasks_holder[0]
+        )
         approval = PlanApproval(
             tasks_hash=compute_plan_hash(orch._tasks_holder[0].tasks),
             approved_at=datetime.now(UTC),
@@ -1347,12 +1356,19 @@ class TestPlanApprovalGate:
         assert await orch._is_plan_approved() is True
 
         # The Manager changes the plan (adds a task).  No invalidation call
-        # exists any more — the snapshot hash simply no longer matches.
+        # exists any more — the snapshot hash simply no longer matches.  The
+        # real task_update tool persists before the gate can ever see the
+        # change, so the test persists too (the gate reads disk).
+        from yukar.storage import tasks_repo
+
         orch._tasks_holder[0] = TasksFile(
             tasks=[
                 *orch._tasks_holder[0].tasks,
                 Task(id="T2", title="New work", contract="more"),
             ]
+        )
+        await tasks_repo.save_tasks(
+            orch._root, orch._project_id, orch._epic_id, orch._tasks_holder[0]
         )
         assert await orch._is_plan_approved() is False
 
@@ -1363,9 +1379,16 @@ class TestPlanApprovalGate:
 
     async def test_status_change_does_not_strip_approval(self, tmp_path: Path) -> None:
         """Dispatch flipping a task's status must NOT close the gate."""
+        from yukar.storage import tasks_repo
+
         orch = self._orch(tmp_path)
         await self._record_approval_of_current_plan(orch)
+        # Dispatch persists the status flip (the gate reads disk); status is
+        # excluded from the plan hash, so the approval must survive it.
         orch._tasks_holder[0].tasks[0].status = "in_progress"
+        await tasks_repo.save_tasks(
+            orch._root, orch._project_id, orch._epic_id, orch._tasks_holder[0]
+        )
         assert await orch._is_plan_approved() is True
 
     async def test_approval_is_run_independent(self, tmp_path: Path) -> None:

@@ -1086,6 +1086,57 @@ describe("useRunActivity — SSE cache patch (task_update)", () => {
       queryKey: queryKeys.tasks.get(PROJECT_ID, EPIC_ID),
     });
   });
+
+  it("invalidates the tasks cache on plan_changed even when the tasks query is not cached", () => {
+    // Regression: the invalidate used to be guarded on the query being in the
+    // cache — a poisoned/errored tasks query made every later plan_changed a
+    // silent no-op, so the approve banner could never reappear.
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    renderHook(() => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }), { wrapper });
+
+    const es = MockEventSource.instances[0];
+    es.emit(
+      "task_update",
+      JSON.stringify({
+        type: "task_update",
+        project_id: PROJECT_ID,
+        epic_id: EPIC_ID,
+        run_id: "run-1",
+        task_id: "T1",
+        status: "todo",
+        title: "Task one",
+        plan_changed: true,
+      }),
+    );
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.tasks.get(PROJECT_ID, EPIC_ID),
+    });
+  });
+
+  it("refetches tasks/runState/epic on SSE reconnect (catch-up for missed events)", () => {
+    // task_update exists ONLY on this stream: one missed plan_changed while
+    // the tab was hidden (30s suspension) or the socket was down would strand
+    // the cached plan_approved forever without this catch-up.
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    renderHook(() => useRunActivity({ projectId: PROJECT_ID, epicId: EPIC_ID }), { wrapper });
+
+    const es = MockEventSource.instances[0];
+    es.emit("open", "");
+    expect(invalidateSpy).not.toHaveBeenCalled(); // first open is not a reconnect
+    es.emit("open", "");
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.tasks.get(PROJECT_ID, EPIC_ID),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.runState.get(PROJECT_ID, EPIC_ID),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.epics.detail(PROJECT_ID, EPIC_ID),
+    });
+  });
 });
 
 describe("useRunActivity — M5: run_paused / run_resumed cache patch", () => {

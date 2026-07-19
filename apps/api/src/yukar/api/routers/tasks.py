@@ -104,23 +104,29 @@ async def approve_plan(
     approval is refused with 409 so the user can review the updated plan.
     """
     await get_epic_or_404(root, project_id, epic_id)
-    tasks_file = await tasks_repo.get_tasks(root, project_id, epic_id)
-    if not tasks_file.tasks:
-        # An empty plan is nothing to approve — recording one would be inert
-        # (the first task_update changes the hash) but misleading.
-        raise HTTPException(status_code=409, detail="Plan is empty — nothing to approve")
-    current_hash = compute_plan_hash(tasks_file.tasks)
-    if body.tasks_hash != current_hash:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Plan has changed since it was displayed — refresh the task "
-                "list and approve the updated plan."
-            ),
-        )
-    approval = PlanApproval(tasks_hash=current_hash, approved_at=datetime.now(UTC))
-    await plan_approval_repo.save_plan_approval(root, project_id, epic_id, approval)
-    return approval
+    # epic_thread_lock: trial creation deletes plan_approval.yaml under this
+    # lock (threads router) — without it an approve landing mid-create could be
+    # silently wiped right after the 200.
+    from yukar.storage.thread_locks import epic_thread_lock
+
+    async with epic_thread_lock(project_id, epic_id):
+        tasks_file = await tasks_repo.get_tasks(root, project_id, epic_id)
+        if not tasks_file.tasks:
+            # An empty plan is nothing to approve — recording one would be inert
+            # (the first task_update changes the hash) but misleading.
+            raise HTTPException(status_code=409, detail="Plan is empty — nothing to approve")
+        current_hash = compute_plan_hash(tasks_file.tasks)
+        if body.tasks_hash != current_hash:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Plan has changed since it was displayed — refresh the task "
+                    "list and approve the updated plan."
+                ),
+            )
+        approval = PlanApproval(tasks_hash=current_hash, approved_at=datetime.now(UTC))
+        await plan_approval_repo.save_plan_approval(root, project_id, epic_id, approval)
+        return approval
 
 
 @router.delete("/plan/approval", status_code=204)

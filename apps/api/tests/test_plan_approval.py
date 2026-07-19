@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -77,6 +78,157 @@ class TestComputePlanHash:
 
     def test_empty_plan_has_a_stable_hash(self) -> None:
         assert compute_plan_hash([]) == compute_plan_hash([])
+
+
+# ---------------------------------------------------------------------------
+# Unit: plan strings must survive the YAML round-trip with an identical hash
+# ---------------------------------------------------------------------------
+
+
+class TestPlanStringRoundTripStability:
+    """U+0085 (NEL) regression: ruamel emits NEL raw and the YAML parser folds
+    it into a space on reload, so a plan containing NEL used to hash
+    differently in memory than on disk — the UI said "approved" while the
+    dispatch gate rejected forever.  The Task model now normalises the
+    line-break foot-guns at the boundary."""
+
+    def test_nel_crlf_cr_normalized_on_construction(self) -> None:
+        t = Task(id="T1", title="a\x85b", contract="x\r\ny\rz")
+        assert t.title == "a\nb"
+        assert t.contract == "x\ny\nz"
+
+    def test_normalized_on_attribute_assignment(self) -> None:
+        """task_update mutates existing tasks via assignment — must normalise too."""
+        t = _task()
+        t.contract = "before\x85after"
+        assert t.contract == "before\nafter"
+
+    def test_depends_on_elements_normalized(self) -> None:
+        t = _task(depends_on=["T\x850"])
+        assert t.depends_on == ["T\n0"]
+
+    async def test_plan_hash_survives_disk_round_trip(self, tmp_path: Path) -> None:
+        """The exact reported bug: NEL in a contract made the on-disk hash
+        differ from the in-memory hash, permanently."""
+        from yukar.config import paths
+        from yukar.models.task import TasksFile
+        from yukar.storage import tasks_repo
+
+        root = str(tmp_path)
+        tf = TasksFile(
+            tasks=[
+                _task(contract="line one\x85line two"),
+                _task(id="T2", title="ttl\x85ttl", contract="c\r\nd"),
+            ]
+        )
+        paths.epic_yukar_dir(root, "proj", "EP-1").mkdir(parents=True, exist_ok=True)
+        await tasks_repo.save_tasks(root, "proj", "EP-1", tf)
+        loaded = await tasks_repo.get_tasks(root, "proj", "EP-1")
+        assert compute_plan_hash(loaded.tasks) == compute_plan_hash(tf.tasks)
+
+    async def test_plan_hash_round_trip_fuzz(self, tmp_path: Path) -> None:
+        """Seeded fuzz over the character classes that break YAML emitters:
+        backslash sequences (rg '\\bfoo\\b' style commands), control chars,
+        YAML-1.1 line breaks, quotes, wide chars, long fold-boundary lines,
+        trailing whitespace.  Every constructed Task must hash identically
+        after a save/load round trip — this pins the invariant against future
+        ruamel/format changes without enumerating characters by hand."""
+        import random
+
+        from yukar.config import paths
+        from yukar.models.task import TasksFile
+        from yukar.storage import tasks_repo
+
+        rng = random.Random(20260719)
+        atoms = [
+            "\\b", "\\.", "\\\\", "\\", "rg -n '\\bfoo\\b' src/",
+            "\x85", " ", " ", "\r\n", "\r", "\n", "\t",
+            "\x08", "\x00", "\x1b", "\x7f", "﻿", " ",
+            '"', "'", "`", "#", ": ", "- ", "|", ">", "&", "*", "%",
+            "日本語テキスト", "😀", " ", "x" * 40, "字" * 30,
+            "trailing space \n", " leading", "settings\\.yaml|repos/",
+        ]
+        root = str(tmp_path)
+        paths.epic_yukar_dir(root, "proj", "EP-1").mkdir(parents=True, exist_ok=True)
+        for i in range(60):
+            s = "".join(rng.choice(atoms) for _ in range(rng.randint(1, 25)))
+            tf = TasksFile(tasks=[_task(title=(s or "t")[:80] or "t", contract=s)])
+            await tasks_repo.save_tasks(root, "proj", "EP-1", tf)
+            loaded = await tasks_repo.get_tasks(root, "proj", "EP-1")
+            assert compute_plan_hash(loaded.tasks) == compute_plan_hash(tf.tasks), (
+                f"round-trip hash divergence at iteration {i}: {s!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Unit: the dispatch gate must agree with the REST surface (disk is authority)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchGateReadsDisk:
+    """_is_plan_approved must hash the plan from DISK — the same bytes the
+    REST surface hashed when the user approved.  If it hashed the in-memory
+    holder instead, any memory/disk divergence (inexact YAML round-trip, a
+    failed task_update save) shows "approved" in the UI while dispatch
+    rejects forever."""
+
+    def _orchestrator(self, root: str) -> Any:
+        from yukar.agents.orchestrator import EpicOrchestrator
+        from yukar.config.settings import LLMSettings
+
+        orch = EpicOrchestrator(
+            llm_settings=LLMSettings(provider="fake"),
+            git_author_name="Test",
+            git_author_email="test@example.com",
+        )
+        orch._root = root
+        orch._project_id = "proj"
+        orch._epic_id = "EP-1"
+        return orch
+
+    async def _write_and_approve(self, root: str, tasks: list[Task]) -> None:
+        from yukar.config import paths
+        from yukar.models.task import TasksFile
+        from yukar.storage import plan_approval_repo, tasks_repo
+
+        paths.epic_yukar_dir(root, "proj", "EP-1").mkdir(parents=True, exist_ok=True)
+        await tasks_repo.save_tasks(root, "proj", "EP-1", TasksFile(tasks=tasks))
+        approval = PlanApproval(
+            tasks_hash=compute_plan_hash(tasks), approved_at=datetime.now(UTC)
+        )
+        await plan_approval_repo.save_plan_approval(root, "proj", "EP-1", approval)
+
+    async def test_gate_passes_when_disk_approved_even_if_memory_diverged(
+        self, tmp_path: Path
+    ) -> None:
+        from yukar.models.task import TasksFile
+
+        root = str(tmp_path)
+        await self._write_and_approve(root, [_task()])
+
+        orch = self._orchestrator(root)
+        # Simulate a diverged in-memory holder (the pre-fix stuck state).
+        orch._tasks_holder = [TasksFile(tasks=[_task(contract="diverged copy")])]
+        assert await orch._is_plan_approved() is True
+
+    async def test_gate_rejects_when_disk_unapproved_even_if_memory_matches(
+        self, tmp_path: Path
+    ) -> None:
+        from yukar.models.task import TasksFile
+        from yukar.storage import tasks_repo
+
+        root = str(tmp_path)
+        approved_plan = [_task()]
+        await self._write_and_approve(root, approved_plan)
+        # The plan on disk then changes (approval is stale now).
+        await tasks_repo.save_tasks(
+            root, "proj", "EP-1", TasksFile(tasks=[_task(contract="changed on disk")])
+        )
+
+        orch = self._orchestrator(root)
+        # Memory still matches the recorded approval — disk must win anyway.
+        orch._tasks_holder = [TasksFile(tasks=approved_plan)]
+        assert await orch._is_plan_approved() is False
 
 
 # ---------------------------------------------------------------------------
