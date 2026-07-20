@@ -12,19 +12,27 @@ involved.  ``make_manager_pptx_tools`` builds the bundle:
   it, returns per-slide preview images plus structured warnings, and can
   save the previews to the epic screenshots gallery (opt-in, mirroring
   ``browser_screenshot``).
+- ``pptx_save_template`` / ``pptx_list_templates`` / ``pptx_load_template``
+  — carry a deck's DESIGN across epics.  A template is a renderable bundle
+  (definition + referenced images + design notes + two thumbnails) stored
+  under the project docs (``slide-templates/<name>/``); loading copies it
+  into the current epic, so rendering stays confined to the epic docs and
+  later template edits never change past epics' decks.
 
-Everything is confined to the epic docs directory by a PathGuard rooted
-there: the definition, the output, and image references (saved browser
-screenshots under ``screenshots/`` are the natural image source).  The
-renderers are fixed internals (python-pptx in-process + the host's shared
-headless Chromium); composition and design stay in the definition file.
+Everything the renderer touches is confined to the epic docs directory by a
+PathGuard rooted there: the definition, the output, and image references
+(saved browser screenshots under ``screenshots/`` are the natural image
+source).  The renderers are fixed internals (python-pptx in-process + the
+host's shared headless Chromium); composition and design stay in the
+definition file.
 """
 
 from __future__ import annotations
 
 import asyncio
+import shutil
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from strands import tool
@@ -33,11 +41,19 @@ from yukar.agents.tools.response_builder import make_error, make_success
 from yukar.config import paths
 from yukar.sandbox.path_guard import PathGuard, PathGuardError
 from yukar.slides import service
-from yukar.slides.schema import MAX_DEFINITION_CHARS, DeckError, load_deck
+from yukar.slides.definition_edit import transform_definition
+from yukar.slides.render_pptx import image_key
+from yukar.slides.schema import MAX_DEFINITION_CHARS, DeckError, ImageElement, load_deck
 from yukar.slides.service import DeckRender, ImageReader, render_deck
+from yukar.storage import slide_templates_repo
 from yukar.storage.atomic import atomic_write_bytes, atomic_write_text
 from yukar.storage.decks_repo import save_deck_previews
 from yukar.storage.screenshots_repo import save_epic_screenshot
+from yukar.storage.slide_templates_repo import SlideTemplateInfo
+
+# Where pptx_load_template places a template's images inside the epic docs,
+# so the rewritten definition renders through the ordinary epic-scoped guard.
+_TEMPLATE_ASSETS_DIRNAME = "template-assets"
 
 _MAX_INLINE_PREVIEWS = 10
 _MAX_PROBLEMS_SHOWN = 30
@@ -111,6 +127,10 @@ _WRITE_DOC = f"""Write (or overwrite) a slide-deck YAML definition in the epic d
 The definition is validated immediately: the result lists any schema
 problems so you can fix them before calling pptx_render.  Writing always
 replaces the whole file — send the complete definition each time.
+
+Starting a NEW deck?  Call pptx_list_templates first — the project may have
+a saved slide template (an established design from an earlier epic) to
+start from via pptx_load_template.
 {_FORMAT_DOC}
 Args:
     filename: Definition filename relative to the epic docs folder; must
@@ -150,6 +170,51 @@ Args:
         definition file name. Ignored unless save=True.
 """
 
+_SAVE_TEMPLATE_DOC = """Save a deck's design as a project-level slide template for future epics.
+
+A template is a complete, renderable bundle: the definition, the images it
+references (copied in), your design notes, and thumbnail previews.  A future
+epic's Manager loads it with pptx_load_template, adapts the content, and
+keeps the design — so save exemplar slides, not the whole report: pick one
+of each layout (cover, section divider, body, table) with `slides`.
+
+The bundle is stored under the project docs (slide-templates/<name>/) and
+appears on the project's Docs page; the definition is re-validated and
+re-rendered before saving, so a saved template is known to render.
+
+Args:
+    definition_path: Definition path relative to the epic docs folder.
+    name: Template slug — 1-64 ASCII letters/digits/'.'/'_'/'-', starting
+        with a letter or digit (e.g. "corporate-blue").  Put human-language
+        titles in `description` instead.
+    description: One-line summary shown in listings and on the Docs page
+        (any language).
+    slides: Which slides to keep, e.g. "1,3,7" (default: all).
+    notes: Freeform design notes for the next author — font intent, color
+        meanings, layout rules.  Stored as notes.md and returned on load.
+    overwrite: Replace an existing template of the same name.
+"""
+
+_LIST_TEMPLATES_DOC = """List the project's saved slide templates (reusable deck designs).
+
+Check this before designing a new deck from scratch: when a template
+exists, start from it with pptx_load_template so decks across epics keep a
+consistent design.
+"""
+
+_LOAD_TEMPLATE_DOC = """Load a project slide template into this epic as a starting definition.
+
+Copies the template's images into the epic docs folder (under
+template-assets/<name>/) and returns the definition YAML with image paths
+already rewritten, plus the design notes and thumbnail previews.  Adapt the
+content — keep the design — then save your working copy with
+pptx_write_definition and render with pptx_render.  The template itself is
+never modified by this call.
+
+Args:
+    name: Template name, as shown by pptx_list_templates.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class _PptxScope:
@@ -161,7 +226,9 @@ class _PptxScope:
     epic_id: str
 
 
-def _parse_slide_selection(spec: str, count: int) -> list[int] | str:
+def _parse_slide_selection(
+    spec: str, count: int, max_selected: int = _MAX_INLINE_PREVIEWS
+) -> list[int] | str:
     """Parse '3', '2-5', '1,4-6' into 1-based slide numbers, or an error string."""
     numbers: set[int] = set()
     for part in spec.split(","):
@@ -175,10 +242,10 @@ def _parse_slide_selection(spec: str, count: int) -> list[int] | str:
         if lo > hi or lo < 1 or hi > count:
             return f"Slides selection {part!r} is out of range (deck has {count} slides)."
         numbers.update(range(lo, hi + 1))
-    if len(numbers) > _MAX_INLINE_PREVIEWS:
+    if len(numbers) > max_selected:
         return (
-            f"Selection covers {len(numbers)} slides — at most {_MAX_INLINE_PREVIEWS} "
-            "previews can be returned per call; narrow the range."
+            f"Selection covers {len(numbers)} slides — at most {max_selected} "
+            "can be selected per call; narrow the range."
         )
     return sorted(numbers)
 
@@ -234,10 +301,10 @@ def _definition_stem(definition: Path) -> str:
     return stem.removesuffix(".slides") or stem
 
 
-async def _render_from_definition(
-    scope: _PptxScope, definition_path: str, *, with_preview: bool
-) -> tuple[DeckRender, Path] | dict[str, Any]:
-    """Load + render, or a ready-to-return error dict."""
+async def _load_definition_text(
+    scope: _PptxScope, definition_path: str
+) -> tuple[str, Path] | dict[str, Any]:
+    """Resolve + read a definition file, or a ready-to-return error dict."""
     try:
         resolved = scope.guard.resolve(definition_path)
     except PathGuardError as exc:
@@ -253,6 +320,17 @@ async def _render_from_definition(
             "look like a slide definition (YAML decks are far smaller)."
         )
     text = await asyncio.to_thread(resolved.read_text, "utf-8")
+    return text, resolved
+
+
+async def _render_from_definition(
+    scope: _PptxScope, definition_path: str, *, with_preview: bool
+) -> tuple[DeckRender, Path] | dict[str, Any]:
+    """Load + render, or a ready-to-return error dict."""
+    loaded = await _load_definition_text(scope, definition_path)
+    if isinstance(loaded, dict):
+        return loaded
+    text, resolved = loaded
     try:
         render = await render_deck(
             text, image_reader=_make_image_reader(scope), with_preview=with_preview
@@ -293,6 +371,85 @@ async def _save_previews_to_docs(
         )
     except (OSError, ValueError) as exc:
         return f"\n(Could not save previews to epic docs: {exc})"
+
+
+def _unique_asset_name(key: str, used: set[str]) -> str:
+    """Flat, collision-free filename inside a template's assets/ directory.
+
+    *used* holds casefolded names: on a case-insensitive filesystem (macOS
+    APFS) 'Logo.png' and 'logo.png' are ONE file, so treating them as
+    distinct would let the second copy silently overwrite the first.
+    """
+    base = PurePosixPath(key).name
+    if base.startswith("."):
+        base = "asset" + base  # dot-files are skipped when reading bundles back
+    if base.casefold() not in used:
+        used.add(base.casefold())
+        return base
+    pure = PurePosixPath(base)
+    counter = 2
+    while True:
+        candidate = f"{pure.stem}-{counter}{pure.suffix}"
+        if candidate.casefold() not in used:
+            used.add(candidate.casefold())
+            return candidate
+        counter += 1
+
+
+def _collect_template_assets(
+    scope: _PptxScope, image_paths: dict[str, str]
+) -> tuple[list[tuple[Path, str]], dict[str, str]]:
+    """Resolve the images a template will bundle.
+
+    Returns ``(asset_files, key_to_rewritten)`` where asset_files pairs each
+    readable source file with its flat destination name and key_to_rewritten
+    maps the canonical image key to its new ``assets/…`` path.  Missing,
+    escaping, or over-budget images are simply not bundled — their paths stay
+    unrewritten and the validation render reports them as image warnings.
+    """
+    asset_files: list[tuple[Path, str]] = []
+    mapping: dict[str, str] = {}
+    used_names: set[str] = set()
+    total_bytes = 0
+    for key in image_paths:
+        try:
+            src = scope.guard.resolve(key)
+        except PathGuardError:
+            continue
+        if not src.is_file():
+            continue
+        size = src.stat().st_size
+        if size > service.MAX_IMAGE_BYTES:
+            continue
+        if total_bytes + size > service.MAX_TOTAL_IMAGE_BYTES:
+            continue
+        total_bytes += size
+        dest = _unique_asset_name(key, used_names)
+        asset_files.append((src, dest))
+        mapping[key] = f"{slide_templates_repo.ASSETS_DIRNAME}/{dest}"
+    return asset_files, mapping
+
+
+def _distinct_image_paths(slides: list[Any]) -> dict[str, str]:
+    """Distinct image references as {canonical key: first spelling seen}."""
+    seen: dict[str, str] = {}
+    for slide in slides:
+        for el in slide.elements:
+            if isinstance(el, ImageElement):
+                seen.setdefault(image_key(el.path), el.path)
+    return seen
+
+
+def _mapping_reader(sources: dict[str, Path]) -> ImageReader:
+    """ImageReader over a fixed {canonical rewritten path: source file} map."""
+
+    async def _read(path: str) -> bytes:
+        src = sources.get(image_key(path))
+        if src is None:
+            raise FileNotFoundError("not bundled with the template")
+        return await asyncio.to_thread(src.read_bytes)
+
+    return _read
 
 
 def _selection_or_error(
@@ -407,8 +564,205 @@ def make_manager_pptx_tools(
             "warnings": render.warnings,
         }
 
+    async def pptx_save_template(
+        definition_path: str,
+        name: str,
+        description: str,
+        slides: str = "",
+        notes: str = "",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        loaded = await _load_definition_text(scope, definition_path)
+        if isinstance(loaded, dict):
+            return loaded
+        text, _resolved = loaded
+        try:
+            deck = await asyncio.to_thread(load_deck, text)
+        except DeckError as exc:
+            return make_error(f"Definition is invalid:\n{_problems_text(exc.problems)}")
+
+        count = len(deck.slides)
+        if slides:
+            parsed = _parse_slide_selection(slides, count, max_selected=count)
+            if isinstance(parsed, str):
+                return make_error(parsed)
+            selection = parsed
+        else:
+            selection = list(range(1, count + 1))
+
+        kept = [deck.slides[i - 1] for i in selection]
+        asset_files, path_mapping = _collect_template_assets(
+            scope, _distinct_image_paths(kept)
+        )
+        try:
+            # to_thread: the ruamel round-trip takes seconds on a large
+            # definition, and this loop serves every run and SSE stream.
+            template_text = await asyncio.to_thread(
+                transform_definition,
+                text,
+                keep_slides=selection,
+                rewrite_image_path=lambda p: path_mapping.get(image_key(p)),
+            )
+        except DeckError as exc:
+            return make_error(f"Could not extract the template:\n{_problems_text(exc.problems)}")
+
+        # Validate + render exactly what a future epic will load: the
+        # thumbnails come from this render, and every image that could not
+        # be bundled surfaces as an ordinary image warning here.
+        sources = {
+            f"{slide_templates_repo.ASSETS_DIRNAME}/{dest}": src for src, dest in asset_files
+        }
+        try:
+            render = await render_deck(
+                template_text, image_reader=_mapping_reader(sources), with_preview=True
+            )
+        except DeckError as exc:
+            return make_error(
+                "The extracted template failed re-validation (this indicates a "
+                f"bug, not a definition problem):\n{_problems_text(exc.problems)}"
+            )
+
+        info = SlideTemplateInfo(
+            description=description,
+            slide_count=len(render.deck.slides),
+            size=render.deck.size,
+            created_at=slide_templates_repo.fresh_created_at(),
+            source_epic=scope.epic_id,
+        )
+        try:
+            await slide_templates_repo.save_template(
+                scope.workspace_root,
+                scope.project_id,
+                name,
+                definition_text=template_text,
+                info=info,
+                notes=notes,
+                asset_files=asset_files,
+                previews=render.previews,
+                overwrite=overwrite,
+            )
+        except (ValueError, FileExistsError) as exc:
+            return make_error(str(exc))
+
+        thumbs = min(len(render.previews), slide_templates_repo.MAX_TEMPLATE_THUMBNAILS)
+        out = (
+            f"Saved template {name!r} — {len(render.deck.slides)} slide(s), "
+            f"{len(asset_files)} bundled image(s), {thumbs} thumbnail(s)."
+        )
+        if thumbs == 0:
+            out += "\n(No thumbnails — preview rendering was unavailable.)"
+        out += _warnings_text(render.warnings)
+        out += (
+            "\nFuture epics can start from it with pptx_load_template; the user "
+            "sees it on the project Docs page."
+        )
+        return make_success(out, name=name, warnings=render.warnings)
+
+    async def pptx_list_templates() -> dict[str, Any]:
+        metas = await asyncio.to_thread(
+            slide_templates_repo.list_templates, scope.workspace_root, scope.project_id
+        )
+        if not metas:
+            return make_success(
+                "No slide templates in this project yet. After building a deck "
+                "whose design is worth reusing, save it with pptx_save_template.",
+                templates=[],
+            )
+        lines = []
+        for m in metas:
+            extras = f"{m.slide_count} slides, {m.size}, saved {m.created_at[:10]}"
+            if m.has_notes:
+                extras += ", has notes"
+            lines.append(f"- {m.name} — {m.description or '(no description)'} ({extras})")
+        return make_success(
+            "Project slide templates (start from one with pptx_load_template):\n"
+            + "\n".join(lines),
+            templates=[m.name for m in metas],
+        )
+
+    async def pptx_load_template(name: str) -> dict[str, Any]:
+        root, project = scope.workspace_root, scope.project_id
+        try:
+            meta = await asyncio.to_thread(
+                slide_templates_repo.read_template_meta, root, project, name
+            )
+            template_text = await asyncio.to_thread(
+                slide_templates_repo.read_template_definition, root, project, name
+            )
+            notes = await asyncio.to_thread(
+                slide_templates_repo.read_template_notes, root, project, name
+            )
+            assets = await asyncio.to_thread(
+                slide_templates_repo.list_template_assets, root, project, name
+            )
+        except ValueError as exc:
+            return make_error(str(exc))
+        except FileNotFoundError:
+            metas = await asyncio.to_thread(slide_templates_repo.list_templates, root, project)
+            available = ", ".join(m.name for m in metas) or "none saved yet"
+            return make_error(f"Template not found: {name!r} (available: {available})")
+
+        # Copy the bundle's images into the epic docs so the rewritten
+        # definition renders through the ordinary epic-scoped guard.
+        dest_rel = f"{_TEMPLATE_ASSETS_DIRNAME}/{name}"
+        mapping: dict[str, str] = {}
+        if assets:
+            dest_dir = scope.guard.resolve(dest_rel)
+            await asyncio.to_thread(dest_dir.mkdir, parents=True, exist_ok=True)
+            for src in assets:
+                await asyncio.to_thread(shutil.copyfile, src, dest_dir / src.name)
+                bundled = f"{slide_templates_repo.ASSETS_DIRNAME}/{src.name}"
+                mapping[image_key(bundled)] = f"{dest_rel}/{src.name}"
+        try:
+            rewritten = await asyncio.to_thread(
+                transform_definition,
+                template_text,
+                rewrite_image_path=lambda p: mapping.get(image_key(p)),
+            )
+        except DeckError as exc:
+            return make_error(
+                f"Template definition is corrupted:\n{_problems_text(exc.problems)}"
+            )
+
+        blocks: list[dict[str, Any]] = []
+        preview_names = await asyncio.to_thread(
+            slide_templates_repo.list_template_previews, root, project, name
+        )
+        for preview_name in preview_names[: slide_templates_repo.MAX_TEMPLATE_THUMBNAILS]:
+            data = await asyncio.to_thread(
+                slide_templates_repo.read_template_preview, root, project, name, preview_name
+            )
+            blocks.append({"image": {"format": "jpeg", "source": {"bytes": data}}})
+
+        parts = [f"Loaded template {name!r} — {meta.slide_count} slide(s), {meta.size}."]
+        if meta.description:
+            parts.append(f"Description: {meta.description}")
+        if assets:
+            parts.append(f"Copied {len(assets)} image(s) into docs/{dest_rel}/ for this epic.")
+        if notes:
+            parts.append(f"Design notes:\n{notes}")
+        parts.append(
+            "Definition below — adapt the content, keep the design, then write "
+            "your working copy with pptx_write_definition and render with "
+            "pptx_render:\n```yaml\n" + rewritten + "```"
+        )
+        return {
+            "status": "success",
+            "content": [{"text": "\n\n".join(parts)}, *blocks],
+            "name": name,
+        }
+
     # Docstrings carry the (shared, sizeable) format reference, so they are
     # assigned from module constants before @tool snapshots them.
     pptx_write_definition.__doc__ = _WRITE_DOC
     pptx_render.__doc__ = _RENDER_DOC
-    return [tool(pptx_write_definition), tool(pptx_render)]
+    pptx_save_template.__doc__ = _SAVE_TEMPLATE_DOC
+    pptx_list_templates.__doc__ = _LIST_TEMPLATES_DOC
+    pptx_load_template.__doc__ = _LOAD_TEMPLATE_DOC
+    return [
+        tool(pptx_write_definition),
+        tool(pptx_render),
+        tool(pptx_save_template),
+        tool(pptx_list_templates),
+        tool(pptx_load_template),
+    ]

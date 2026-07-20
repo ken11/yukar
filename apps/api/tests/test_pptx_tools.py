@@ -92,7 +92,13 @@ def _images_of(result: dict[str, Any]) -> list[bytes]:
 
 class TestBundleShape:
     def test_manager_bundle_names(self, env: dict[str, Any]) -> None:
-        assert list(env["tools"]) == ["pptx_write_definition", "pptx_render"]
+        assert list(env["tools"]) == [
+            "pptx_write_definition",
+            "pptx_render",
+            "pptx_save_template",
+            "pptx_list_templates",
+            "pptx_load_template",
+        ]
 
     def test_docstrings_carry_format_reference(self, env: dict[str, Any]) -> None:
         write_desc = env["tools"]["pptx_write_definition"].tool_spec["description"]

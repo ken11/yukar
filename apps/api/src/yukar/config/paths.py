@@ -107,6 +107,17 @@ def project_doc_path(root: str, project_id: str, filename: str) -> Path:
     return project_docs_dir(root, project_id) / filename
 
 
+def slide_templates_dir(root: str, project_id: str) -> Path:
+    """Project-level slide template bundles (a subdirectory of project docs,
+    so it is NOT swept into the Manager prompt by the top-level ``*.md`` glob)."""
+    return project_docs_dir(root, project_id) / "slide-templates"
+
+
+def slide_template_dir(root: str, project_id: str, name: str) -> Path:
+    _validate_segment(name, "template name")
+    return slide_templates_dir(root, project_id) / name
+
+
 def cache_dir(root: str, project_id: str) -> Path:
     return yukar_dir(root, project_id) / "cache"
 

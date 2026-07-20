@@ -29,6 +29,7 @@ from yukar.api.routers import (
     schema,
     screenshots,
     search,
+    slide_templates,
     system,
     tasks,
     threads,
@@ -326,6 +327,7 @@ def create_app() -> FastAPI:
     app.include_router(docs.router)
     app.include_router(screenshots.router)
     app.include_router(decks.router)
+    app.include_router(slide_templates.router)
     app.include_router(git.router)
     app.include_router(search.router)
     app.include_router(settings_router.router)

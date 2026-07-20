@@ -274,6 +274,16 @@ const ja = {
     emptyMessage: "このプロジェクトにはドキュメントがありません。",
     fileListLabel: "ドキュメントファイル一覧",
     saveDocLabel: "ドキュメントを保存",
+    docsTab: "ドキュメント",
+    templatesTab: "スライドテンプレート",
+    templatesEmpty:
+      "まだスライドテンプレートはありません。Manager がデッキのデザインを保存すると、ここから別 Epic へ引き継げます。",
+    templateSlides: "枚",
+    templateOpenFull: "原寸で開く",
+    templateNoPreviews: "サムネイルはありません。",
+    templateDeleteLabel: "テンプレートを削除",
+    templateDeleteConfirm: "このテンプレートを削除しますか？(過去の Epic のデッキには影響しません)",
+    templateDeleteFailed: "削除に失敗しました",
   },
   docsEditor: {
     emptyMessage: "この Epic とプロジェクトにはドキュメントもスクリーンショットもありません。",

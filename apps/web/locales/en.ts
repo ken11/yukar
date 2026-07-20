@@ -283,6 +283,16 @@ const en = {
     emptyMessage: "No documents found for this project.",
     fileListLabel: "Document file list",
     saveDocLabel: "Save document",
+    docsTab: "Documents",
+    templatesTab: "Slide templates",
+    templatesEmpty:
+      "No slide templates yet. When the Manager saves a deck design, future epics can start from it here.",
+    templateSlides: "slides",
+    templateOpenFull: "Open full size",
+    templateNoPreviews: "No thumbnails.",
+    templateDeleteLabel: "Delete template",
+    templateDeleteConfirm: "Delete this template? (Decks in past epics are not affected.)",
+    templateDeleteFailed: "Delete failed",
   },
   docsEditor: {
     emptyMessage: "No documents or screenshots found for this epic or project.",

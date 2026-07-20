@@ -26,6 +26,7 @@ export type PlanApprovalRequest = components["schemas"]["PlanApprovalRequest"];
 export type DocResponse = components["schemas"]["DocResponse"];
 export type ScreenshotMeta = components["schemas"]["ScreenshotMeta"];
 export type DeckMeta = components["schemas"]["DeckMeta"];
+export type SlideTemplateMeta = components["schemas"]["SlideTemplateMeta"];
 export type DiffResult = components["schemas"]["DiffResult"];
 export type Settings = components["schemas"]["Settings"];
 export type LLMSettings = components["schemas"]["LLMSettings"];
@@ -435,6 +436,23 @@ export function epicDeckPreviewUrl(
   name: string,
 ): string {
   return `/api/projects/${projectId}/epics/${epicId}/decks/preview?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`;
+}
+
+// ---- Slide templates (project-level reusable deck designs) ----
+
+export function listSlideTemplates(projectId: string): Promise<SlideTemplateMeta[]> {
+  return apiFetch(`/api/projects/${projectId}/slide-templates`);
+}
+
+/** Same-origin URL for one thumbnail `<img src>` — raw JPEG bytes. */
+export function slideTemplatePreviewUrl(projectId: string, name: string, filename: string): string {
+  return `/api/projects/${projectId}/slide-templates/${encodeURIComponent(name)}/previews/${encodeURIComponent(filename)}`;
+}
+
+export function deleteSlideTemplate(projectId: string, name: string): Promise<void> {
+  return apiFetch(`/api/projects/${projectId}/slide-templates/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
 }
 
 // ---- Git ----
