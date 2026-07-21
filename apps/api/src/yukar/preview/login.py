@@ -161,7 +161,10 @@ class LoginCaptureManager:
                 raise LoginCaptureError(f"Dev server failed to start: {exc}") from exc
             entry = entries[repo.name]
             dep_repos = tuple(sorted(set(entries) - {repo.name}))
-            url = entry[config.services[0].name].origin
+            # localhost spelling: the cookies the user's login sets here are
+            # host-scoped, and browser_open navigates to localhost — capture
+            # on any other host and the recorded state would never apply.
+            url = entry[config.services[0].name].browser_origin
 
             from playwright.async_api import async_playwright
 

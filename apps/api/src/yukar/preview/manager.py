@@ -137,6 +137,18 @@ class ServiceHandle:
         return f"http://{host}:{self.port}"
 
     @property
+    def browser_origin(self) -> str:
+        # What the BROWSER navigates to.  Chromium resolves ``localhost``
+        # itself (RFC 6761) and connects to whichever loopback family answers,
+        # so this spelling works regardless of which family the child bound —
+        # while cookies, captured auth state, and the absolute URLs apps bake
+        # into redirects stay on the ``localhost`` host users configure their
+        # apps around.  The numeric :attr:`origin` remains the form for the
+        # readiness probe (httpx must target the family that is actually
+        # listening) and for allow-set entries (canonicalised anyway).
+        return f"http://localhost:{self.port}"
+
+    @property
     def is_alive(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
 

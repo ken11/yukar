@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from yukar.agents.tools.response_builder import make_error, make_success
 from yukar.config import paths
@@ -30,7 +31,6 @@ from yukar.preview.browser import (
     BrowserSession,
     SessionKey,
     get_browser_session_manager,
-    normalize_origin,
 )
 from yukar.preview.manager import (
     DevServerError,
@@ -329,7 +329,9 @@ async def open_app(
             f"Service {chosen!r} is not running. Declared: {list(entry)}. "
             "Try browser_open again."
         )
-    url = served.origin
+    # localhost spelling, not the numeric probe host — cookies and captured
+    # auth state are host-scoped, and apps bake localhost into redirects.
+    url = served.browser_origin
     try:
         await session.page.goto(url, timeout=_GOTO_TIMEOUT_MS)
     except Exception as exc:
@@ -347,7 +349,11 @@ async def navigate(target: BrowserTarget, url: str) -> dict[str, Any]:
         return err or make_error(_NOT_AVAILABLE)
 
     if url.startswith("/"):
-        url = normalize_origin(session.page.url) + url
+        # Keep the page's own host spelling (localhost stays localhost) —
+        # normalize_origin would fold it to 127.0.0.1 and a relative
+        # navigation would silently hop hosts, splitting the cookie jar.
+        page = urlsplit(session.page.url)
+        url = f"{page.scheme}://{page.netloc}{url}"
     if not session.is_allowed(url, "GET"):
         return make_error(f"Navigation blocked: {url} is outside the allowed origins.")
     try:

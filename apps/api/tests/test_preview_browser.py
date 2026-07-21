@@ -262,8 +262,8 @@ class TestNormalizeOrigin:
 
     def test_loopback_hosts_canonicalise_to_127(self) -> None:
         # localhost / *.localhost / ::1 all fold to 127.0.0.1 so every spelling
-        # of the same local dev server compares equal to the allow-set entry
-        # (which the host always builds as http://127.0.0.1:PORT).
+        # of the same local dev server compares equal to the numeric allow-set
+        # entry — including the localhost URL the browser itself navigates.
         assert normalize_origin("http://localhost:3000/x") == "http://127.0.0.1:3000"
         assert normalize_origin("http://LocalHost:3000") == "http://127.0.0.1:3000"
         assert normalize_origin("http://app.localhost:5173/") == "http://127.0.0.1:5173"

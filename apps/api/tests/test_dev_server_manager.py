@@ -205,6 +205,9 @@ class TestEnsure:
             assert handle.state == "ready"
             assert handle.is_alive
             assert handle.origin == f"http://127.0.0.1:{handle.port}"
+            # The browser-facing spelling is always localhost, whatever
+            # loopback family the probe pinned.
+            assert handle.browser_origin == f"http://localhost:{handle.port}"
             assert manager.origins(KEY) == [handle.origin]
 
             # Log pump captured the marker line.

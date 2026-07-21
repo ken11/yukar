@@ -63,9 +63,10 @@ COMMON_CDN_ORIGINS: frozenset[str] = frozenset(
 
 # Hostnames that always resolve to the loopback interface in Chromium
 # (RFC 6761: localhost and *.localhost never leave the machine).  They are
-# canonicalised to 127.0.0.1 so the allow-set entry the host builds from a
-# ServiceHandle origin (always 127.0.0.1) also matches the localhost spelling
-# dev servers print in their logs and apps bake into redirects/absolute URLs.
+# canonicalised to 127.0.0.1 so the numeric allow-set entries the host builds
+# from ServiceHandle origins also match the localhost spelling the browser
+# actually navigates (ServiceHandle.browser_origin) and whatever loopback
+# spelling apps bake into redirects/absolute URLs.
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
 _CONSOLE_CAP = 200

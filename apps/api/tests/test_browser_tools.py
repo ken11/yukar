@@ -201,6 +201,10 @@ class TestBrowserFlow:
         text = _text_of(opened)
         assert "Fixture App" in text
         assert 'heading "Hello Yukar"' in text
+        # The browser gets the localhost spelling (the host cookies and
+        # captured auth state are scoped to), not the numeric probe host —
+        # even though the fixture server binds 127.0.0.1 only.
+        assert "http://localhost:" in text
 
         # Click through to page 2 via its snapshot ref.
         link_ref = _ref_of(text, r'link "Go to page 2"')
@@ -213,6 +217,9 @@ class TestBrowserFlow:
         # Back to the form page; type into the search box.
         navigated = await tools["browser_navigate"](url="/index.html")
         assert navigated["status"] == "success", _text_of(navigated)
+        # Relative navigation keeps the page's host spelling — folding it to
+        # 127.0.0.1 would hop hosts and split the cookie jar.
+        assert "http://localhost:" in _text_of(navigated)
         box_ref = _ref_of(_text_of(navigated), r'textbox "Search box"')
         typed = await tools["browser_type"](ref=box_ref, text="hello")
         assert typed["status"] == "success", _text_of(typed)

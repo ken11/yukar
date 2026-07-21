@@ -105,7 +105,7 @@ def _write_auth_state(root: str, cookie_value: str) -> Path:
                     {
                         "name": "yukar_auth",
                         "value": cookie_value,
-                        "domain": "127.0.0.1",
+                        "domain": "localhost",
                         "path": "/",
                         "expires": -1,
                         "httpOnly": False,
@@ -181,7 +181,9 @@ class TestLoginCaptureFlow:
         login = LoginCaptureManager()
 
         capture = await login.start("p", repo)
-        assert capture.url.startswith("http://127.0.0.1:")
+        # The capture window opens on localhost — the same host browser_open
+        # navigates, so the recorded cookies apply there.
+        assert capture.url.startswith("http://localhost:")
         assert dev.get_entry(_LOGIN_KEY) is not None
         assert login.is_active("p", "app")
 
