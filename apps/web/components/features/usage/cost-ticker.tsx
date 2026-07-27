@@ -1,7 +1,8 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { useEffect } from "react";
 import { toast } from "sonner";
 import { getUsageSummary, type UsageSummaryResponse } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
@@ -26,12 +27,13 @@ function usageColor(data: UsageSummaryResponse): string {
 }
 
 /**
- * Global cost ticker.
+ * Global cost ticker showing today's (JST) spend.
  * Receives global_totals via SSE and updates the TanStack Query cache in real time.
  */
 export function CostTicker({ initialData }: CostTickerProps) {
   const t = useT();
   const locale = useLocale();
+  const qc = useQueryClient();
   const { data = initialData } = useQuery<UsageSummaryResponse>({
     queryKey: queryKeys.usage.summary(),
     queryFn: getUsageSummary,
@@ -44,8 +46,27 @@ export function CostTicker({ initialData }: CostTickerProps) {
     onBudgetExceeded: makeBudgetExceededHandler((msg) => toast.error(msg, { duration: 6000 }), t),
   });
 
+  // "Today" resets at JST midnight, but with no run there is no SSE event and
+  // refetchOnWindowFocus is disabled — so a long-lived tab would keep showing
+  // yesterday's amount.  Compare the summary's as_of_date against the current
+  // JST date once a minute and refetch on rollover.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const asOf = qc.getQueryData<UsageSummaryResponse>(queryKeys.usage.summary())?.as_of_date;
+      if (!asOf) return;
+      const jstToday = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(
+        new Date(),
+      );
+      if (asOf !== jstToday) {
+        qc.invalidateQueries({ queryKey: queryKeys.usage.summary() });
+      }
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [qc]);
+
   const color = usageColor(data);
   const hasBudget = data.budget.limit_usd != null;
+  const todayCost = formatCostCompact(data.today?.cost_jpy ?? 0, data.today?.cost_usd ?? 0, locale);
 
   const { day_ratio: dayRatio, month_ratio: monthRatio } = data.budget;
 
@@ -58,17 +79,20 @@ export function CostTicker({ initialData }: CostTickerProps) {
 
   return (
     <div className="flex flex-col items-stretch gap-1 px-1 py-1">
-      {/* Total cost link */}
+      {/* Today's cost link */}
       <Link
         href="/usage"
         className={cn(
-          "flex items-center justify-center rounded px-1 py-1 font-mono tabular-nums transition-colors hover:bg-surface-container-high",
+          "flex items-center justify-center gap-1 rounded px-1 py-1 font-mono tabular-nums transition-colors hover:bg-surface-container-high",
           color,
         )}
         style={{ fontSize: "12px", lineHeight: "16px", whiteSpace: "nowrap" }}
-        title={`${formatCostCompact(data.total_cost_jpy, data.total_cost_usd, locale)} — Usage dashboard`}
+        title={t("usage.tickerTooltip").replace("{cost}", todayCost)}
       >
-        {formatCostCompact(data.total_cost_jpy, data.total_cost_usd, locale)}
+        <span className="text-outline" style={{ fontSize: "9px" }}>
+          {t("usage.budget.dailySpent")}
+        </span>
+        {todayCost}
       </Link>
 
       {/* Day/month ratio bars (only when budget is set) */}

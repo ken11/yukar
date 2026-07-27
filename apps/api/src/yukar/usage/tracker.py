@@ -472,6 +472,12 @@ class TokenUsageTracker:
         b = self._daily.get(today)
         return b.cost_usd if b is not None else 0.0
 
+    def _spent_today_jpy(self) -> float:
+        """Return the JPY cost for today (JST)."""
+        today = datetime.now(_JST).date().isoformat()
+        b = self._daily.get(today)
+        return b.cost_jpy if b is not None else 0.0
+
     def _days_in_current_month(self) -> int:
         """Return the number of days in the current JST calendar month."""
         now = datetime.now(_JST)
@@ -925,6 +931,7 @@ class TokenUsageTracker:
                     "budget_remaining_usd": remaining,
                     "month_spent_usd": month_spent,
                     "day_spent_usd": day_spent,
+                    "day_spent_jpy": self._spent_today_jpy(),
                     "daily_budget_usd": daily_budget,
                     "days_in_month": days_in_month,
                     "month_ratio": month_ratio,

@@ -63,6 +63,16 @@ function makeUsageData(overrides: Partial<UsageSummaryResponse> = {}): UsageSumm
       month_ratio: null,
       day_ratio: null,
     },
+    today: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      embedding_tokens: 0,
+      total_tokens: 0,
+      cost_usd: 0.1,
+      cost_jpy: 15,
+    },
     by_project: [],
     by_model: [],
     as_of_date: new Date().toISOString().slice(0, 10),
@@ -143,6 +153,46 @@ describe("useUsageStream — token_usage event", () => {
     const usage = getUsage();
     expect(usage?.total_cost_jpy).toBe(300.0);
     expect(usage?.total_cost_usd).toBe(2.0);
+  });
+
+  it("patches today's totals from day_spent_usd / day_spent_jpy", () => {
+    seedUsage(makeUsageData());
+
+    renderHook(() => useUsageStream(), { wrapper });
+
+    const es = MockEventSource.instances[0];
+    es.emit(
+      "token_usage",
+      JSON.stringify({
+        type: "token_usage",
+        project_id: "proj1",
+        epic_id: "epic1",
+        run_id: "run1",
+        ts: new Date().toISOString(),
+        role: "worker",
+        model_id: "claude-sonnet",
+        delta: { input: 10, output: 5, cache_read: 0, cache_write: 0, embedding: 0 },
+        run_totals: {
+          cost_usd: 0.002,
+          cost_jpy: 0.3,
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          embedding_tokens: 0,
+        },
+        global_totals: {
+          cost_usd: 2.0,
+          cost_jpy: 300.0,
+          day_spent_usd: 0.5,
+          day_spent_jpy: 75.0,
+        },
+      }),
+    );
+
+    const usage = getUsage();
+    expect(usage?.today?.cost_usd).toBe(0.5);
+    expect(usage?.today?.cost_jpy).toBe(75.0);
   });
 
   it("patches budget spent_usd on token_usage event", () => {

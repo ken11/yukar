@@ -26,6 +26,7 @@ export interface UsageTotals {
   budget_remaining_usd?: number | null;
   month_spent_usd?: number;
   day_spent_usd?: number;
+  day_spent_jpy?: number;
   daily_budget_usd?: number | null;
   days_in_month?: number;
   month_ratio?: number | null;
@@ -105,6 +106,13 @@ export function useUsageStream({
             ...prev,
             total_cost_usd: ev.global_totals.cost_usd,
             total_cost_jpy: ev.global_totals.cost_jpy,
+            today: prev.today
+              ? {
+                  ...prev.today,
+                  cost_usd: ev.global_totals.day_spent_usd ?? prev.today.cost_usd,
+                  cost_jpy: ev.global_totals.day_spent_jpy ?? prev.today.cost_jpy,
+                }
+              : prev.today,
             budget: {
               ...prev.budget,
               spent_usd: ev.global_totals.month_spent_usd ?? prev.budget.spent_usd,

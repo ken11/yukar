@@ -21,8 +21,18 @@ vi.mock("@/lib/sse/use-usage-stream", () => ({
 }));
 
 const initialData = {
-  total_cost_jpy: 123,
-  total_cost_usd: 0.8,
+  total_cost_jpy: 999,
+  total_cost_usd: 6.5,
+  today: {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    embedding_tokens: 0,
+    total_tokens: 0,
+    cost_usd: 0.8,
+    cost_jpy: 123,
+  },
   budget: {
     limit_usd: null,
     spent_usd: 0.8,
@@ -49,12 +59,14 @@ describe("CostTicker", () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <CostTicker initialData={initialData} />
+        <I18nProvider locale="ja" dict={getDictionary("ja")}>
+          <CostTicker initialData={initialData} />
+        </I18nProvider>
       </QueryClientProvider>,
     );
 
-    // fallback locale is "ja" when no I18nProvider is present
-    expect(screen.getByRole("link", { name: "¥123" })).toBeInTheDocument();
+    // Shows today's spend, not the all-time total
+    expect(screen.getByRole("link", { name: "本日 ¥123" })).toBeInTheDocument();
 
     await queryClient.invalidateQueries({ queryKey: queryKeys.usage.summary() });
 
@@ -64,7 +76,7 @@ describe("CostTicker", () => {
   it("displays USD when locale=en", () => {
     const enData = {
       ...initialData,
-      total_cost_usd: 8.5,
+      today: { ...initialData.today, cost_usd: 8.5 },
     } as UsageSummaryResponse;
 
     const queryClient = new QueryClient({
@@ -81,6 +93,6 @@ describe("CostTicker", () => {
     );
 
     // formatCostCompact(_, 8.5, "en") → "$8.50"
-    expect(screen.getByRole("link", { name: "$8.50" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Today $8.50" })).toBeInTheDocument();
   });
 });
