@@ -84,6 +84,34 @@ export interface paths {
         patch: operations["patch_epic_api_projects__project_id__epics__epic_id__patch"];
         trace?: never;
     };
+    "/api/projects/{project_id}/epics/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive Epics
+         * @description Move epics to ``archives/`` so they drop out of every listing.
+         *
+         *     Archiving is a LOCATION, not a status: epic.yaml is untouched (the open ⇄
+         *     completed bit stays user-owned) and the epic simply stops being enumerated
+         *     because the list API scans ``epics/`` only.  Branches in the source repos
+         *     are deliberately left alone (prune deletes them explicitly if wanted);
+         *     trial worktrees ARE removed because their absolute-path registrations
+         *     would go stale on the move.  There is no un-archive endpoint — moving the
+         *     directory back into ``epics/`` by hand restores visibility.
+         */
+        post: operations["archive_epics_api_projects__project_id__epics_archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/epics/{epic_id}/run": {
         parameters: {
             query?: never;
@@ -1607,6 +1635,11 @@ export interface components {
             /** Runs */
             runs?: components["schemas"]["RunUsageBreakdown"][];
         };
+        /** ArchiveEpicsRequest */
+        ArchiveEpicsRequest: {
+            /** Epic Ids */
+            epic_ids: string[];
+        };
         /**
          * BlockedOriginItem
          * @description One origin the browser egress gate rejected, aggregated per repo (§13).
@@ -2113,6 +2146,23 @@ export interface components {
              * Format: date-time
              */
             updated_at?: string;
+        };
+        /**
+         * EpicArchiveResult
+         * @description Per-epic outcome of a batch archive; errors never fail the whole batch.
+         *
+         *     ``error_code`` is a stable machine-readable code so the frontend can
+         *     localise the expected failures; ``error`` stays the human-readable detail.
+         */
+        EpicArchiveResult: {
+            /** Epic Id */
+            epic_id: string;
+            /** Archived */
+            archived: boolean;
+            /** Error */
+            error?: string | null;
+            /** Error Code */
+            error_code?: ("not_found" | "invalid_id" | "run_active" | "merge_active" | "dest_exists" | "worktree_failed" | "internal") | null;
         };
         /**
          * EpicMergeProgressEvent
@@ -4488,6 +4538,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Epic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_epics_api_projects__project_id__epics_archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArchiveEpicsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EpicArchiveResult"][];
                 };
             };
             /** @description Validation Error */

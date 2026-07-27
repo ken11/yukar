@@ -66,6 +66,8 @@ export type RunState = components["schemas"]["RunState"];
 export type ActiveWorker = components["schemas"]["ActiveWorker"];
 
 export type PatchEpicRequest = components["schemas"]["PatchEpicRequest"];
+export type ArchiveEpicsRequest = components["schemas"]["ArchiveEpicsRequest"];
+export type EpicArchiveResult = components["schemas"]["EpicArchiveResult"];
 export type StartMergeRequest = components["schemas"]["StartMergeRequest"];
 export type StartMergeResponse = components["schemas"]["StartMergeResponse"];
 export type StopMergeResponse = components["schemas"]["StopMergeResponse"];
@@ -203,6 +205,13 @@ export function patchEpic(
   return apiFetch(`/api/projects/${projectId}/epics/${epicId}`, {
     method: "PATCH",
     body,
+  });
+}
+
+export function archiveEpics(projectId: string, epicIds: string[]): Promise<EpicArchiveResult[]> {
+  return apiFetch(`/api/projects/${projectId}/epics/archive`, {
+    method: "POST",
+    body: { epic_ids: epicIds } satisfies ArchiveEpicsRequest,
   });
 }
 

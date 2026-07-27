@@ -141,6 +141,17 @@ def epic_dir(root: str, project_id: str, epic_id: str) -> Path:
     return epics_dir(root, project_id) / epic_id
 
 
+def archives_dir(root: str, project_id: str) -> Path:
+    """Archived epics — moved out of ``epics/`` so every directory-scan listing
+    (epic list API, startup recovery) drops them without any status field."""
+    return project_dir(root, project_id) / "archives"
+
+
+def archived_epic_dir(root: str, project_id: str, epic_id: str) -> Path:
+    _validate_segment(epic_id, "epic_id")
+    return archives_dir(root, project_id) / epic_id
+
+
 def epic_yukar_dir(root: str, project_id: str, epic_id: str) -> Path:
     return epic_dir(root, project_id, epic_id) / ".yukar"
 

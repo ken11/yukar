@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
+import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from yukar.api.routers import get_epic_or_404, get_project_or_404, shelve_or_409
+from yukar.api.routers import get_epic_or_404, get_project_or_404, get_repo_or_404, shelve_or_409
+from yukar.config import paths as p
+from yukar.config.paths import PathSegmentError
 from yukar.deps import SupervisorDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
+from yukar.git.runner import run_git
+from yukar.git.worktree import remove_worktree
 from yukar.models.epic import Epic
 from yukar.models.events import EpicStatusChangedEvent
 from yukar.models.run import RunStatus
@@ -50,6 +57,29 @@ class PatchEpicRequest(BaseModel):
     # "completed" finishes it (including abandoning unfinished work).
     status: Literal["open", "completed"] | None = None
     manager_effort: Literal["high", "xhigh", "max"] | None = None
+
+
+class ArchiveEpicsRequest(BaseModel):
+    epic_ids: list[str]
+
+
+ArchiveErrorCode = Literal[
+    "not_found", "invalid_id", "run_active", "merge_active", "dest_exists", "worktree_failed",
+    "internal",
+]
+
+
+class EpicArchiveResult(BaseModel):
+    """Per-epic outcome of a batch archive; errors never fail the whole batch.
+
+    ``error_code`` is a stable machine-readable code so the frontend can
+    localise the expected failures; ``error`` stays the human-readable detail.
+    """
+
+    epic_id: str
+    archived: bool
+    error: str | None = None
+    error_code: ArchiveErrorCode | None = None
 
 
 class RunSummary(BaseModel):
@@ -227,3 +257,137 @@ async def patch_epic(
             await shelve_or_409(supervisor, project_id, epic_id)
             return await _apply_epic_patch(root, project_id, epic_id, body)
     return await _apply_epic_patch(root, project_id, epic_id, body)
+
+
+# ---------------------------------------------------------------------------
+# Archive (move out of sight — NOT a status)
+# ---------------------------------------------------------------------------
+
+
+async def _remove_all_worktrees(root: str, project_id: str, epic_id: str) -> str | None:
+    """Deregister and delete every trial worktree of an epic.
+
+    Worktrees are registered by ABSOLUTE path in each source repo's
+    ``.git/worktrees/``; moving the epic directory with a live registration
+    would leave a stale entry that blocks checking out the branch elsewhere.
+    Returns an error message on failure, ``None`` on success.
+    """
+    wt_root = p.worktrees_dir(root, project_id, epic_id)
+    if not wt_root.is_dir():
+        return None
+    for trial_dir in sorted(d for d in wt_root.iterdir() if d.is_dir()):
+        for wt_path in sorted(d for d in trial_dir.iterdir() if d.is_dir()):
+            repo_name = wt_path.name
+            try:
+                repo_info = await get_repo_or_404(root, project_id, repo_name)
+            except HTTPException:
+                # Repo no longer configured in the project — there is no repo
+                # to deregister from; just drop the orphan checkout.
+                await asyncio.to_thread(shutil.rmtree, wt_path, ignore_errors=True)
+                continue
+            repo_path = Path(repo_info.path)
+            removed, wt_error = await remove_worktree(
+                repo_path=repo_path, worktree_path=wt_path, force=True
+            )
+            if not removed and "is not a working tree" in (wt_error or ""):
+                # Stale checkout git no longer recognises: delete it and prune
+                # the (already broken) registration.
+                await asyncio.to_thread(shutil.rmtree, wt_path, ignore_errors=True)
+                await run_git("worktree", "prune", cwd=repo_path, check=False)
+                removed = not wt_path.exists()
+            if not removed:
+                return f"worktree remove failed for {repo_name}: {wt_error}"
+    return None
+
+
+async def _archive_one_epic(
+    root: str, project_id: str, epic_id: str, supervisor: SupervisorDep
+) -> EpicArchiveResult:
+    """Archive a single epic; every failure is captured as a per-epic error."""
+
+    def _fail(msg: str, code: ArchiveErrorCode) -> EpicArchiveResult:
+        return EpicArchiveResult(epic_id=epic_id, archived=False, error=msg, error_code=code)
+
+    try:
+        await get_epic_or_404(root, project_id, epic_id)
+    except HTTPException as e:
+        return _fail(f"epic not found ({e.detail})", "not_found")
+    except PathSegmentError as e:
+        # A malformed id must stay a per-epic error — letting it propagate
+        # would 422 the whole batch after earlier epics already moved.
+        return _fail(str(e), "invalid_id")
+
+    try:
+        # The whole check + move runs inside the run-start lock so a run cannot
+        # start while the epic directory is being torn down (same TOCTOU guard
+        # as completing an epic).
+        async with supervisor.epic_mutation_lock():
+            if supervisor.is_running(project_id, epic_id):
+                return _fail("A run is active — archive is not allowed", "run_active")
+            # A batch merge registers under the project-wide MERGE_SENTINEL key
+            # (never the epic's own key) and works INSIDE the epics' trial
+            # worktrees — archiving mid-merge would tear the ground out from
+            # under the arbiter.  Same conservative project-wide guard as
+            # start/start_resolve.
+            if supervisor.is_arbiter_running(project_id):
+                return _fail(
+                    "A batch merge is in progress — archive is not allowed", "merge_active"
+                )
+
+            # Cheap failure conditions come BEFORE the destructive teardown so
+            # an archive that cannot complete leaves worktrees untouched.
+            src = p.epic_dir(root, project_id, epic_id)
+            dest = p.archived_epic_dir(root, project_id, epic_id)
+            if dest.exists():
+                return _fail("archive destination already exists", "dest_exists")
+
+            # A leaked dev server / browser session holding files inside the
+            # epic directory would block worktree removal and the move.
+            from yukar.preview import get_dev_server_manager
+            from yukar.preview.browser import get_browser_session_manager
+
+            browser_sessions = get_browser_session_manager()
+            if browser_sessions is not None:
+                with contextlib.suppress(Exception):
+                    await browser_sessions.close_for_epic(project_id, epic_id)
+            dev_manager = get_dev_server_manager()
+            if dev_manager is not None:
+                with contextlib.suppress(Exception):
+                    await dev_manager.stop_for_epic(project_id, epic_id)
+
+            wt_error = await _remove_all_worktrees(root, project_id, epic_id)
+            if wt_error is not None:
+                return _fail(wt_error, "worktree_failed")
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(shutil.move, str(src), str(dest))
+    except Exception as e:
+        logger.warning("Archive failed for %s/%s", project_id, epic_id, exc_info=True)
+        return _fail(str(e), "internal")
+    return EpicArchiveResult(epic_id=epic_id, archived=True)
+
+
+@router.post("/archive", response_model=list[EpicArchiveResult])
+async def archive_epics(
+    project_id: str,
+    body: ArchiveEpicsRequest,
+    root: WorkspaceRootDep,
+    supervisor: SupervisorDep,
+) -> list[EpicArchiveResult]:
+    """Move epics to ``archives/`` so they drop out of every listing.
+
+    Archiving is a LOCATION, not a status: epic.yaml is untouched (the open ⇄
+    completed bit stays user-owned) and the epic simply stops being enumerated
+    because the list API scans ``epics/`` only.  Branches in the source repos
+    are deliberately left alone (prune deletes them explicitly if wanted);
+    trial worktrees ARE removed because their absolute-path registrations
+    would go stale on the move.  There is no un-archive endpoint — moving the
+    directory back into ``epics/`` by hand restores visibility.
+    """
+    await get_project_or_404(root, project_id)
+    results: list[EpicArchiveResult] = []
+    # Sequential on purpose: each epic serialises on the run-start lock anyway,
+    # and per-epic results keep their request order.
+    for epic_id in body.epic_ids:
+        results.append(await _archive_one_epic(root, project_id, epic_id, supervisor))
+    return results
