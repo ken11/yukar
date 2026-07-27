@@ -112,7 +112,7 @@ export function EpicScopeHeader({ onStopRequest }: { onStopRequest: () => void }
         <div className="flex min-w-0 items-center gap-x-2 md:flex-1">
           {/* Back chevron — shrink-0 keeps it always visible */}
           <Link
-            href={`/projects/${projectId}/epics`}
+            href={`/projects/${projectId}`}
             aria-label={t("nav.backToEpics")}
             className="shrink-0 text-on-surface-variant transition-colors hover:text-on-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]"
           >

@@ -147,13 +147,6 @@ export function CommandPalette() {
         group: pHeading,
       });
       items.push({
-        id: "nav-project-epics",
-        label: t("commandPalette.projectEpics"),
-        href: `/projects/${projectId}/epics`,
-        icon: "rocket_launch",
-        group: pHeading,
-      });
-      items.push({
         id: "nav-project-docs",
         label: t("commandPalette.projectDocs"),
         href: `/projects/${projectId}/docs`,

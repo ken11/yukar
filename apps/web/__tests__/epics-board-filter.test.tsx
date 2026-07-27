@@ -5,14 +5,17 @@
  * - "merged" filter selects on the merged_at fact attribute
  * - merged badge is shown alongside the status badge
  * - complete / reopen row actions follow the status bit
- * - multi-select checkbox only shows for mergeable epics (open + branch + not merged)
+ * - multi-select checkbox on every row; merge enabled only for all-mergeable
+ *   selections; archive runs through a confirmation dialog
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EpicsBoardClient } from "@/components/features/epics/epics-board-client";
 import type { EpicWithRunSummary } from "@/lib/api/endpoints";
+import { archiveEpics, listEpics } from "@/lib/api/endpoints";
+import { queryKeys } from "@/lib/api/query-keys";
 import { I18nProvider } from "@/lib/i18n/provider";
 import { ProjectEventStreamProvider } from "@/lib/sse/project-event-stream-context";
 import ja from "@/locales/ja";
@@ -34,6 +37,7 @@ vi.mock("@/lib/api/endpoints", async (importOriginal) => {
     startMerge: vi.fn(),
     stopMerge: vi.fn(),
     createEpic: vi.fn(),
+    archiveEpics: vi.fn(),
   };
 });
 
@@ -206,18 +210,14 @@ describe("EpicsBoardClient filters (1-bit lifecycle)", () => {
     expect(screen.queryByTestId("reopen-btn-EP-1")).not.toBeInTheDocument();
   });
 
-  it("multi-select checkbox appears only for mergeable epics (open + branch + not merged)", () => {
+  it("multi-select checkbox appears on every row (merge AND archive select)", () => {
     render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
       wrapper: wrapper(),
     });
 
-    // EP-1: open + branch + no merge fact → mergeable
-    expect(screen.getByLabelText("Select EP-1")).toBeInTheDocument();
-    // EP-2: no branch / EP-3: merged fact / EP-4, EP-5: completed → not mergeable
-    expect(screen.queryByLabelText("Select EP-2")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Select EP-3")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Select EP-4")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Select EP-5")).not.toBeInTheDocument();
+    for (const id of ["EP-1", "EP-2", "EP-3", "EP-4", "EP-5", "EP-6"]) {
+      expect(screen.getByLabelText(`Select ${id}`)).toBeInTheDocument();
+    }
   });
 
   it("shows merge toolbar when an epic is selected", async () => {
@@ -232,6 +232,50 @@ describe("EpicsBoardClient filters (1-bit lifecycle)", () => {
     expect(screen.getByTestId("start-merge-btn")).toBeInTheDocument();
   });
 
+  it("merge button is enabled only while every selected epic is mergeable", async () => {
+    const user = userEvent.setup();
+    render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
+      wrapper: wrapper(),
+    });
+
+    // EP-1: mergeable → enabled
+    await user.click(screen.getByLabelText("Select EP-1"));
+    expect(screen.getByTestId("start-merge-btn")).toBeEnabled();
+
+    // + EP-4 (completed → not mergeable) → disabled
+    await user.click(screen.getByLabelText("Select EP-4"));
+    expect(screen.getByTestId("start-merge-btn")).toBeDisabled();
+  });
+
+  it("ignores selected ids whose epic vanished from the list (live update)", async () => {
+    const user = userEvent.setup();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
+      wrapper: wrapper(qc),
+    });
+
+    await user.click(screen.getByLabelText("Select EP-1"));
+    await user.click(screen.getByLabelText("Select EP-6"));
+    expect(screen.getByTestId("merge-toolbar")).toHaveTextContent(
+      ja.epicsBoard.multiSelect.selectedCount.replace("{count}", "2"),
+    );
+
+    // EP-1 disappears (archived in another tab → list refetch)
+    await act(async () => {
+      qc.setQueryData(
+        queryKeys.epics.list("proj1"),
+        initialEpics.filter((e) => e.id !== "EP-1"),
+      );
+    });
+
+    // The ghost id no longer counts toward the selection
+    await waitFor(() =>
+      expect(screen.getByTestId("merge-toolbar")).toHaveTextContent(
+        ja.epicsBoard.multiSelect.selectedCount.replace("{count}", "1"),
+      ),
+    );
+  });
+
   it("preserves selection order (merge order)", async () => {
     const user = userEvent.setup();
     render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
@@ -242,9 +286,70 @@ describe("EpicsBoardClient filters (1-bit lifecycle)", () => {
     await user.click(screen.getByLabelText("Select EP-6"));
     await user.click(screen.getByLabelText("Select EP-1"));
 
-    // Both selected — toolbar shows 2 selected
+    // Both selected — toolbar shows the localized count
     const toolbar = screen.getByTestId("merge-toolbar");
-    expect(toolbar).toHaveTextContent("2 selected");
+    expect(toolbar).toHaveTextContent(
+      ja.epicsBoard.multiSelect.selectedCount.replace("{count}", "2"),
+    );
+  });
+});
+
+// ============================================================
+// Archive — multi-select → confirmation dialog → API call
+// ============================================================
+
+describe("EpicsBoardClient archive", () => {
+  it("archives the selected epics after confirmation", async () => {
+    const user = userEvent.setup();
+    vi.mocked(archiveEpics).mockResolvedValue([{ epic_id: "EP-4", archived: true, error: null }]);
+    render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
+      wrapper: wrapper(),
+    });
+
+    await user.click(screen.getByLabelText("Select EP-4"));
+    await user.click(screen.getByTestId("archive-selected-btn"));
+
+    // Confirmation dialog (irreversible from the UI) must appear first.
+    expect(screen.getByText(ja.epicsBoard.archive.confirmTitle)).toBeInTheDocument();
+    await user.click(screen.getByTestId("confirm-archive-btn"));
+
+    expect(archiveEpics).toHaveBeenCalledWith("proj1", ["EP-4"]);
+  });
+
+  it("keeps failed epics selected and surfaces their localized error", async () => {
+    const user = userEvent.setup();
+    vi.mocked(archiveEpics).mockResolvedValue([
+      { epic_id: "EP-1", archived: true, error: null, error_code: null },
+      {
+        epic_id: "EP-4",
+        archived: false,
+        error: "A run is active — archive is not allowed",
+        error_code: "run_active",
+      },
+    ]);
+    // The post-archive invalidate refetches the list: EP-1 is gone server-side.
+    vi.mocked(listEpics).mockResolvedValueOnce(initialEpics.filter((e) => e.id !== "EP-1"));
+    render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
+      wrapper: wrapper(),
+    });
+
+    await user.click(screen.getByLabelText("Select EP-1"));
+    await user.click(screen.getByLabelText("Select EP-4"));
+    await user.click(screen.getByTestId("archive-selected-btn"));
+    await user.click(screen.getByTestId("confirm-archive-btn"));
+
+    // The failed epic stays selected (checkbox still checked); the archived
+    // one leaves both the selection and the list.
+    const toolbar = await screen.findByTestId("merge-toolbar");
+    await waitFor(() =>
+      expect(toolbar).toHaveTextContent(
+        ja.epicsBoard.multiSelect.selectedCount.replace("{count}", "1"),
+      ),
+    );
+    expect(screen.getByLabelText("Deselect EP-4")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId("epic-card-EP-1")).not.toBeInTheDocument());
+    // The expected failure (run active) is shown localized, not raw English.
+    expect(toolbar).toHaveTextContent(`EP-4: ${ja.epicsBoard.archive.errors.runActive}`);
   });
 });
 

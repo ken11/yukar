@@ -12,7 +12,6 @@ const ja = {
   project: {
     tabs: {
       overview: "概要",
-      epics: "エピック",
       docs: "ドキュメント",
       repos: "リポジトリ",
       settings: "設定",
@@ -186,14 +185,6 @@ const ja = {
     planApproveFailed: "プランの承認に失敗しました",
     sendMessageFailed: "メッセージの送信に失敗しました",
   },
-  overview: {
-    activeWork: "オープン / 最新の作業",
-    recentEpics: "最近のエピック",
-    openEpic: "エピックを開く →",
-    openEpicAria: "{epicId} を開く",
-    allEpics: "全エピックを見る →",
-    open: "オープン",
-  },
   epics: {
     effortLabel: "Manager の思考の深さ（effort）",
     effortHint:
@@ -212,17 +203,36 @@ const ja = {
     acceptanceCriteriaHint: "Manager が達成すべき完了基準。description の補足として使われます。",
   },
   epicsBoard: {
-    title: "エピックボード",
     newEpic: "新規エピック",
     filter: {
       all: "すべて",
     },
     multiSelect: {
-      selectHint: "マージする Epic を選択",
+      selectHint: "Epic を選択してマージ / アーカイブ",
+      selectedCount: "{count} 件選択中",
       mergeSelected: "選択した Epic を main へマージ（仲裁者）",
       merging: "マージ中…",
       cancel: "選択解除",
       conflictError: "実行中の Epic が含まれているか、仲裁者がすでに起動中です。",
+      mergeNeedsMergeable:
+        "マージは「オープンかつ未マージでブランチあり」の Epic だけを選択したときに実行できます",
+    },
+    archive: {
+      archiveSelected: "アーカイブ",
+      archiving: "アーカイブ中…",
+      confirmTitle: "Epic をアーカイブ",
+      confirmBody:
+        "{count} 件の Epic を archives/ ディレクトリへ移動します。一覧からは見えなくなり、ワークツリーは削除されます（ブランチは残ります）。画面から元に戻す操作はありません。",
+      confirm: "アーカイブする",
+      cancel: "キャンセル",
+      partialError: "アーカイブできなかった Epic があります — {errors}",
+      errors: {
+        runActive: "run が実行中のためアーカイブできません",
+        mergeActive: "バッチマージの実行中はアーカイブできません",
+        destExists: "アーカイブ先に同名のディレクトリが既に存在します",
+        notFound: "Epic が見つかりません",
+        worktreeFailed: "ワークツリーの撤去に失敗しました",
+      },
     },
   },
   merge: {
@@ -438,7 +448,6 @@ const ja = {
     usage: "使用状況",
     settings: "設定",
     projectOverview: "概要",
-    projectEpics: "エピック",
     projectDocs: "ドキュメント",
     projectRepos: "リポジトリ",
     projectSettings: "設定",
@@ -647,6 +656,7 @@ const ja = {
       ariaLabel: "当月日次コスト折れ線グラフ",
       noData: "データなし",
     },
+    tickerTooltip: "本日 {cost} — 使用状況ダッシュボード",
     budget: {
       heading: "予算管理",
       limitLabel: "月予算 (USD)",

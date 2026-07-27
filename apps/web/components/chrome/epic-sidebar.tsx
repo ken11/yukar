@@ -139,7 +139,7 @@ export function EpicSidebar({
         {/* Row 1: back → Epics + project crumb */}
         <div className="flex min-w-0 items-center gap-1.5">
           <Link
-            href={`/projects/${projectId}/epics`}
+            href={`/projects/${projectId}`}
             aria-label={t("nav.backToEpics")}
             title={t("nav.backToEpics")}
             className="-ml-1 shrink-0 text-on-surface-variant transition-colors hover:text-on-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-container-low)]"

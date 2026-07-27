@@ -4,10 +4,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/icon";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
-import type { EpicWithRunSummary } from "@/lib/api/endpoints";
-import { ApiError, listEpics, startMerge } from "@/lib/api/endpoints";
+import type { EpicArchiveResult, EpicWithRunSummary } from "@/lib/api/endpoints";
+import { ApiError, archiveEpics, listEpics, startMerge } from "@/lib/api/endpoints";
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
 import { hasYourTurn } from "@/lib/epic-utils";
@@ -35,11 +37,22 @@ function isMergeable(e: EpicWithRunSummary): boolean {
   return !!e.branch && e.status === "open" && !e.merged_at;
 }
 
+/** Locale keys for the archive failures the backend reports with a stable code. */
+const ARCHIVE_ERROR_KEYS: Record<string, string> = {
+  run_active: "epicsBoard.archive.errors.runActive",
+  merge_active: "epicsBoard.archive.errors.mergeActive",
+  dest_exists: "epicsBoard.archive.errors.destExists",
+  not_found: "epicsBoard.archive.errors.notFound",
+  invalid_id: "epicsBoard.archive.errors.notFound",
+  worktree_failed: "epicsBoard.archive.errors.worktreeFailed",
+};
+
 /**
- * EpicsBoardClient — board index for /projects/[p]/epics.
+ * EpicsBoardClient — the epic list with complete/reopen, multi-select merge
+ * (Arbiter) and multi-select archive.  Embedded on the project overview
+ * (/projects/[p]); /projects/[p]/epics redirects there.
  * Receives initialEpics from RSC and live-updates via TanStack Query.
  * Status filter runs on the client only.
- * Multi-select mode launches an arbiter batch merge.
  */
 export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientProps) {
   const t = useT();
@@ -93,22 +106,55 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
   const [filter, setFilter] = useState<FilterValue>("all");
   /** selection: ordered list of epic ids (order = merge order) */
   const [selected, setSelected] = useState<string[]>([]);
-  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [mergeRunId, setMergeRunId] = useState<string | null>(null);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
 
   const mergeMutation = useMutation({
     mutationFn: (epicIds: string[]) => startMerge(projectId, epicIds),
     onSuccess: (data) => {
       setSelected([]);
       setMergeRunId(data.run_id);
-      setMergeError(null);
+      setActionError(null);
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        setMergeError(t("epicsBoard.multiSelect.conflictError"));
+        setActionError(t("epicsBoard.multiSelect.conflictError"));
       } else {
-        setMergeError(err instanceof Error ? err.message : String(err));
+        setActionError(err instanceof Error ? err.message : String(err));
       }
+    },
+  });
+
+  const describeArchiveError = (r: EpicArchiveResult): string => {
+    const key = r.error_code ? ARCHIVE_ERROR_KEYS[r.error_code] : undefined;
+    return `${r.epic_id}: ${key ? t(key) : (r.error ?? "")}`;
+  };
+
+  const archiveMutation = useMutation({
+    mutationFn: (epicIds: string[]) => archiveEpics(projectId, epicIds),
+    onSuccess: (results) => {
+      setArchiveDialogOpen(false);
+      const failed = results.filter((r) => !r.archived);
+      // Drop only the epics this batch actually archived — failed ones stay
+      // selected for retry, and selections made while the mutation was in
+      // flight are preserved.
+      setSelected((prev) =>
+        prev.filter((id) => !results.some((r) => r.epic_id === id && r.archived)),
+      );
+      setActionError(
+        failed.length > 0
+          ? t("epicsBoard.archive.partialError").replace(
+              "{errors}",
+              failed.map(describeArchiveError).join(" / "),
+            )
+          : null,
+      );
+      qc.invalidateQueries({ queryKey: queryKeys.epics.list(projectId) });
+    },
+    onError: (err) => {
+      setArchiveDialogOpen(false);
+      setActionError(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -135,12 +181,19 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
 
   const clearSelection = useCallback(() => setSelected([]), []);
 
+  // A selection can outlive the list (live updates / another tab archiving an
+  // epic remove rows without touching `selected`).  Every consumer — count,
+  // guards, and the mutation payloads — must see only ids that still exist.
+  const liveSelected = selected.filter((id) => epics.some((e) => e.id === id));
+
   const handleStartMerge = () => {
-    setMergeError(null);
-    mergeMutation.mutate(selected);
+    setActionError(null);
+    mergeMutation.mutate(liveSelected);
   };
 
-  const isSelecting = selected.length > 0;
+  const isSelecting = liveSelected.length > 0;
+  const selectedEpics = epics.filter((e) => liveSelected.includes(e.id));
+  const allSelectedMergeable = selectedEpics.length > 0 && selectedEpics.every(isMergeable);
 
   // Invalidate when merge panel reports progress (callback passed down)
   const handleMergeInvalidate = useCallback(() => {
@@ -148,21 +201,7 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
   }, [qc, projectId]);
 
   return (
-    <div className="px-4 pb-20 md:px-8 md:pb-16">
-      {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-[18px] font-semibold text-on-surface">{t("epicsBoard.title")}</h1>
-        <div className="flex items-center gap-2">
-          {/* multi-select hint */}
-          {!isSelecting && (
-            <span className="hidden font-mono text-[11px] text-outline md:block">
-              {t("epicsBoard.multiSelect.selectHint")}
-            </span>
-          )}
-          <NewEpicModal projectId={projectId} />
-        </div>
-      </div>
-
+    <div className="pb-20 md:pb-16">
       {/* merge progress panel (shown when a run_id is active) */}
       {mergeRunId && (
         <MergeProgressPanel
@@ -172,7 +211,7 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
         />
       )}
 
-      {/* Status filter */}
+      {/* Status filter + multi-select hint */}
       <div className="mb-6 flex flex-wrap items-center gap-2">
         {filterOptions.map(({ value, labelKey }) => (
           <button
@@ -194,6 +233,11 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
             {t(labelKey)}
           </button>
         ))}
+        {!isSelecting && (
+          <span className="ml-auto hidden font-mono text-[11px] text-outline md:block">
+            {t("epicsBoard.multiSelect.selectHint")}
+          </span>
+        )}
       </div>
 
       {/* Selection toolbar */}
@@ -203,23 +247,41 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
           data-testid="merge-toolbar"
         >
           <span className="font-mono text-[12px] text-on-surface-variant">
-            {selected.length} selected
+            {t("epicsBoard.multiSelect.selectedCount").replace(
+              "{count}",
+              String(liveSelected.length),
+            )}
           </span>
-          {mergeError && <span className="font-mono text-[11px] text-error">{mergeError}</span>}
+          {actionError && <span className="font-mono text-[11px] text-error">{actionError}</span>}
           <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
               onClick={clearSelection}
-              disabled={mergeMutation.isPending}
+              disabled={mergeMutation.isPending || archiveMutation.isPending}
               className="rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
             >
               {t("epicsBoard.multiSelect.cancel")}
             </button>
             <button
               type="button"
+              data-testid="archive-selected-btn"
+              onClick={() => setArchiveDialogOpen(true)}
+              disabled={archiveMutation.isPending}
+              className="flex items-center gap-1.5 rounded border border-outline-variant px-3 py-1.5 text-body-sm text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
+            >
+              <Icon name="archive" className="text-[16px]" />
+              {t("epicsBoard.archive.archiveSelected")}
+            </button>
+            <button
+              type="button"
               data-testid="start-merge-btn"
               onClick={handleStartMerge}
-              disabled={mergeMutation.isPending || selected.length === 0}
+              disabled={
+                mergeMutation.isPending || archiveMutation.isPending || !allSelectedMergeable
+              }
+              title={
+                allSelectedMergeable ? undefined : t("epicsBoard.multiSelect.mergeNeedsMergeable")
+              }
               className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-body-sm font-medium text-on-primary transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Icon name="merge" className="text-[16px]" />
@@ -230,6 +292,38 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
           </div>
         </div>
       )}
+
+      {/* Archive confirmation — irreversible from the UI, so always confirm.
+          While the mutation is in flight the dialog stays up (Esc/overlay/X
+          included) so the late onSuccess cannot surprise the user. */}
+      <Dialog
+        open={archiveDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && archiveMutation.isPending) return;
+          setArchiveDialogOpen(open);
+        }}
+      >
+        <DialogContent title={t("epicsBoard.archive.confirmTitle")}>
+          <p className="whitespace-pre-line text-body-md text-on-surface-variant">
+            {t("epicsBoard.archive.confirmBody").replace("{count}", String(liveSelected.length))}
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setArchiveDialogOpen(false)}>
+              {t("epicsBoard.archive.cancel")}
+            </Button>
+            <Button
+              variant="danger"
+              data-testid="confirm-archive-btn"
+              disabled={archiveMutation.isPending}
+              onClick={() => archiveMutation.mutate(liveSelected)}
+            >
+              {archiveMutation.isPending
+                ? t("epicsBoard.archive.archiving")
+                : t("epicsBoard.archive.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Epic list */}
       {epics.length === 0 ? (
@@ -248,7 +342,7 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
               epic={epic}
               projectId={projectId}
               isSelected={selected.includes(epic.id)}
-              onToggleSelect={isMergeable(epic) ? toggleSelect : undefined}
+              onToggleSelect={toggleSelect}
             />
           ))}
         </div>
@@ -267,7 +361,7 @@ function EpicBoardRow({
   epic: EpicWithRunSummary;
   projectId: string;
   isSelected: boolean;
-  onToggleSelect?: (epicId: string) => void;
+  onToggleSelect: (epicId: string) => void;
 }) {
   const t = useT();
   const managerSeg = epic.active_thread_id ?? "manager";
@@ -286,7 +380,8 @@ function EpicBoardRow({
       className={cn(
         // Mobile: wrap into two lines (id/status/actions, then full-width title).
         // Desktop (md:): single row.
-        "flex flex-wrap items-center gap-3 py-3 transition-colors hover:bg-surface-container md:flex-nowrap md:gap-6 md:py-4",
+        // relative: anchors the stretched link that makes the whole row clickable.
+        "relative flex flex-wrap items-center gap-3 py-3 transition-colors hover:bg-surface-container md:flex-nowrap md:gap-6 md:py-4",
       )}
       style={{
         borderBottom: "1px solid var(--edge-shadow)",
@@ -294,45 +389,45 @@ function EpicBoardRow({
         opacity: isCompleted ? 0.6 : undefined,
       }}
     >
-      {/* Checkbox (mergeable epics only) */}
-      {onToggleSelect ? (
-        <button
-          type="button"
-          aria-label={isSelected ? `Deselect ${epic.id}` : `Select ${epic.id}`}
-          onClick={(e) => {
-            e.preventDefault();
-            onToggleSelect(epic.id);
-          }}
-          className={cn(
-            "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
-            isSelected
-              ? "border-on-surface bg-on-surface"
-              : "border-outline-variant hover:border-outline",
-          )}
-        >
-          {isSelected && <Icon name="check" className="text-[11px] text-surface" />}
-        </button>
-      ) : (
-        <span className="h-4 w-4 shrink-0" />
-      )}
-
-      {/* EP-id — fixed-width tabular (narrower on mobile) */}
-      <Link href={href} className="contents" tabIndex={-1} aria-hidden>
-        <span className="data w-14 shrink-0 md:w-20" style={{ letterSpacing: "0.04em" }}>
-          {epic.id}
-        </span>
-      </Link>
-
-      {/* Title + description — full-width second line on mobile, flex-1 inline on desktop */}
+      {/* Stretched link — the whole row navigates; the controls below sit
+          above it (positioned elements later in the DOM paint over it). */}
       <Link
         href={href}
-        className="order-last w-full min-w-0 pl-7 focus-visible:outline-none md:order-none md:w-auto md:flex-1 md:pl-0"
+        data-testid={`epic-item-${epic.id}`}
+        aria-label={`${epic.id} ${epic.title}`}
+        className="absolute inset-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white focus-visible:ring-inset"
+      />
+
+      {/* Checkbox — selects for merge / archive */}
+      <button
+        type="button"
+        aria-label={isSelected ? `Deselect ${epic.id}` : `Select ${epic.id}`}
+        onClick={(e) => {
+          e.preventDefault();
+          onToggleSelect(epic.id);
+        }}
+        className={cn(
+          "relative flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
+          isSelected
+            ? "border-on-surface bg-on-surface"
+            : "border-outline-variant hover:border-outline",
+        )}
       >
+        {isSelected && <Icon name="check" className="text-[11px] text-surface" />}
+      </button>
+
+      {/* EP-id — fixed-width tabular (narrower on mobile) */}
+      <span className="data w-14 shrink-0 md:w-20" style={{ letterSpacing: "0.04em" }}>
+        {epic.id}
+      </span>
+
+      {/* Title + description — full-width second line on mobile, flex-1 inline on desktop */}
+      <span className="order-last w-full min-w-0 pl-7 md:order-none md:w-auto md:flex-1 md:pl-0">
         <span className="font-sans text-[14px] font-semibold text-on-surface">{epic.title}</span>
         {epic.description && (
           <p className="mt-0.5 truncate text-[12px] text-on-surface-variant">{epic.description}</p>
         )}
-      </Link>
+      </span>
 
       {/* StatusBadge — pushed right on mobile (title is on its own line).
           The merged badge is a fact attribute shown alongside the status;
@@ -356,7 +451,7 @@ function EpicBoardRow({
           onClick={() => reopenMutation.mutate(epic.id)}
           disabled={reopenMutation.isPending}
           title={t("epic.reopen")}
-          className="shrink-0 rounded border border-outline-variant px-2 py-1 font-mono text-[11px] text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
+          className="relative shrink-0 rounded border border-outline-variant px-2 py-1 font-mono text-[11px] text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
         >
           {t("epic.reopen")}
         </button>
@@ -367,20 +462,14 @@ function EpicBoardRow({
           onClick={() => completeMutation.mutate(epic.id)}
           disabled={completeMutation.isPending}
           title={t("epic.completeTitle")}
-          className="shrink-0 rounded border border-outline-variant px-2 py-1 font-mono text-[11px] text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
+          className="relative shrink-0 rounded border border-outline-variant px-2 py-1 font-mono text-[11px] text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
         >
           <Icon name="check_circle" className="text-[13px]" />
         </button>
       )}
 
-      {/* chevron */}
-      <Link
-        href={href}
-        className="shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white focus-visible:ring-inset"
-        aria-label={epic.id}
-      >
-        <Icon name="chevron_right" className="text-[18px] text-on-surface-variant" />
-      </Link>
+      {/* chevron — decorative; the stretched link handles navigation */}
+      <Icon name="chevron_right" className="shrink-0 text-[18px] text-on-surface-variant" />
     </div>
   );
 }

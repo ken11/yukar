@@ -20,7 +20,6 @@ const en = {
   project: {
     tabs: {
       overview: "Overview",
-      epics: "Epics",
       docs: "Docs",
       repos: "Repos",
       settings: "Settings",
@@ -193,14 +192,6 @@ const en = {
     planApproveFailed: "Failed to approve the plan",
     sendMessageFailed: "Failed to send the message",
   },
-  overview: {
-    activeWork: "Open / Latest Work",
-    recentEpics: "Recent Epics",
-    openEpic: "Open Epic →",
-    openEpicAria: "Open {epicId}",
-    allEpics: "View all Epics →",
-    open: "Open",
-  },
   epics: {
     effortLabel: "Manager reasoning effort",
     effortHint:
@@ -221,17 +212,36 @@ const en = {
       "Completion criteria for Manager. Used as a supplement to the description.",
   },
   epicsBoard: {
-    title: "Epic Board",
     newEpic: "New Epic",
     filter: {
       all: "All",
     },
     multiSelect: {
-      selectHint: "Select epics to merge",
+      selectHint: "Select epics to merge / archive",
+      selectedCount: "{count} selected",
       mergeSelected: "Merge selected epics to main (Arbiter)",
       merging: "Merging…",
       cancel: "Deselect all",
       conflictError: "An epic is busy or an arbiter is already running.",
+      mergeNeedsMergeable:
+        "Merging requires every selected epic to be open, unmerged, and have a branch",
+    },
+    archive: {
+      archiveSelected: "Archive",
+      archiving: "Archiving…",
+      confirmTitle: "Archive epics",
+      confirmBody:
+        "Move {count} epic(s) into the archives/ directory. They disappear from every list and their worktrees are removed (branches are kept). There is no undo in the UI.",
+      confirm: "Archive",
+      cancel: "Cancel",
+      partialError: "Some epics could not be archived — {errors}",
+      errors: {
+        runActive: "A run is active — cannot archive",
+        mergeActive: "A batch merge is in progress — cannot archive",
+        destExists: "The archive destination already exists",
+        notFound: "Epic not found",
+        worktreeFailed: "Failed to remove the worktree",
+      },
     },
   },
   merge: {
@@ -444,7 +454,6 @@ const en = {
     usage: "Usage",
     settings: "Settings",
     projectOverview: "Overview",
-    projectEpics: "Epics",
     projectDocs: "Docs",
     projectRepos: "Repos",
     projectSettings: "Settings",
@@ -655,6 +664,7 @@ const en = {
       ariaLabel: "Daily cost line chart for this month",
       noData: "No data",
     },
+    tickerTooltip: "Today {cost} — Usage dashboard",
     budget: {
       heading: "Budget",
       limitLabel: "Monthly budget (USD)",

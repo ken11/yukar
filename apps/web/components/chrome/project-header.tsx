@@ -263,9 +263,6 @@ export function ProjectHeader({ projectId, projectName }: ProjectHeaderProps) {
   const section = segments[0];
   let sectionLabel: string | undefined;
   switch (section) {
-    case "epics":
-      sectionLabel = t("project.tabs.epics");
-      break;
     case "docs":
       sectionLabel = t("project.tabs.docs");
       break;

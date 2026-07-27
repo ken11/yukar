@@ -8,7 +8,8 @@ interface ProjectTabBarProps {
 }
 
 /**
- * ProjectTabBar — 5 tabs: Overview / Epics / Docs / Repos / Settings.
+ * ProjectTabBar — 4 tabs: Overview / Docs / Repos / Settings.
+ * (The epic board merged into Overview; /epics redirects there.)
  */
 export function ProjectTabBar({ projectId }: ProjectTabBarProps) {
   const t = useT();
@@ -19,11 +20,6 @@ export function ProjectTabBar({ projectId }: ProjectTabBarProps) {
       href: base,
       label: t("project.tabs.overview"),
       segment: undefined as string | undefined,
-    },
-    {
-      href: `${base}/epics`,
-      label: t("project.tabs.epics"),
-      segment: "epics" as string | undefined,
     },
     {
       href: `${base}/docs`,
