@@ -181,6 +181,16 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
 
   const clearSelection = useCallback(() => setSelected([]), []);
 
+  // Select every epic visible under the current filter. Already-selected ids
+  // keep their position (selection order = merge order); the rest append in
+  // board order.
+  const selectAllFiltered = () => {
+    setSelected((prev) => [
+      ...prev,
+      ...filtered.filter((e) => !prev.includes(e.id)).map((e) => e.id),
+    ]);
+  };
+
   // A selection can outlive the list (live updates / another tab archiving an
   // epic remove rows without touching `selected`).  Every consumer — count,
   // guards, and the mutation payloads — must see only ids that still exist.
@@ -233,11 +243,22 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
             {t(labelKey)}
           </button>
         ))}
-        {!isSelecting && (
-          <span className="ml-auto hidden font-mono text-[11px] text-outline md:block">
-            {t("epicsBoard.multiSelect.selectHint")}
-          </span>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          {!isSelecting && (
+            <span className="hidden font-mono text-[11px] text-outline md:block">
+              {t("epicsBoard.multiSelect.selectHint")}
+            </span>
+          )}
+          <button
+            type="button"
+            data-testid="select-all-btn"
+            onClick={selectAllFiltered}
+            disabled={filtered.length === 0}
+            className="rounded border border-outline-variant px-3 py-1 text-body-sm text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
+          >
+            {t("epicsBoard.multiSelect.selectAll")}
+          </button>
+        </div>
       </div>
 
       {/* Selection toolbar */}
@@ -342,6 +363,7 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
               epic={epic}
               projectId={projectId}
               isSelected={selected.includes(epic.id)}
+              selecting={isSelecting}
               onToggleSelect={toggleSelect}
             />
           ))}
@@ -356,11 +378,14 @@ function EpicBoardRow({
   epic,
   projectId,
   isSelected,
+  selecting,
   onToggleSelect,
 }: {
   epic: EpicWithRunSummary;
   projectId: string;
   isSelected: boolean;
+  /** selection mode: at least one epic is selected — row clicks toggle instead of navigating */
+  selecting: boolean;
   onToggleSelect: (epicId: string) => void;
 }) {
   const t = useT();
@@ -382,6 +407,7 @@ function EpicBoardRow({
         // Desktop (md:): single row.
         // relative: anchors the stretched link that makes the whole row clickable.
         "relative flex flex-wrap items-center gap-3 py-3 transition-colors hover:bg-surface-container md:flex-nowrap md:gap-6 md:py-4",
+        isSelected && "bg-surface-container",
       )}
       style={{
         borderBottom: "1px solid var(--edge-shadow)",
@@ -390,15 +416,26 @@ function EpicBoardRow({
       }}
     >
       {/* Stretched link — the whole row navigates; the controls below sit
-          above it (positioned elements later in the DOM paint over it). */}
+          above it (positioned elements later in the DOM paint over it).
+          In selection mode the same surface toggles the selection instead —
+          a misclick can no longer navigate away and drop the selection. */}
       <Link
         href={href}
         data-testid={`epic-item-${epic.id}`}
         aria-label={`${epic.id} ${epic.title}`}
+        onClick={
+          selecting
+            ? (e) => {
+                e.preventDefault();
+                onToggleSelect(epic.id);
+              }
+            : undefined
+        }
         className="absolute inset-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white focus-visible:ring-inset"
       />
 
-      {/* Checkbox — selects for merge / archive */}
+      {/* Checkbox — selects for merge / archive. The after-element widens the
+          hit target well beyond the 16px visual box. */}
       <button
         type="button"
         aria-label={isSelected ? `Deselect ${epic.id}` : `Select ${epic.id}`}
@@ -407,7 +444,7 @@ function EpicBoardRow({
           onToggleSelect(epic.id);
         }}
         className={cn(
-          "relative flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
+          "relative flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors after:absolute after:-inset-3 after:content-['']",
           isSelected
             ? "border-on-surface bg-on-surface"
             : "border-outline-variant hover:border-outline",

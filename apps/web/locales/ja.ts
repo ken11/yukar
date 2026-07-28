@@ -209,6 +209,7 @@ const ja = {
     },
     multiSelect: {
       selectHint: "Epic を選択してマージ / アーカイブ",
+      selectAll: "すべて選択",
       selectedCount: "{count} 件選択中",
       mergeSelected: "選択した Epic を main へマージ（仲裁者）",
       merging: "マージ中…",

@@ -218,6 +218,7 @@ const en = {
     },
     multiSelect: {
       selectHint: "Select epics to merge / archive",
+      selectAll: "Select all",
       selectedCount: "{count} selected",
       mergeSelected: "Merge selected epics to main (Arbiter)",
       merging: "Merging…",
