@@ -12,6 +12,7 @@ entry whose key is found in the model id wins.  Unknown models are assigned
 zero cost and a warning is logged.
 
 Model id examples that resolve correctly:
+  - "claude-opus-5"               → opus-5 entry
   - "claude-sonnet-5"             → sonnet-5 entry
   - "claude-sonnet-4-6"            → sonnet-4-6 entry
   - "anthropic.claude-sonnet-4-6-20250514-v1:0" → sonnet-4-6 entry
@@ -51,6 +52,13 @@ _OPUS_4_NEW = ModelPricing(input=5.0, output=25.0, cache_write=6.25, cache_read=
 
 # USD per 1M tokens (Anthropic / AWS Bedrock, 2026-06)
 _PRICING_TABLE: list[tuple[str, ModelPricing]] = [
+    # Opus 5 — same rate as the Opus 4 new series ($5/$25 per 1M) as of 2026-07.
+    # "opus-5" is not a substring of any "opus-4-*" id (and vice versa), so the
+    # entries never collide regardless of order.
+    (
+        "opus-5",
+        ModelPricing(input=5.0, output=25.0, cache_write=6.25, cache_read=0.50),
+    ),
     # Opus 4 variants (new series) — all share the same rate
     ("opus-4-8", _OPUS_4_NEW),
     ("opus-4-7", _OPUS_4_NEW),

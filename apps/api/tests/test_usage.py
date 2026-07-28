@@ -60,6 +60,34 @@ class TestPricing:
         cost = compute_cost_usd("claude-fable-5", input_tokens=1_000_000, output_tokens=0)
         assert abs(cost - 10.0) < 1e-9
 
+    def test_opus_5(self) -> None:
+        from yukar.usage.pricing import compute_cost_usd
+
+        # Opus 5 rate: input=5.0, output=25.0 per 1M (same as Opus 4.8).
+        cost = compute_cost_usd("claude-opus-5", input_tokens=1_000_000, output_tokens=1_000_000)
+        assert abs(cost - (5.0 + 25.0)) < 1e-9
+
+    def test_opus_5_cache_tokens(self) -> None:
+        from yukar.usage.pricing import compute_cost_usd
+
+        # cache_write=6.25, cache_read=0.50 per 1M.
+        cost = compute_cost_usd(
+            "claude-opus-5", cache_write_tokens=1_000_000, cache_read_tokens=1_000_000
+        )
+        assert abs(cost - (6.25 + 0.50)) < 1e-9
+
+    def test_opus_5_bedrock_arn_does_not_collide_with_opus_4(self) -> None:
+        """An Opus 5 Bedrock id resolves to the opus-5 entry, not an opus-4-* one."""
+        from yukar.usage.pricing import get_pricing
+
+        five = get_pricing("us.anthropic.claude-opus-5-20260601-v1:0")
+        four = get_pricing("us.anthropic.claude-opus-4-8-20260101-v1:0")
+        # Both must resolve (not fall through to None → zeroed cost attribution).
+        assert five is not None
+        assert four is not None
+        assert five.input == 5.0
+        assert four.input == 5.0
+
     def test_sonnet_5(self) -> None:
         from yukar.usage.pricing import compute_cost_usd
 
