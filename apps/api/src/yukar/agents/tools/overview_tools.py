@@ -128,9 +128,26 @@ def make_overview_ro_tools(
 
     @tool
     async def repo_grep(
-        pattern: str, path: str = ".", max_results: int = 200, context: int = 0, repo: str = ""
+        pattern: str,
+        path: str = ".",
+        max_results: int = 200,
+        context: int = 0,
+        regex: bool = False,
+        repo: str = "",
     ) -> dict[str, Any]:
-        """ripgrep search over a branch worktree (read-only, always current).
+        r"""ripgrep search over a branch worktree (read-only, always current).
+
+        By default the pattern is matched as a LITERAL string (ripgrep ``-F``):
+        paste the text exactly as it appears in the file, with NO escaping —
+        every character, including ``( ) [ ] | \``, is matched as-is.
+
+        Set ``regex=True`` for a regular-expression search.  The engine is
+        ripgrep's Rust regex — NOT plain grep (BRE): ``\d`` ``\s`` ``\b`` and
+        ``(a|b)`` work as in Python/JS; ``(`` ``)`` ``|`` are metacharacters
+        without a backslash (``\(`` matches a literal paren); escape with ONE
+        backslash, never two; look-around / back-references / multi-line are
+        unsupported and return an explicit error.  Patterns match within a
+        single line, case-sensitively.
 
         Returns the matching lines themselves as ``path:lineno:text`` (not just
         a count), optionally with surrounding lines of context.
@@ -142,11 +159,14 @@ def make_overview_ro_tools(
         Turn 0).  Unlike ``repo_search``, whose index is the default branch.
 
         Args:
-            pattern: Regex or literal pattern to search for.
+            pattern: Text to search for.  A literal string by default; a Rust
+                regex when ``regex=True``.
             path: Sub-path within the repo's worktree (default: whole worktree).
             max_results: Maximum matching lines to return (default 200).
             context: Surrounding lines to show before/after each match
                 (like ``rg -C``; default 0, capped at 10).
+            regex: When ``True``, treat the pattern as a Rust regex (see above).
+                Defaults to ``False`` (literal match).
             repo: Required — name the touched repo to search (e.g. a repo seen in
                 read_branch_diff / repo_summarize).
         """
@@ -154,7 +174,7 @@ def make_overview_ro_tools(
         if err is not None:
             return err
         assert ctx is not None  # _resolve returns a ctx whenever err is None
-        return await grep_worktree(ctx, pattern, path, max_results, context)
+        return await grep_worktree(ctx, pattern, path, max_results, context, regex)
 
     tools: list[Any] = [fs_read, repo_grep]
 

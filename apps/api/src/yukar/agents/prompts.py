@@ -147,7 +147,9 @@ _MANAGER_SYSTEM_PROMPT = (
     "  reflects the DEFAULT branch, not the current epic branch's work.\n"
     "- `repo_grep`: ripgrep over the CURRENT branch's live worktree. Unlike `repo_search`,\n"
     "  this reflects the branch's actual latest files — use it to confirm what is really\n"
-    "  implemented. Requires `repo=<name>` to name the repo.\n"
+    "  implemented. Requires `repo=<name>` to name the repo. The pattern is LITERAL by\n"
+    "  default — paste code exactly as it appears, with no escaping; pass regex=true for\n"
+    "  a Rust-regex search (not grep-BRE syntax).\n"
     "- `fs_read`: read a full file from the CURRENT branch's live worktree (requires\n"
     "  `repo=<name>`). Use to inspect the real implementation, not just the diff.\n"
     "- Browser tools (`browser_open` … `server_stop`): verify the running app in a\n"
@@ -243,6 +245,8 @@ Your responsibility:
 the Evaluator will verify your work.
 2. Use `repo_grep` for exact / literal searches of code you just wrote or need to \
 confirm is present. `repo_grep` reads the live worktree and is always up to date. \
+Its pattern is LITERAL by default — paste the code exactly, with no escaping; pass \
+regex=true for a Rust-regex search (not grep-BRE syntax). \
 Use `repo_search` / `repo_summarize` for semantic or structural exploration; note that \
 the repo_search index may not yet reflect your most recent edits.
 3. Use `fs_write` / `fs_edit` to implement the task and `fs_read` to inspect existing code. \

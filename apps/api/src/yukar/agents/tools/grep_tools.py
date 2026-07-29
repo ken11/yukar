@@ -4,7 +4,9 @@
 closure captures an ``AgentContext``.
 
 repo_grep searches the live worktree using ripgrep (rg) so results always
-reflect the most recent file state.  Use it when you need:
+reflect the most recent file state.  The pattern is matched as a FIXED STRING
+by default (``rg -F``); ``regex=True`` switches to ripgrep's Rust regex
+syntax.  Use it when you need:
 - Exact / literal text matching of code you just wrote.
 - Verifying a string, symbol, or pattern actually appears in the worktree.
 
@@ -43,15 +45,75 @@ _MATCH_SEP = "\x1f"
 _MAX_CONTEXT_LINES = 10
 
 
+def _validate_pattern(pattern: str) -> str | None:
+    """Return an actionable error message for patterns that can never match.
+
+    Control characters (other than tab) never appear in source text, so a
+    pattern containing one is almost always the visible symptom of an escaping
+    accident in the JSON tool-call layer (e.g. a regex word boundary ``\\b``
+    arriving as the JSON backspace escape).  Failing loudly with the fix beats
+    silently returning 0 matches.
+    """
+    if "\x08" in pattern:
+        return (
+            "pattern contains a literal backspace (U+0008) — a regex word boundary "
+            '`\\b` probably lost its backslash in JSON encoding ("\\b" is the JSON '
+            'backspace escape). Send the pattern with the backslash doubled ("\\\\b") '
+            "and retry."
+        )
+    if "\n" in pattern or "\r" in pattern:
+        return (
+            "pattern contains a newline — repo_grep matches within a single line "
+            "only. Search for a one-line fragment instead."
+        )
+    bad = {c for c in pattern if (ord(c) < 0x20 and c != "\t") or ord(c) == 0x7F}
+    if bad:
+        codes = ", ".join(f"U+{ord(c):04X}" for c in sorted(bad))
+        return (
+            f"pattern contains control character(s) {codes} that never appear in "
+            "source text — it was likely mangled by string escaping. Double any "
+            "backslashes and retry."
+        )
+    return None
+
+
+def _zero_match_hint(pattern: str, regex: bool) -> str | None:
+    """Return a self-correction hint for a 0-match result, or ``None``.
+
+    A backslash in the pattern is the most common cause of a false miss:
+    in literal mode it is searched as a real backslash character, and in
+    regex mode a doubled backslash matches a real backslash character —
+    both usually mean the caller escaped a pattern that needed no escaping.
+    """
+    if not regex and "\\" in pattern:
+        return (
+            "note: the pattern was matched LITERALLY — `\\` is a real backslash "
+            "character, so e.g. `foo\\(` searched for the text `foo\\(`, not `foo(`. "
+            "If the backslash was meant as regex escaping, drop it (or pass "
+            "regex=true)."
+        )
+    if regex and "\\\\" in pattern:
+        return (
+            "note: `\\\\` in a regex matches a literal backslash character. If you "
+            "double-escaped (e.g. `foo\\\\(bar\\\\)` to find `foo(bar)`), use a single "
+            "backslash per metacharacter: `foo\\(bar\\)`."
+        )
+    return None
+
+
 async def grep_worktree(
     ctx: AgentContext,
     pattern: str,
     path: str = ".",
     max_results: int = 200,
     context: int = 0,
+    regex: bool = False,
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Run ripgrep over *ctx*'s worktree (read-only core).
+
+    *pattern* is matched as a fixed string (``rg -F``) unless *regex* is
+    ``True``, in which case it is a ripgrep (Rust regex) pattern.
 
     Shared by the single-repo ``repo_grep`` tool and the multi-repo overview
     ``repo_grep`` (which resolves a per-repo ctx first), so there is exactly one
@@ -67,6 +129,10 @@ async def grep_worktree(
     """
     worktree = ctx.worktree_path
     context = max(0, min(context, _MAX_CONTEXT_LINES))
+
+    pattern_err = _validate_pattern(pattern)
+    if pattern_err is not None:
+        return make_error(pattern_err, results=[])
 
     # Validate search root through path_guard (same containment as fs_read).
     try:
@@ -91,6 +157,7 @@ async def grep_worktree(
         "--line-number",
         "--no-heading",
         f"--field-match-separator={_MATCH_SEP}",
+        *([] if regex else ["-F"]),
         *(["-C", str(context)] if context > 0 else []),
         "-e",
         pattern,
@@ -161,6 +228,10 @@ async def grep_worktree(
 
     n = len(results)
     summary = f"{n} match(es)" + (" (truncated)" if truncated else "")
+    if n == 0:
+        hint = _zero_match_hint(pattern, regex)
+        if hint is not None:
+            summary += "\n" + hint
     text = summary if n == 0 else summary + "\n" + "\n".join(display_lines)
     return make_success(text, results=results, truncated=truncated)
 
@@ -189,24 +260,42 @@ def make_grep_tools(
         path: str = ".",
         max_results: int = 200,
         context: int = 0,
+        regex: bool = False,
     ) -> dict[str, Any]:
-        """Search the worktree for a literal or regex pattern using ripgrep.
+        r"""Search the worktree for an exact text fragment (default) or a regex.
 
-        Returns the matching lines themselves as ``path:lineno:text`` (not just
-        a count), optionally with surrounding lines of context.
+        By default the pattern is matched as a LITERAL string (ripgrep ``-F``):
+        paste the text exactly as it appears in the file.  Every character —
+        including ``( ) [ ] { } | . * + ? \`` — is matched as-is, so do NOT
+        add any escaping (``foo\(`` would search for a real backslash).
+
+        Set ``regex=True`` to interpret the pattern as a regular expression.
+        The engine is ripgrep's Rust regex — NOT plain grep (BRE) and not PCRE:
+
+        - ``\d`` ``\s`` ``\w`` ``\b``, ``(a|b)``, ``+`` ``?`` ``{n,m}`` work as
+          in Python/JS.
+        - ``(`` ``)`` ``|`` are metacharacters WITHOUT a backslash; ``\(`` and
+          ``\|`` match the literal characters (the opposite of grep's BRE
+          dialect, where ``\(`` means a group).
+        - Escape a metacharacter with ONE backslash (``hoge\(`` finds
+          ``hoge(``).  A doubled backslash (``hoge\\(``) matches a real
+          backslash character in the file — a common accidental miss.
+        - Look-around, back-references and multi-line patterns are not
+          supported; they return an explicit error (never a silent 0).
+
+        Patterns match within a single line, case-sensitively.  Returns the
+        matching lines themselves as ``path:lineno:text`` (not just a count),
+        optionally with surrounding lines of context.
 
         Searches the live worktree files directly — results always reflect the
         most recent edits (repo_search / repo_summarize use a FAISS index that
-        may not have caught up yet).  Use repo_grep to confirm that code you
-        just wrote is present with the exact text expected.
-
-        The search respects ``.gitignore`` rules by default (ripgrep's standard
-        behaviour), so node_modules, .venv, and other ignored directories are
-        automatically excluded — consistent with fs_read / fs_list.
+        may not have caught up yet).  Like ripgrep, the search skips gitignored
+        files, hidden files (dotfiles), and binary files.
 
         Args:
-            pattern: Regex or literal pattern to search for.  Passed to rg via
-                ``-e`` so the pattern cannot be confused with a flag.
+            pattern: Text to search for.  A literal string by default; a Rust
+                regex when ``regex=True``.  Passed to rg via ``-e`` so it
+                cannot be confused with a flag.
             path: Sub-path inside the worktree to restrict the search to.
                 Defaults to ``"."`` (the entire worktree).  Paths that escape
                 the worktree boundary are rejected with an error.
@@ -216,6 +305,8 @@ def make_grep_tools(
             context: Number of surrounding lines to show before and after each
                 match (like ``rg -C``).  Defaults to 0 (match lines only);
                 capped at 10.  Use 2-3 to see the code around each match.
+            regex: When ``True``, treat the pattern as a Rust regex (see
+                above).  Defaults to ``False`` (literal match).
 
         Returns:
             A dict with:
@@ -228,6 +319,8 @@ def make_grep_tools(
             - ``"truncated"``: ``True`` when more matches existed than
               *max_results* (only present on success).
         """
-        return await grep_worktree(ctx, pattern, path, max_results, context, timeout=timeout)
+        return await grep_worktree(
+            ctx, pattern, path, max_results, context, regex, timeout=timeout
+        )
 
     return [repo_grep]
