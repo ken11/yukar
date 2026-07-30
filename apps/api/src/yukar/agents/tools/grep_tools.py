@@ -156,6 +156,10 @@ async def grep_worktree(
         "--color=never",
         "--line-number",
         "--no-heading",
+        # rg omits the filename field when given a single explicit file target,
+        # which would leave 2-field match lines the parser below must discard.
+        # Force the 3-field "path<SEP>lineno<SEP>text" shape unconditionally.
+        "--with-filename",
         f"--field-match-separator={_MATCH_SEP}",
         *([] if regex else ["-F"]),
         *(["-C", str(context)] if context > 0 else []),
@@ -227,6 +231,16 @@ async def grep_worktree(
         display_lines.append(f"{parts[0]}:{line_no}:{parts[2]}")
 
     n = len(results)
+    if rc == 0 and n == 0 and not truncated:
+        # rg's exit code says at least one line matched, yet none survived
+        # parsing — a parser/output-shape desync.  Surface it loudly instead
+        # of reporting a false "0 match(es)" (the exact lie this tool once
+        # told for single-file path targets).
+        return make_error(
+            "internal error: rg found matches but none could be parsed from its "
+            "output — report this as a repo_grep bug.",
+            results=[],
+        )
     summary = f"{n} match(es)" + (" (truncated)" if truncated else "")
     if n == 0:
         hint = _zero_match_hint(pattern, regex)

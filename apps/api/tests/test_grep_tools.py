@@ -176,6 +176,36 @@ class TestPatternGuards:
         assert len(result["results"]) == 1
 
 
+class TestPathTargets:
+    async def test_single_file_path_reports_matches(self, tmp_path: Path) -> None:
+        # rg omits the filename field for a single explicit file target; the
+        # parser must still see 3 fields (--with-filename) or every match is
+        # silently dropped and the tool lies with "0 match(es)".
+        wt = tmp_path / "wt"
+        (wt / "hoge" / "fuga").mkdir(parents=True)
+        (wt / "hoge" / "fuga" / "main.tf").write_text('resource "x" "y" {}\n')
+
+        via_dir = await _grep(wt, 'resource "x"', path="hoge/fuga")
+        via_file = await _grep(wt, 'resource "x"', path="hoge/fuga/main.tf")
+
+        assert len(via_dir["results"]) == 1
+        assert len(via_file["results"]) == 1
+        assert via_file["results"][0]["path"] == "hoge/fuga/main.tf"
+        assert via_file["results"][0]["line"] == 1
+
+    async def test_single_file_path_with_context_lines(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / "app.py").write_text("before\nneedle\nafter\n")
+
+        result = await _grep(wt, "needle", path="app.py", context=1)
+
+        assert len(result["results"]) == 1
+        text = _text(result)
+        assert "before" in text
+        assert "after" in text
+
+
 class TestScope:
     async def test_gitignored_file_not_searched(self, tmp_path: Path) -> None:
         repo = make_git_repo(tmp_path)
