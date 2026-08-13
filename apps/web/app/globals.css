@@ -313,6 +313,19 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
+   iOS Safari auto-zooms the page when a focused form control's font-size is
+   below 16px. Force ≥16px on mobile widths only — desktop (md:) keeps the
+   designed sizes. Unlayered, so it wins over Tailwind's layered utilities.
+   --------------------------------------------------------------------------- */
+@media (max-width: 767.98px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Conversation motion (C: 気配) — every animation visualizes a real event
    (token stream / turn end / park). None of it runs under reduced motion.
    --------------------------------------------------------------------------- */
