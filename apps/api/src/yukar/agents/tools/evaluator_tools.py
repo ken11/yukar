@@ -21,6 +21,7 @@ from strands import tool
 from yukar.agents.context import AgentContext
 from yukar.agents.tools.command import (
     _DEFAULT_TIMEOUT_SECONDS,
+    describe_command_permissions,
     make_command_tools,
 )
 from yukar.agents.tools.response_builder import make_error, make_success
@@ -117,7 +118,15 @@ def make_evaluator_tools(
     _cmd_tools = make_command_tools(ctx, timeout=timeout)
     _run_command = _cmd_tools[0]  # the sole tool returned
 
-    @tool
+    # Dynamic description: the concrete allow/deny lists must be visible BEFORE
+    # the first call, not only in a rejection message.
+    _run_tests_description = (
+        "Run a test command inside the worktree (read-only from the "
+        "Evaluator's view; nothing is committed by this tool).\n\n"
+        + describe_command_permissions(ctx.command_config.allow, ctx.command_config.deny)
+    )
+
+    @tool(description=_run_tests_description)
     async def run_tests(command: str, cwd: str = ".") -> dict[str, Any]:
         """Run a test command inside the worktree (read-only from Evaluator's view).
 

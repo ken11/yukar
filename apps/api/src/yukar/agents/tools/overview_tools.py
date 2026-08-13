@@ -58,6 +58,7 @@ def make_overview_ro_tools(
     resolve_ctx: CtxResolver,
     *,
     include_run_tests: bool = True,
+    command_notes: dict[str, str] | None = None,
 ) -> list[Any]:
     """Return read-only worktree tools that dispatch by ``repo``, resolving the
     target tree PER CALL via *resolve_ctx*.
@@ -72,6 +73,10 @@ def make_overview_ro_tools(
             reflected on the next call.
         include_run_tests: When ``True`` (Reviewer), also expose ``run_tests``.
             When ``False`` (Manager), expose only ``fs_read`` + ``repo_grep``.
+        command_notes: Optional per-repo permitted-commands text (from
+            ``describe_command_permissions``), embedded in the ``run_tests``
+            tool description so the agent knows the allowlist UP FRONT instead
+            of discovering it through rejected calls.
 
     Returns:
         ``[fs_read, repo_grep]`` (plus ``run_tests`` when *include_run_tests*),
@@ -179,8 +184,21 @@ def make_overview_ro_tools(
     tools: list[Any] = [fs_read, repo_grep]
 
     if include_run_tests:
+        # Dynamic description: surface each repo's concrete allowlist BEFORE the
+        # first call (matching the Worker/Evaluator command tools).
+        _description = (
+            "Run a test command inside a branch worktree (subject to the "
+            "operator's allow/deny lists).\n\n"
+            "Resolves its target on every call (active trial worktree once it "
+            "exists, else base checkout), so tests run against the branch's "
+            "current state."
+        )
+        if command_notes:
+            _description += "\n\nPermitted commands per repo:" + "".join(
+                f"\n### {name}\n{command_notes[name]}" for name in sorted(command_notes)
+            )
 
-        @tool
+        @tool(description=_description)
         async def run_tests(command: str, cwd: str = ".", repo: str = "") -> dict[str, Any]:
             """Run a test command inside a branch worktree (subject to allow/deny).
 

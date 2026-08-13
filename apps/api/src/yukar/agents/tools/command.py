@@ -56,6 +56,7 @@ import os
 import re
 import shlex
 import signal
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,41 @@ from yukar.sandbox.path_guard import PathGuardError
 # Hard limits to prevent runaway processes.
 _DEFAULT_TIMEOUT_SECONDS: float = 120.0
 _MAX_OUTPUT_BYTES: int = 256 * 1024  # 256 KiB per stream
+
+
+def describe_command_permissions(allow: Sequence[str], deny: Sequence[str]) -> str:
+    """Agent-facing description of what the command tools may execute.
+
+    Embedded in the ``run_command`` / ``run_tests`` tool descriptions and the
+    agent system prompts so the permitted set is known UP FRONT.  Before this,
+    the only way an agent learnt the allowlist was the rejection message of a
+    failed call — which produced long trial-and-error chains of denied
+    commands.
+    """
+    if not allow:
+        return (
+            "NO shell commands are permitted in this worktree: the operator's "
+            "allow list is empty, so EVERY command is rejected before it runs. "
+            "Do not attempt any command — none can succeed, and probing is "
+            "pointless. Verify through the read-only tools (diff / grep / file "
+            "reads) instead."
+        )
+    lines = [
+        "The ONLY commands permitted in this worktree (operator-configured):",
+        *(f"  - {entry}" for entry in allow),
+    ]
+    if deny:
+        lines.append("Explicitly denied:")
+        lines.extend(f"  - {entry}" for entry in deny)
+    lines.append(
+        "Entries match as command prefixes: a single-token entry (e.g. "
+        "'pytest') permits any invocation of that command; a multi-token entry "
+        "(e.g. 'pnpm test') permits only that subcommand. `git` is always "
+        "denied here regardless of the list — use the dedicated git tools "
+        "where provided. Any command not covered above is rejected before it "
+        "runs, so do NOT trial-and-error other commands."
+    )
+    return "\n".join(lines)
 
 
 async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
@@ -514,7 +550,18 @@ def make_command_tools(
         A one-element list containing the ``run_command`` Strands tool.
     """
 
-    @tool
+    # The tool description is built dynamically so the CONCRETE allow/deny
+    # lists are visible to the agent before its first call (the docstring below
+    # is still parsed for the Args descriptions).
+    _description = (
+        "Execute a shell command inside the worktree.\n\n"
+        "The command is run without a shell (no shell expansion; the string is "
+        "split with shlex). The working directory is validated against the "
+        "worktree sandbox.\n\n"
+        + describe_command_permissions(ctx.command_config.allow, ctx.command_config.deny)
+    )
+
+    @tool(description=_description)
     async def run_command(command: str, cwd: str = ".") -> dict[str, Any]:
         """Execute a shell command inside the worktree.
 

@@ -21,7 +21,7 @@ from yukar.agents.context import AgentContext
 from yukar.agents.prompts import _WORKER_SYSTEM_PROMPT, _build_worker_prompt
 from yukar.agents.streaming import AgentUsageRecorder, StreamTranslator, extract_final_text
 from yukar.agents.tools.browser_tools import make_browser_tools_if_configured
-from yukar.agents.tools.command import make_command_tools
+from yukar.agents.tools.command import describe_command_permissions, make_command_tools
 from yukar.agents.tools.fs import make_fs_tools
 from yukar.agents.tools.fs_edit import make_fs_edit_tools
 from yukar.agents.tools.git_tools import make_git_tools
@@ -95,7 +95,14 @@ async def run_worker(
             repo_name=ctx.repo_name,  # Worker: single repo, structurally enforced
         )
 
-    worker_system_prompt = _WORKER_SYSTEM_PROMPT
+    # Surface the permitted-command set up front (also embedded in the
+    # run_command tool description) so the Worker never has to discover the
+    # allowlist through rejected trial-and-error calls.
+    worker_system_prompt = _WORKER_SYSTEM_PROMPT + (
+        "\n## Shell command permissions (`run_command`)\n"
+        + describe_command_permissions(ctx.command_config.allow, ctx.command_config.deny)
+        + "\n"
+    )
     if extra_system_prompt:
         worker_system_prompt = worker_system_prompt + extra_system_prompt
 

@@ -3134,7 +3134,7 @@ class TestAgentLimitsPropagation:
         from typing import cast
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from yukar.agents.context import AgentContext
+        from yukar.agents.context import AgentContext, RepoCommandConfig
         from yukar.agents.worker import run_worker
         from yukar.models.task import Task
 
@@ -3163,6 +3163,7 @@ class TestAgentLimitsPropagation:
                 workspace_root=str(tmp_path),
                 project_id="p",
                 repo_name="repo",
+                command_config=RepoCommandConfig(),
             ),
         )
         task = Task(id="T1", title="do something", status="in_progress")
@@ -3209,7 +3210,7 @@ class TestAgentLimitsPropagation:
         from typing import cast
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from yukar.agents.context import AgentContext
+        from yukar.agents.context import AgentContext, RepoCommandConfig
         from yukar.agents.worker import run_worker
         from yukar.models.task import Task
 
@@ -3238,6 +3239,7 @@ class TestAgentLimitsPropagation:
                 workspace_root=str(tmp_path),
                 project_id="p",
                 repo_name="repo",
+                command_config=RepoCommandConfig(),
             ),
         )
         task = Task(id="T1", title="budget task", status="in_progress")
@@ -3284,7 +3286,7 @@ class TestAgentLimitsPropagation:
         from typing import cast
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from yukar.agents.context import AgentContext
+        from yukar.agents.context import AgentContext, RepoCommandConfig
         from yukar.agents.evaluator import run_evaluator
         from yukar.models.task import Task
 
@@ -3313,6 +3315,7 @@ class TestAgentLimitsPropagation:
                 workspace_root=str(tmp_path),
                 project_id="p",
                 repo_name="repo",
+                command_config=RepoCommandConfig(),
             ),
         )
         task = Task(id="T1", title="eval task", status="in_progress")

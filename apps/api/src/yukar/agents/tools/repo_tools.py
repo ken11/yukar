@@ -68,8 +68,44 @@ def make_repo_tools(
             ``end_line`` (1-indexed, inclusive), ``language``.
             Line numbers are 1-indexed so they can be used directly with
             standard editor line references.
-            Returns an empty list if the repo is not indexed yet.
+            When the repo is not indexed yet, ``results`` is empty and
+            ``message`` explains why (semantic search unavailable — NOT an
+            empty search result).
         """
+        from yukar.config import paths as config_paths
+        from yukar.indexer import faiss_store
+
+        # A missing index must be VISIBLE, not an empty result.  Returning a
+        # bare [] here taught agents that semantic search is useless, pushing
+        # them into long repo_grep/fs_read loops for the rest of the run.
+        def _not_indexed(missing: str) -> dict[str, Any]:
+            return {
+                "results": [],
+                "message": (
+                    f"{missing} — semantic search is UNAVAILABLE (this is not an "
+                    "empty search result). Ask the user to run a sync/re-index if "
+                    "you need it; meanwhile use repo_grep (exact text) and fs_read."
+                ),
+            }
+
+        if repo_name is not None:
+            idx_dir = config_paths.index_dir(indexer_service.workspace_root, project_id, repo_name)
+            if not faiss_store.index_exists(idx_dir):
+                return _not_indexed(f"Repository '{repo_name}' has not been indexed yet")
+        else:
+            # Manager mode: searching zero indexed repos always yields [].
+            from yukar.storage.project_repo import list_repos
+
+            repos = await list_repos(indexer_service.workspace_root, project_id)
+            if not any(
+                faiss_store.index_exists(
+                    config_paths.index_dir(indexer_service.workspace_root, project_id, r.name)
+                )
+                for r in repos
+                if r.index.enabled
+            ):
+                return _not_indexed("No repository in this project has been indexed yet")
+
         try:
             raw = await indexer_service.search(
                 project_id,
@@ -93,6 +129,16 @@ def make_repo_tools(
             }
             for chunk, score in raw
         ]
+        if not results:
+            # Indexed but nothing similar: distinguish from "not indexed" and
+            # steer the agent instead of leaving it to grind grep patterns.
+            return {
+                "results": [],
+                "message": (
+                    "No semantically similar code found. Try different wording, "
+                    "or repo_grep for exact strings/identifiers."
+                ),
+            }
         return {"results": results}
 
     @tool

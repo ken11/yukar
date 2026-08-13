@@ -122,7 +122,15 @@ async def run_evaluator(
         thread_id=eval_id,
     )
 
-    eval_system_prompt = _EVALUATOR_SYSTEM_PROMPT
+    # Surface the permitted-command set up front (also embedded in the
+    # run_tests tool description) so the Evaluator never has to discover the
+    # allowlist through rejected trial-and-error calls.
+    from yukar.agents.tools.command import describe_command_permissions
+
+    eval_system_prompt = _EVALUATOR_SYSTEM_PROMPT + (
+        "\n\n## Shell command permissions (`run_tests`)\n"
+        + describe_command_permissions(ctx.command_config.allow, ctx.command_config.deny)
+    )
     if extra_system_prompt:
         eval_system_prompt = eval_system_prompt + extra_system_prompt
 

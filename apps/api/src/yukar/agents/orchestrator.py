@@ -1025,6 +1025,11 @@ class EpicOrchestrator:
                 *self._mcp_tools,
             ]
 
+        # Surface the per-repo command allowlists in the system prompt.  Without
+        # this the permitted set is only discoverable through rejected calls
+        # (Reviewer) or never at all (Manager, who writes the contracts).
+        manager_system_prompt += await self._build_command_permissions_prompt(root, project_id)
+
         manager_agent = Agent(
             model=manager_model,
             agent_id=manager_thread_id,
@@ -1674,8 +1679,61 @@ class EpicOrchestrator:
                     ctx_cache[key] = ctx
             return ctx
 
+        # Per-repo permitted commands, embedded in the run_tests description so
+        # the Reviewer knows the allowlist up front (issue: allowlist discovery
+        # by trial-and-error).
+        from yukar.agents.tools.command import describe_command_permissions
+
+        command_notes = {
+            name: describe_command_permissions(r.commands.allow, r.commands.deny)
+            for name, r in repos_by_name.items()
+        }
         return make_overview_ro_tools(
-            sorted(repos_by_name), _resolve_ctx, include_run_tests=include_run_tests
+            sorted(repos_by_name),
+            _resolve_ctx,
+            include_run_tests=include_run_tests,
+            command_notes=command_notes if include_run_tests else None,
+        )
+
+    async def _build_command_permissions_prompt(self, root: str, project_id: str) -> str:
+        """Per-repo permitted-commands section for the Manager/Reviewer system prompt.
+
+        The allow/deny lists are operator-level repo configuration that agents
+        cannot change; surfacing them up front (a) stops the Reviewer from
+        discovering the allowlist through rejected ``run_tests`` calls and
+        (b) stops the Manager from writing contracts that demand test/build
+        runs no agent will ever be permitted to execute.
+        """
+        from yukar.agents.tools.command import describe_command_permissions
+        from yukar.storage import project_repo
+
+        repos = await project_repo.list_repos(root, project_id)
+        if not repos:
+            return ""
+
+        per_repo = "".join(
+            f"\n### {r.name}\n"
+            + describe_command_permissions(r.commands.allow, r.commands.deny)
+            for r in sorted(repos, key=lambda r: r.name)
+        )
+        if self._agent_role == "reviewer":
+            return (
+                "\n\n## Shell command permissions (`run_tests`, per repo — fixed by the operator)\n"
+                "`run_tests` can ONLY execute the commands listed below; anything else "
+                "is rejected before it runs, and you cannot change the lists. For a "
+                "repo that permits no commands, verify by reading the diff and code, "
+                "and note in your report that tests could not be run — do NOT probe "
+                "for runnable commands by trial and error." + per_repo
+            )
+        return (
+            "\n\n## Shell command permissions (per repo — fixed by the operator)\n"
+            "You cannot run shell commands yourself, and the Workers/Evaluators you "
+            "dispatch can ONLY execute the commands listed below; anything else is "
+            "rejected before it runs, and neither you nor they can change the lists. "
+            "Write task contracts whose verification relies only on these commands. "
+            "For a repo that permits no commands, the contract must specify diff- or "
+            "grep-based verification (read_diff / repo_grep) instead of test or build "
+            "runs — do not ask agents to run tests there." + per_repo
         )
 
     def _make_tree_ensurer(self) -> Any:

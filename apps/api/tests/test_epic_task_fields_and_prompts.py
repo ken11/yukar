@@ -479,7 +479,7 @@ class TestEvaluatorRepoTools:
         from types import SimpleNamespace
         from typing import cast
 
-        from yukar.agents.context import AgentContext
+        from yukar.agents.context import AgentContext, RepoCommandConfig
         from yukar.agents.tools.evaluator_tools import make_evaluator_tools
         from yukar.agents.tools.repo_tools import make_repo_tools
 
@@ -490,6 +490,7 @@ class TestEvaluatorRepoTools:
                 workspace_root=str(tmp_path),
                 project_id="proj",
                 repo_name="myrepo",
+                command_config=RepoCommandConfig(),
             ),
         )
 

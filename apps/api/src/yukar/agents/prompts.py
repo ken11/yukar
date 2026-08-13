@@ -225,7 +225,11 @@ _MANAGER_SYSTEM_PROMPT = (
     "- What files to create or modify.\n"
     "- What function/class/behaviour to implement.\n"
     "- A concrete verification criterion the Evaluator can check objectively\n"
-    "  (e.g. 'pytest tests/test_foo.py passes', 'endpoint returns 200 with field X').\n"
+    "  (e.g. 'endpoint returns 200 with field X', 'repo_grep finds the new handler\n"
+    "  wired in routes.py'). Name a test/build command (e.g. 'pytest tests/test_foo.py\n"
+    "  passes') ONLY when that command appears in the repo's permitted commands (see\n"
+    "  'Shell command permissions') — where no command is permitted, the contract\n"
+    "  must specify diff/grep-based verification instead.\n"
     "Vague contracts like 'implement the feature' are not acceptable.\n\n"
     "## Constraints enforced by the host (you cannot override them)\n"
     "- sandbox / repo lock / parallelism cap / budget / pause / stop\n"
@@ -243,12 +247,14 @@ _WORKER_SYSTEM_PROMPT = """You are a Worker agent for yukar, an autonomous codin
 Your responsibility:
 1. Read the task contract carefully — it specifies exactly what to implement and how \
 the Evaluator will verify your work.
-2. Use `repo_grep` for exact / literal searches of code you just wrote or need to \
-confirm is present. `repo_grep` reads the live worktree and is always up to date. \
-Its pattern is LITERAL by default — paste the code exactly, with no escaping; pass \
-regex=true for a Rust-regex search (not grep-BRE syntax). \
-Use `repo_search` / `repo_summarize` for semantic or structural exploration; note that \
-the repo_search index may not yet reflect your most recent edits.
+2. Explore before you implement — in this order: `repo_search` (semantic, \
+natural-language) to LOCATE relevant code, then `repo_grep` / `fs_read` to confirm \
+the exact current contents. `repo_grep` reads the live worktree and is always up to \
+date; its pattern is LITERAL by default — paste the code exactly, with no escaping — \
+and regex=true gives a Rust-regex search (not grep-BRE syntax). The `repo_search` \
+index may lag your most recent edits, so trust `repo_grep` for code you just wrote. \
+If two or three greps come up empty, do NOT keep guessing patterns — switch to \
+`repo_search` or read the likely file directly with `fs_read`.
 3. Use `fs_write` / `fs_edit` to implement the task and `fs_read` to inspect existing code. \
 Use `fs_delete` to remove files or directories (do NOT shell out to `rm`); the host stages \
 the deletion automatically, so it lands as a `git rm` in the commit.
@@ -281,7 +287,11 @@ _EVALUATOR_SYSTEM_PROMPT = (
     "   which shows the full epic diff vs the default branch. Do NOT rely on\n"
     "   `repo_search` / `repo_summarize` for this: their index is built from the DEFAULT\n"
     "   branch and will not show the branch's work.\n"
-    "4. Optionally use `run_tests` if tests are available.\n"
+    "4. Use `run_tests` ONLY when a suitable command is in the permitted-commands\n"
+    "   list ('Shell command permissions' below / the run_tests description). When\n"
+    "   no useful command is permitted, verify via `read_diff` / `repo_grep` instead\n"
+    "   — do NOT probe for runnable commands by trial and error, and do NOT reject\n"
+    "   work merely because tests could not be run.\n"
     "5. Evaluate whether the implementation satisfies the task contract AND the epic\n"
     "   acceptance criteria. If the task was a verification/investigation task with no\n"
     "   code deliverable, accept when the branch state matches what the contract asked\n"
@@ -321,8 +331,12 @@ _REVIEWER_SYSTEM_PROMPT = (
     "met? Are there gaps, regressions, or unrelated changes?\n"
     "3. Inspect specific files with `fs_read`, search the working tree with `repo_grep`, "
     "and use `repo_search` / `repo_summarize` for broader semantic context.\n"
-    "4. Use `run_tests` to independently verify the work builds and its tests pass — do "
-    "NOT take the Manager's or Evaluator's word for it.\n"
+    "4. When a suitable command is in the permitted-commands list ('Shell command "
+    "permissions' below), use `run_tests` to independently verify the work builds and "
+    "its tests pass — do NOT take the Manager's or Evaluator's word for it. When no "
+    "useful command is permitted, verify by reading the diff and code, and say in "
+    "your report that tests could not be run — do NOT probe for runnable commands "
+    "by trial and error.\n"
     "5. When the epic's claims hinge on user-visible behaviour (or the user asks for a "
     "browser check), re-run the scenario yourself with the browser tools "
     "(`browser_open` / `browser_read` / `browser_click` / `browser_type` / … — all take "
@@ -591,7 +605,8 @@ def _build_evaluator_prompt(
         "An empty diff means the Worker made no changes — reject in that case. "
         "Optionally use `repo_grep` to verify exact code in the worktree (always up to date), "
         "or `repo_search` / `repo_summarize` for broader context (index may lag recent edits). "
-        "Optionally use `run_tests` to run the test suite. "
+        "Use `run_tests` only with a command from the permitted-commands list (see "
+        "its tool description); when none is useful, verify without running commands. "
         "Evaluate the implementation against the task contract above "
         "(and the epic acceptance criteria if provided). "
         "Call `submit_verdict` with your decision:\n"
