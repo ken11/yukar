@@ -55,11 +55,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from yukar.indexer.service import IndexerService
     from yukar.indexer.watcher import RepoWatcher
     from yukar.storage.project_repo import list_projects, list_repos
+    from yukar.storage.trash import drain_sweeps, schedule_trash_sweep
     from yukar.usage.exchange import ExchangeRateProvider
     from yukar.usage.tracker import TokenUsageTracker, init_tracker
 
     cfg = load_settings()
     app.state.settings = cfg
+
+    # Collect workspace-trash leftovers from a previous process (directories
+    # renamed into .trash/ whose background deletion never finished).
+    schedule_trash_sweep(cfg.workspace_root)
 
     # Strong-reference set for fire-and-forget startup tasks.
     # Keeps tasks alive until they complete so GC cannot collect them mid-run
@@ -268,6 +273,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         event_bus.publish_usage_sentinel()
     except Exception:
         logger.debug("Shutdown: could not publish usage sentinel", exc_info=True)
+
+    # Give in-flight trash sweeps a moment to finish; anything still running
+    # is left to the next startup sweep (the entries survive in .trash/).
+    try:
+        await drain_sweeps(timeout=5.0)
+    except Exception:
+        logger.debug("Shutdown: trash sweep drain failed", exc_info=True)
 
 
 async def _prefetch_grammars() -> None:

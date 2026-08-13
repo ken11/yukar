@@ -152,6 +152,14 @@ def archived_epic_dir(root: str, project_id: str, epic_id: str) -> Path:
     return archives_dir(root, project_id) / epic_id
 
 
+def trash_dir(root: str) -> Path:
+    """Workspace trash — directories renamed here are deleted by a background
+    sweep (see yukar.storage.trash).  A dot-directory at the workspace root, so
+    project enumeration (which requires ``<dir>/.yukar/project.yaml``) never
+    picks it up."""
+    return workspace_root(root) / ".trash"
+
+
 def epic_yukar_dir(root: str, project_id: str, epic_id: str) -> Path:
     return epic_dir(root, project_id, epic_id) / ".yukar"
 

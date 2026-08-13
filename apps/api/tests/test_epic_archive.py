@@ -147,10 +147,19 @@ class TestArchiveMove:
 
 class TestArchiveWorktrees:
     async def test_archive_removes_worktree_keeps_branch(
-        self, app_client: Any, tmp_path: Path, tmp_workspace: Path
+        self, app_client: Any, tmp_path: Path, tmp_workspace: Path, monkeypatch: Any
     ) -> None:
+        from yukar.api.routers import epics as epics_router
         from yukar.config import paths as p
         from yukar.git.worktree import ensure_worktree
+
+        # The teardown must take the O(1) trash-rename fast path — the
+        # synchronous `git worktree remove` fallback is what used to time the
+        # request out at the proxy.  Make the slow path fail loudly.
+        async def _slow_path_forbidden(**_kwargs: Any) -> tuple[bool, str | None]:
+            raise AssertionError("slow worktree removal taken — expected the trash fast path")
+
+        monkeypatch.setattr(epics_router, "remove_worktree", _slow_path_forbidden)
 
         repo = make_git_repo(tmp_path, "arch-repo")
         await _bootstrap_project(
@@ -198,6 +207,14 @@ class TestArchiveWorktrees:
         assert archived.is_dir()
         leftover = archived / "worktrees" / "manager" / "arch-repo"
         assert not leftover.exists()
+
+        # The checkout was renamed into the workspace trash (so the request
+        # never pays for the deletion) and the background sweep removes it.
+        from yukar.storage.trash import drain_sweeps
+
+        await drain_sweeps()
+        trash = p.trash_dir(str(tmp_workspace))
+        assert not trash.is_dir() or list(trash.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------

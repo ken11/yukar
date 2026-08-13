@@ -25,6 +25,7 @@ from yukar.models.epic import Epic
 from yukar.models.events import EpicStatusChangedEvent
 from yukar.models.run import RunStatus
 from yukar.storage import epic_repo, project_repo, state_repo
+from yukar.storage.trash import discard_to_trash
 
 logger = logging.getLogger(__name__)
 
@@ -283,9 +284,25 @@ async def _remove_all_worktrees(root: str, project_id: str, epic_id: str) -> str
             except HTTPException:
                 # Repo no longer configured in the project — there is no repo
                 # to deregister from; just drop the orphan checkout.
-                await asyncio.to_thread(shutil.rmtree, wt_path, ignore_errors=True)
+                if not await discard_to_trash(root, wt_path):
+                    await asyncio.to_thread(shutil.rmtree, wt_path, ignore_errors=True)
                 continue
             repo_path = Path(repo_info.path)
+            # Fast path: deleting the checkout in-request can take tens of
+            # seconds (node_modules etc.) and times the request out at the
+            # Next.js proxy.  Rename it into the workspace trash (instant,
+            # deleted in the background) and prune the now-dangling
+            # registration — same net effect as `git worktree remove --force`.
+            if await discard_to_trash(root, wt_path):
+                # A stale registration blocks checking out the branch elsewhere,
+                # so a failed prune must fail the archive like the slow path did.
+                prune = await run_git("worktree", "prune", cwd=repo_path, check=False)
+                if not prune.ok:
+                    error = prune.stderr.strip() or f"rc={prune.returncode}"
+                    return f"worktree prune failed for {repo_name}: {error}"
+                continue
+            # Rename failed (should not happen on a same-volume workspace) —
+            # fall back to the synchronous removal.
             removed, wt_error = await remove_worktree(
                 repo_path=repo_path, worktree_path=wt_path, force=True
             )
