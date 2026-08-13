@@ -78,21 +78,27 @@ export function CostTicker({ initialData }: CostTickerProps) {
   }
 
   return (
-    <div className="flex flex-col items-stretch gap-1 px-1 py-1">
+    <div className="flex flex-col items-stretch gap-1 px-0.5 py-1">
       {/* Today's cost link */}
+      {/* Stacked vertically: the 56px rail cannot fit "label + amount" on one
+          nowrap line, and an overflowing amount would poke past the rail edge. */}
       <Link
         href="/usage"
         className={cn(
-          "flex items-center justify-center gap-1 rounded px-1 py-1 font-mono tabular-nums transition-colors hover:bg-surface-container-high",
+          "flex min-w-0 flex-col items-center rounded px-0.5 py-1 font-mono tabular-nums transition-colors hover:bg-surface-container-high",
           color,
         )}
-        style={{ fontSize: "12px", lineHeight: "16px", whiteSpace: "nowrap" }}
         title={t("usage.tickerTooltip").replace("{cost}", todayCost)}
       >
-        <span className="text-outline" style={{ fontSize: "9px" }}>
+        <span className="text-outline" style={{ fontSize: "9px", lineHeight: "12px" }}>
           {t("usage.budget.dailySpent")}
         </span>
-        {todayCost}
+        <span
+          className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap"
+          style={{ fontSize: "11px", lineHeight: "15px" }}
+        >
+          {todayCost}
+        </span>
       </Link>
 
       {/* Day/month ratio bars (only when budget is set) */}

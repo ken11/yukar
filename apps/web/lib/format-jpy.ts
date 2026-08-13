@@ -28,12 +28,23 @@ export function formatJpy(amount: number): string {
  * Converts a JPY amount to a compact notation for rail display.
  * - < 1000: exact (¥842)
  * - >= 1000: 1 decimal place k (¥1.2k)
- * - >= 1_000_000: 1 decimal place M (¥1.2M)
+ * - >= 100_000: integer k (¥123k) — the decimal no longer fits the 56px rail
+ * - >= 1_000_000: 1 decimal place M (¥1.2M), integer M from ¥100M (¥123M)
  * Always abbreviated to fit the available space. Pass the exact total separately to formatJpy for the title attribute.
  */
 export function formatJpyCompact(amount: number): string {
-  if (amount >= 1_000_000) {
+  // Thresholds sit at the ROUNDING boundary, not the display boundary:
+  // ¥999,500 already rounds to "¥1000k" in the k-branch (7 chars — wider than
+  // the rail), so it must be promoted to "¥1.0M" instead.  Same for 99,950
+  // ("¥100.0k" → "¥100k") and 99,950,000 ("¥100.0M" → "¥100M").
+  if (amount >= 99_950_000) {
+    return `¥${Math.round(amount / 1_000_000)}M`;
+  }
+  if (amount >= 999_500) {
     return `¥${(amount / 1_000_000).toFixed(1)}M`;
+  }
+  if (amount >= 99_950) {
+    return `¥${Math.round(amount / 1_000)}k`;
   }
   if (amount >= 1_000) {
     return `¥${(amount / 1_000).toFixed(1)}k`;
@@ -90,9 +101,14 @@ export function formatCost(jpy: number, usd: number, locale: Locale): string {
  */
 export function formatCostCompact(jpy: number, usd: number, locale: Locale): string {
   if (locale === "ja") return formatJpyCompact(jpy);
-  // EN: compact USD
-  if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(1)}M`;
-  if (usd >= 1_000) return `$${(usd / 1_000).toFixed(1)}k`;
-  // < $1000: 2 decimal places
+  // EN: compact USD — same width budget (and same rounding-boundary
+  // thresholds, see formatJpyCompact) as the JPY rail display.
+  if (usd >= 99_950_000) return `$${Math.round(usd / 1_000_000)}M`;
+  if (usd >= 999_500) return `$${(usd / 1_000_000).toFixed(1)}M`;
+  if (usd >= 99_950) return `$${Math.round(usd / 1_000)}k`;
+  if (usd >= 999.5) return `$${(usd / 1_000).toFixed(1)}k`;
+  // $100–999: the cents no longer fit the rail
+  if (usd >= 99.5) return `$${Math.round(usd)}`;
+  // < $100: 2 decimal places
   return `$${usd.toFixed(2)}`;
 }
