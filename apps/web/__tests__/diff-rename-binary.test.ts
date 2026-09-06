@@ -56,7 +56,7 @@ describe("parseUnifiedDiff – binary diff block", () => {
     // Its content is correctly parsed
     const appFile = files.find((f) => f.oldPath === "src/app.ts");
     expect(appFile).toBeDefined();
-    const adds = appFile!.lines.filter((l) => l.type === "add");
+    const adds = (appFile?.lines ?? []).filter((l) => l.type === "add");
     expect(adds).toHaveLength(1);
     expect(adds[0].text).toBe("new");
   });
@@ -100,7 +100,7 @@ describe("parseUnifiedDiff – rename-only diff block", () => {
     expect(hasFile(files, "src/changed.ts")).toBe(true);
     const changedFile = files.find((f) => f.oldPath === "src/changed.ts");
     expect(changedFile).toBeDefined();
-    const dels = changedFile!.lines.filter((l) => l.type === "del");
+    const dels = (changedFile?.lines ?? []).filter((l) => l.type === "del");
     expect(dels[0].text).toBe("before");
   });
 });
@@ -303,7 +303,7 @@ describe("parseUnifiedDiff – mixed diff with binary and rename-only", () => {
     expect(hasFile(files, "src/index.ts")).toBe(true);
     const textFile = files.find((f) => f.oldPath === "src/index.ts");
     expect(textFile).toBeDefined();
-    const dels = textFile!.lines.filter((l) => l.type === "del");
+    const dels = (textFile?.lines ?? []).filter((l) => l.type === "del");
     expect(dels[0].text).toBe("const x = 1");
   });
 });

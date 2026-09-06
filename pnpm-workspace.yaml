@@ -6,3 +6,15 @@ allowBuilds:
   sharp: false
 # Only resolve dependencies published at least 7 days ago (supply-chain hardening).
 minimumReleaseAge: 10080
+# Transitive-only advisories (pnpm audit): the direct dependents still pin the
+# vulnerable ranges upstream, so the fixed versions have to be forced here.
+# Drop an entry once its dependent ships a range that already covers the fix.
+overrides:
+  # GHSA-52cp-r559-cp3m — @redocly/openapi-core pins js-yaml ^4.1.0
+  js-yaml@^4: ^4.3.1
+  # nanoid 5.x only (postcss depends on nanoid 3.x and must stay there)
+  nanoid@^5: ^5.1.16
+  # @babel/helper-compilation-targets pins browserslist ^4.24
+  browserslist: ^4.28.8
+  # GHSA-g7r4-m6w7-qqqr — vite pins esbuild ^0.27
+  esbuild: ^0.28.2

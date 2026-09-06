@@ -4,11 +4,15 @@
   "private": true,
   "license": "MIT",
   "types": "./index.d.ts",
-  "exports": { ".": { "types": "./index.d.ts" } },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    }
+  },
   "scripts": {
     "generate": "uv run --project ../../apps/api yukar openapi > openapi.json && openapi-typescript openapi.json -o index.d.ts"
   },
   "devDependencies": {
-    "openapi-typescript": "^7.9.1"
+    "openapi-typescript": "^7.13.0"
   }
 }

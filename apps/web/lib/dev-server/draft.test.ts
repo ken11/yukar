@@ -185,32 +185,24 @@ describe("configFromDraft", () => {
     });
   });
 
-  it.each([
-    "web app",
-    "-web",
-    "_web",
-    "web.app",
-    "web/app",
-    "wéb",
-  ])("rejects an invalid service name %j", (name) => {
-    const result = configFromDraft(patchService(validDraft(), { name }));
-    expect(result).toEqual({
-      ok: false,
-      error: { code: "invalidServiceName", serviceIndex: 0 },
-    });
-  });
+  it.each(["web app", "-web", "_web", "web.app", "web/app", "wéb"])(
+    "rejects an invalid service name %j",
+    (name) => {
+      const result = configFromDraft(patchService(validDraft(), { name }));
+      expect(result).toEqual({
+        ok: false,
+        error: { code: "invalidServiceName", serviceIndex: 0 },
+      });
+    },
+  );
 
-  it.each([
-    "web",
-    "web-2",
-    "web_2",
-    "Web",
-    "0",
-    "a1-B_2",
-  ])("accepts a valid service name %j", (name) => {
-    const result = configFromDraft(patchService(validDraft(), { name }));
-    expect(result.ok).toBe(true);
-  });
+  it.each(["web", "web-2", "web_2", "Web", "0", "a1-B_2"])(
+    "accepts a valid service name %j",
+    (name) => {
+      const result = configFromDraft(patchService(validDraft(), { name }));
+      expect(result.ok).toBe(true);
+    },
+  );
 
   it("rejects duplicate service names, reporting the second occurrence", () => {
     const draft = validDraft();
@@ -353,20 +345,13 @@ describe("configFromDraft", () => {
     });
   });
 
-  it.each([
-    "0",
-    "65536",
-    "-1",
-    "3000.5",
-    "abc",
-    "",
-    "0x50",
-    "3e4",
-    "1_000",
-  ])("rejects invalid port %j", (basePort) => {
-    const result = configFromDraft(patchService(validDraft(), { basePort }));
-    expect(result).toEqual({ ok: false, error: { code: "invalidPort", serviceIndex: 0 } });
-  });
+  it.each(["0", "65536", "-1", "3000.5", "abc", "", "0x50", "3e4", "1_000"])(
+    "rejects invalid port %j",
+    (basePort) => {
+      const result = configFromDraft(patchService(validDraft(), { basePort }));
+      expect(result).toEqual({ ok: false, error: { code: "invalidPort", serviceIndex: 0 } });
+    },
+  );
 
   it("trims surrounding whitespace on a port", () => {
     const result = configFromDraft(patchService(validDraft(), { basePort: " 12 " }));
@@ -375,18 +360,13 @@ describe("configFromDraft", () => {
     expect(result.config.services[0].base_port).toBe(12);
   });
 
-  it.each([
-    "0",
-    "-5",
-    "abc",
-    "601",
-    "0x50",
-    "3e4",
-    "1_000",
-  ])("rejects invalid timeout %j", (readinessTimeout) => {
-    const result = configFromDraft(patchService(validDraft(), { readinessTimeout }));
-    expect(result).toEqual({ ok: false, error: { code: "invalidTimeout", serviceIndex: 0 } });
-  });
+  it.each(["0", "-5", "abc", "601", "0x50", "3e4", "1_000"])(
+    "rejects invalid timeout %j",
+    (readinessTimeout) => {
+      const result = configFromDraft(patchService(validDraft(), { readinessTimeout }));
+      expect(result).toEqual({ ok: false, error: { code: "invalidTimeout", serviceIndex: 0 } });
+    },
+  );
 
   it("accepts the timeout upper boundary of 600", () => {
     const result = configFromDraft(patchService(validDraft(), { readinessTimeout: "600" }));

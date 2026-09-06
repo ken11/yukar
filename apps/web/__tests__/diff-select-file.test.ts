@@ -39,14 +39,13 @@ describe("selectDiffFile", () => {
     ]);
   });
 
-  it.each([
-    "main.tf",
-    "modules/vpc/main.tf",
-    "envs/prod/main.tf",
-  ])("returns the block for %s and not a same-named file from another directory", (path) => {
-    const picked = selectDiffFile(files, path);
-    expect(picked?.newPath).toBe(path);
-  });
+  it.each(["main.tf", "modules/vpc/main.tf", "envs/prod/main.tf"])(
+    "returns the block for %s and not a same-named file from another directory",
+    (path) => {
+      const picked = selectDiffFile(files, path);
+      expect(picked?.newPath).toBe(path);
+    },
+  );
 
   it("matches a deleted file by its old path", () => {
     const deleted = parseUnifiedDiff(`diff --git a/modules/vpc/outputs.tf b/modules/vpc/outputs.tf

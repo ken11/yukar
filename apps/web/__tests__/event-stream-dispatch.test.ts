@@ -269,21 +269,24 @@ describe("finding[event-stream-double-dispatch]: mutual exclusivity of named eve
     "epic_status_changed",
     "epic_merged",
     "epic_merge_progress",
-  ] as const)("allow-list named event '%s' is dispatched once with the correct type", (eventType) => {
-    const received: { type: string; data: unknown }[] = [];
-    renderHook(() =>
-      useEventStream({
-        url: "/api/events",
-        onMessage: (msg) => received.push(msg),
-      }),
-    );
+  ] as const)(
+    "allow-list named event '%s' is dispatched once with the correct type",
+    (eventType) => {
+      const received: { type: string; data: unknown }[] = [];
+      renderHook(() =>
+        useEventStream({
+          url: "/api/events",
+          onMessage: (msg) => received.push(msg),
+        }),
+      );
 
-    const es = WhatwgFaithfulEventSource.instances[0];
-    es.emitNamed(eventType, JSON.stringify({ type: eventType }));
+      const es = WhatwgFaithfulEventSource.instances[0];
+      es.emitNamed(eventType, JSON.stringify({ type: eventType }));
 
-    expect(received).toHaveLength(1);
-    expect(received[0].type).toBe(eventType);
-  });
+      expect(received).toHaveLength(1);
+      expect(received[0].type).toBe(eventType);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
