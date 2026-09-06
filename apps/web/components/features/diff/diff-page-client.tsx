@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/icon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
@@ -18,6 +18,7 @@ import {
 import { queryKeys } from "@/lib/api/query-keys";
 import { cn } from "@/lib/cn";
 import { parseUnifiedDiff } from "@/lib/diff/parse-unified";
+import { selectDiffFile } from "@/lib/diff/select-file";
 import { useT } from "@/lib/i18n/provider";
 import { DiffLineRow, Spinner } from "./diff-line-row";
 import { FileTree } from "./file-tree";
@@ -299,7 +300,13 @@ function DiffViewerPane({
               />
             ))}
             {!selectedParsed && !isLoading && files.length > 0 && (
-              <p className="p-4 text-[11px] text-outline">{t("diff.selectFileToView")}</p>
+              <p className="p-4 text-[11px] text-outline">
+                {/* A selected file with no block of its own is normal in working
+                    mode: the list comes from `git status` (untracked files
+                    included) while the diff comes from `git diff HEAD`. Say so
+                    rather than showing another file's diff under this name. */}
+                {selectedFile ? t("diff.noDiffForFile") : t("diff.selectFileToView")}
+              </p>
             )}
           </div>
         </div>
@@ -560,18 +567,22 @@ export function DiffPageClient({ projectId, epicId, epic, initialDiffs }: DiffPa
   });
 
   const files = diffResult?.files ?? [];
+
+  // The selection must always name a file that exists in the diff on screen.
+  // Switching repo or mode replaces the file list wholesale, and a path left
+  // over from the previous list would leave the header naming one file while
+  // the body showed another. Re-point it at the first file instead.
+  useEffect(() => {
+    if (files.length === 0) return;
+    if (files.some((f) => f.path === selectedFile)) return;
+    setSelectedFile(files[0].path);
+  }, [files, selectedFile]);
+
   const summaryAdded = diffSummary?.total_added ?? diffResult?.total_added ?? 0;
   const summaryDeleted = diffSummary?.total_deleted ?? diffResult?.total_deleted ?? 0;
 
   const parsedFiles = diffResult?.unified_diff ? parseUnifiedDiff(diffResult.unified_diff) : [];
-  const selectedParsed =
-    parsedFiles.find(
-      (f) =>
-        f.newPath === selectedFile ||
-        f.oldPath === selectedFile ||
-        f.newPath.endsWith(selectedFile) ||
-        selectedFile.endsWith(f.newPath),
-    ) ?? parsedFiles[0];
+  const selectedParsed = selectDiffFile(parsedFiles, selectedFile);
 
   // Clean up (prune) is offered once the work is finished: the user completed
   // the epic, or the merge fact (merged_at) has been recorded.

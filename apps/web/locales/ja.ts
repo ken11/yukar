@@ -107,6 +107,7 @@ const ja = {
     loading: "読み込み中…",
     noChangesInMode: "このモードに変更はありません。",
     selectFileToView: "ファイルを選択して差分を表示。",
+    noDiffForFile: "このファイルの差分はありません（未追跡のファイルの可能性があります）。",
     modeWorking: "作業中",
     modeEpicVsDefault: "{epicId} ⇔ デフォルト",
     cleanUp: "クリーンアップ",

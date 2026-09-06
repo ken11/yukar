@@ -115,6 +115,7 @@ const en = {
     loading: "Loading…",
     noChangesInMode: "No changes in this mode.",
     selectFileToView: "Select a file to view diff.",
+    noDiffForFile: "No diff for this file (it may be untracked).",
     modeWorking: "Working",
     modeEpicVsDefault: "{epicId} ⇔ default",
     cleanUp: "Clean up",
