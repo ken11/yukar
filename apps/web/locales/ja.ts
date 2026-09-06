@@ -222,6 +222,7 @@ const ja = {
     archive: {
       archiveSelected: "アーカイブ",
       archiving: "アーカイブ中…",
+      archivingProgress: "アーカイブ中… {done} / {total}",
       confirmTitle: "Epic をアーカイブ",
       confirmBody:
         "{count} 件の Epic を archives/ ディレクトリへ移動します。一覧からは見えなくなり、ワークツリーは削除されます（ブランチは残ります）。画面から元に戻す操作はありません。",

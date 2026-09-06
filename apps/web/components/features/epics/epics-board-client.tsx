@@ -109,6 +109,10 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
   const [actionError, setActionError] = useState<string | null>(null);
   const [mergeRunId, setMergeRunId] = useState<string | null>(null);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  /** live counter while archiving one epic at a time; null when idle */
+  const [archiveProgress, setArchiveProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
 
   const mergeMutation = useMutation({
     mutationFn: (epicIds: string[]) => startMerge(projectId, epicIds),
@@ -132,7 +136,35 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
   };
 
   const archiveMutation = useMutation({
-    mutationFn: (epicIds: string[]) => archiveEpics(projectId, epicIds),
+    // One request per epic instead of a single batch call.  Tearing down one
+    // epic's worktrees and dev servers takes seconds, so a batch of ten can
+    // outlive the proxy timeout and lose the outcome of every epic in it.
+    // Sequential, not parallel: each archive serialises on the supervisor's
+    // run-start lock anyway, and going one at a time is what lets the dialog
+    // report real progress.
+    mutationFn: async (epicIds: string[]) => {
+      const results: EpicArchiveResult[] = [];
+      setArchiveProgress({ done: 0, total: epicIds.length });
+      for (const epicId of epicIds) {
+        try {
+          const [result] = await archiveEpics(projectId, [epicId]);
+          results.push(result ?? { epic_id: epicId, archived: false, error: "no result" });
+        } catch (err) {
+          // A transport failure on one epic must not abandon the rest: record
+          // it like a backend-reported failure and carry on.
+          results.push({
+            epic_id: epicId,
+            archived: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        setArchiveProgress({ done: results.length, total: epicIds.length });
+        // Refresh after each one so archived rows leave the board as they go.
+        qc.invalidateQueries({ queryKey: queryKeys.epics.list(projectId) });
+      }
+      return results;
+    },
+    onSettled: () => setArchiveProgress(null),
     onSuccess: (results) => {
       setArchiveDialogOpen(false);
       const failed = results.filter((r) => !r.archived);
@@ -338,9 +370,13 @@ export function EpicsBoardClient({ projectId, initialEpics }: EpicsBoardClientPr
               disabled={archiveMutation.isPending}
               onClick={() => archiveMutation.mutate(liveSelected)}
             >
-              {archiveMutation.isPending
-                ? t("epicsBoard.archive.archiving")
-                : t("epicsBoard.archive.confirm")}
+              {!archiveMutation.isPending
+                ? t("epicsBoard.archive.confirm")
+                : archiveProgress
+                  ? t("epicsBoard.archive.archivingProgress")
+                      .replace("{done}", String(archiveProgress.done))
+                      .replace("{total}", String(archiveProgress.total))
+                  : t("epicsBoard.archive.archiving")}
             </Button>
           </DialogFooter>
         </DialogContent>

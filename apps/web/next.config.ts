@@ -10,6 +10,14 @@ const nextConfig: NextConfig = {
   // arrive; curl does not request gzip so this goes unnoticed). yukar is local-only,
   // so compression brings little benefit — disable it for both dev and standalone (`yukar serve`).
   compress: false,
+  experimental: {
+    // The /api/* rewrite proxy aborts an upstream request after 30s by default,
+    // which a legitimately slow local operation (archiving an epic tears down
+    // worktrees and stops dev servers) can exceed — the user then sees a proxy
+    // error for work the backend actually completed. yukar is local-only and
+    // its slow endpoints are bounded by real filesystem work, so give them room.
+    proxyTimeout: 120_000,
+  },
   // Same-origin proxying: the browser sees only :3000 and /api/* is forwarded to FastAPI
   // (docs/architecture.md §3.1)
   // YUKAR_API_BASE_URL env var overrides the rewrite target (used in E2E with a different-port FastAPI)

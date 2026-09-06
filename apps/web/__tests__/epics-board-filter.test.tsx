@@ -316,19 +316,44 @@ describe("EpicsBoardClient archive", () => {
     expect(archiveEpics).toHaveBeenCalledWith("proj1", ["EP-4"]);
   });
 
+  it("sends one request per epic so a slow epic cannot sink the whole batch", async () => {
+    const user = userEvent.setup();
+    vi.mocked(archiveEpics).mockClear();
+    vi.mocked(archiveEpics).mockImplementation(async (_projectId, epicIds) =>
+      epicIds.map((id) => ({ epic_id: id, archived: true, error: null, error_code: null })),
+    );
+    render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
+      wrapper: wrapper(),
+    });
+
+    await user.click(screen.getByLabelText("Select EP-1"));
+    await user.click(screen.getByLabelText("Select EP-4"));
+    await user.click(screen.getByTestId("archive-selected-btn"));
+    await user.click(screen.getByTestId("confirm-archive-btn"));
+
+    await waitFor(() => expect(archiveEpics).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(archiveEpics).mock.calls.map(([, ids]) => ids)).toEqual([["EP-1"], ["EP-4"]]);
+  });
+
   it("keeps failed epics selected and surfaces their localized error", async () => {
     const user = userEvent.setup();
-    vi.mocked(archiveEpics).mockResolvedValue([
-      { epic_id: "EP-1", archived: true, error: null, error_code: null },
-      {
-        epic_id: "EP-4",
-        archived: false,
-        error: "A run is active — archive is not allowed",
-        error_code: "run_active",
-      },
-    ]);
-    // The post-archive invalidate refetches the list: EP-1 is gone server-side.
-    vi.mocked(listEpics).mockResolvedValueOnce(initialEpics.filter((e) => e.id !== "EP-1"));
+    // One request per epic (a batch can outlive the proxy timeout), so the
+    // mock answers per id rather than returning the whole batch at once.
+    vi.mocked(archiveEpics).mockImplementation(async (_projectId, epicIds) =>
+      epicIds.map((id) =>
+        id === "EP-1"
+          ? { epic_id: id, archived: true, error: null, error_code: null }
+          : {
+              epic_id: id,
+              archived: false,
+              error: "A run is active — archive is not allowed",
+              error_code: "run_active" as const,
+            },
+      ),
+    );
+    // The board refetches after each archived epic (one request per epic), so
+    // every refetch must answer the same server-side truth: EP-1 is gone.
+    vi.mocked(listEpics).mockResolvedValue(initialEpics.filter((e) => e.id !== "EP-1"));
     render(<EpicsBoardClient projectId="proj1" initialEpics={initialEpics} />, {
       wrapper: wrapper(),
     });

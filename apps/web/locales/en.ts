@@ -231,6 +231,7 @@ const en = {
     archive: {
       archiveSelected: "Archive",
       archiving: "Archiving…",
+      archivingProgress: "Archiving… {done} / {total}",
       confirmTitle: "Archive epics",
       confirmBody:
         "Move {count} epic(s) into the archives/ directory. They disappear from every list and their worktrees are removed (branches are kept). There is no undo in the UI.",
