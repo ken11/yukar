@@ -86,8 +86,27 @@ _SECRET_NAME_PREFIXES: tuple[str, ...] = (".env.",)
 # be treated as secret-bearing, even though they start with ".env.".
 _SECRET_NAME_PREFIX_EXCEPTIONS: frozenset[str] = frozenset({".env.example", ".env.sample"})
 
-# Suffixes for private-key and certificate formats.
-_SECRET_SUFFIXES: tuple[str, ...] = (".pem", ".key", ".p12", ".pfx", ".pkcs12")
+# Suffixes for private-key and certificate formats, plus the Terraform file
+# types that routinely carry plaintext credentials:
+#   - ``*.tfvars`` / ``*.tfvars.json`` hold input variable VALUES (DB passwords,
+#     API tokens).  ``*.auto.tfvars`` is covered by the ``.tfvars`` suffix.
+#     ``terraform.tfvars.example`` is NOT matched (it ends in ``.example``), so
+#     committed templates stay indexable.
+#   - ``*.tfstate`` / ``*.tfstate.backup`` store every resource attribute in the
+#     clear, including generated IAM keys and RDS passwords.
+# Both are normally gitignored; this list is the defense-in-depth layer for the
+# case where they are not (or a ``!`` negation rule un-ignores them).
+_SECRET_SUFFIXES: tuple[str, ...] = (
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".pkcs12",
+    ".tfvars",
+    ".tfvars.json",
+    ".tfstate",
+    ".tfstate.backup",
+)
 
 
 def _is_secret_file(fpath: Path) -> bool:

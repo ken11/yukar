@@ -141,11 +141,30 @@ class TestSecretFileBlocklist:
     def test_pkcs12_blocked(self) -> None:
         assert self._is_secret("cert.pkcs12")
 
+    def test_tfvars_blocked(self) -> None:
+        """Terraform variable files carry plaintext values (DB passwords, tokens)."""
+        assert self._is_secret("terraform.tfvars")
+        assert self._is_secret("prod.auto.tfvars")
+        assert self._is_secret("terraform.tfvars.json")
+        assert self._is_secret("prod.auto.tfvars.json")
+
+    def test_tfstate_blocked(self) -> None:
+        """Terraform state stores every resource attribute in the clear."""
+        assert self._is_secret("terraform.tfstate")
+        assert self._is_secret("terraform.tfstate.backup")
+
+    def test_tfvars_template_allowed(self) -> None:
+        """A committed ``.tfvars.example`` template is not secret-bearing."""
+        assert not self._is_secret("terraform.tfvars.example")
+
     def test_normal_file_allowed(self) -> None:
         assert not self._is_secret("main.py")
         assert not self._is_secret("README.md")
         assert not self._is_secret("config.yaml")
         assert not self._is_secret("environment.py")
+        # ``.tf`` sources describe infrastructure but hold no values.
+        assert not self._is_secret("main.tf")
+        assert not self._is_secret("variables.tf")
 
     def test_collect_files_skips_secret_files(self, tmp_path: Path) -> None:
         """_collect_files must skip secret files even if not gitignored."""
@@ -158,6 +177,9 @@ class TestSecretFileBlocklist:
         (repo / ".env").write_text("SECRET=hunter2")
         (repo / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----")
         (repo / "cert.pem").write_text("-----BEGIN CERTIFICATE-----")
+        (repo / "prod.auto.tfvars").write_text('db_password = "hunter2"')
+        (repo / "terraform.tfstate").write_text('{"resources": []}')
+        (repo / "main.tf").write_text('resource "null_resource" "a" {}')
 
         # Use a git repo so IgnoreRules works
         import subprocess
@@ -178,6 +200,10 @@ class TestSecretFileBlocklist:
         assert ".env" not in names
         assert "id_rsa" not in names
         assert "cert.pem" not in names
+        assert "prod.auto.tfvars" not in names
+        assert "terraform.tfstate" not in names
+        # ``.tf`` sources stay indexable — they hold no values.
+        assert "main.tf" in names
 
 
 # ---------------------------------------------------------------------------
