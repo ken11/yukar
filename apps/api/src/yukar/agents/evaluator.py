@@ -20,7 +20,7 @@ from strands.types.agent import Limits
 
 from yukar.agents.context import AgentContext
 from yukar.agents.prompts import _EVALUATOR_SYSTEM_PROMPT, _build_evaluator_prompt
-from yukar.agents.streaming import AgentUsageRecorder, StreamTranslator
+from yukar.agents.streaming import AgentUsageRecorder, StreamTranslator, extract_final_text
 from yukar.agents.tools.browser_tools import make_browser_tools_if_configured
 from yukar.agents.tools.evaluator_tools import make_evaluator_tools
 from yukar.agents.tools.grep_tools import make_grep_tools
@@ -33,6 +33,14 @@ from yukar.storage import session_store
 logger = logging.getLogger(__name__)
 
 
+#: Verdict returned when the Evaluator never called ``submit_verdict``.
+#: ``submitted=False`` lets the dispatch layer report the attempt as an
+#: infrastructure failure ("no verdict") instead of a code rejection.  The
+#: default is REJECT: an evaluation that ended without a verdict (turn or token
+#: limit reached, or the model only wrote text) must never commit anything.
+_NO_VERDICT: dict[str, Any] = {"accepted": False, "feedback": "", "submitted": False}
+
+
 def _make_submit_verdict_tool(verdict_holder: list[dict[str, Any]]) -> Any:
     """Return a Strands tool that lets the Evaluator submit its verdict."""
     from strands import tool
@@ -41,14 +49,22 @@ def _make_submit_verdict_tool(verdict_holder: list[dict[str, Any]]) -> Any:
     def submit_verdict(accepted: bool, feedback: str = "") -> dict[str, Any]:
         """Submit the evaluation verdict for the Worker's implementation.
 
+        You MUST call this exactly once before ending your run: an evaluation
+        that ends without a verdict is treated as "not evaluated" (rejected,
+        nothing committed) and has to be re-run.
+
         Args:
             accepted: ``True`` if the implementation is acceptable.
-            feedback: Required when ``accepted=False``; specific fix instructions.
+            feedback: Always fill this in. On ``accepted=False``: specific fix
+                instructions naming the unmet criterion. On ``accepted=True``:
+                the evidence — which commands you ran and their result, and
+                what you verified — so the Manager and the user have a record
+                of what was actually checked.
 
         Returns:
             Confirmation dict.
         """
-        verdict_holder[0] = {"accepted": accepted, "feedback": feedback}
+        verdict_holder[0] = {"accepted": accepted, "feedback": feedback, "submitted": True}
         return {"recorded": True, "accepted": accepted}
 
     return submit_verdict
@@ -92,7 +108,7 @@ async def run_evaluator(
     """
     from yukar.agents.tools.repo_tools import make_repo_tools
 
-    verdict_holder: list[dict[str, Any]] = [{"accepted": True, "feedback": ""}]
+    verdict_holder: list[dict[str, Any]] = [dict(_NO_VERDICT)]
 
     verdict_tool = _make_submit_verdict_tool(verdict_holder)
     eval_tools = make_evaluator_tools(ctx)
@@ -194,4 +210,15 @@ async def run_evaluator(
             eval_agent.messages,
         )
 
-    return verdict_holder[0]
+    verdict = verdict_holder[0]
+    if not verdict.get("submitted", False):
+        # No submit_verdict call: surface the Evaluator's last text so the
+        # Manager sees why (the dispatch layer turns this into a "no_verdict"
+        # attempt failure — never an acceptance).
+        verdict = {
+            "accepted": False,
+            "feedback": extract_final_text(eval_agent),
+            "submitted": False,
+        }
+        logger.warning("evaluator %s ended without submitting a verdict", eval_id)
+    return verdict

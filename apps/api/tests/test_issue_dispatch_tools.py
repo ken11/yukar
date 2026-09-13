@@ -186,8 +186,9 @@ class TestReadDiffDefaultCached:
 
             await read_diff()
 
-        mock_run_git.assert_called_once()
-        args = mock_run_git.call_args[0]
+        # Two git calls: the diff itself, then its --stat summary (file list).
+        assert mock_run_git.call_count == 2
+        args = mock_run_git.call_args_list[0][0]
         assert "--cached" in args, f"--cached must be in git args, got: {args}"
         assert "HEAD" not in args, f"HEAD should not appear in staged-diff path, got: {args}"
 
@@ -206,7 +207,7 @@ class TestReadDiffDefaultCached:
 
             await read_diff(base_branch="main")
 
-        args = mock_run_git.call_args[0]
+        args = mock_run_git.call_args_list[0][0]
         assert "main...HEAD" in args or any("main" in str(a) for a in args)
         assert "--cached" not in args
 
@@ -315,9 +316,8 @@ class TestRunOneAttemptHostCommit:
                 feedback="",
             )
 
-        accepted, _, _, _, _, worker_finalized = result
-        assert accepted is True
-        assert worker_finalized is False
+        assert result.accepted is True
+        assert result.worker_finalized is False
 
         # git add -A must have been called (host staging).
         add_calls = [c for c in run_git_calls if c[0] and c[0][0] == "add" and "-A" in c[0]]
@@ -391,13 +391,13 @@ class TestRunOneAttemptHostCommit:
             ),
         ):
             mock_threads_repo.update_thread_status = AsyncMock()
-            accepted, _, _, feedback_out, _, worker_finalized = await run_one_attempt(
+            result = await run_one_attempt(
                 ctx_d=ctx_d, task=task, repo_name="myrepo_cf", worktree_path=repo, feedback=""
             )
 
-        assert accepted is False, "commit failure must reject the attempt (not mark done)"
-        assert worker_finalized is False
-        assert "commit failed" in feedback_out.lower()
+        assert result.accepted is False, "commit failure must reject the attempt (not mark done)"
+        assert result.worker_finalized is False
+        assert "commit failed" in result.feedback.lower()
 
     @pytest.mark.asyncio
     async def test_resets_worktree_before_worker(self, tmp_path: Path) -> None:
@@ -531,9 +531,8 @@ class TestRunOneAttemptHostCommit:
                 feedback="",
             )
 
-        accepted, _, _, _, _, worker_finalized = result
-        assert accepted is False
-        assert worker_finalized is False
+        assert result.accepted is False
+        assert result.worker_finalized is False
 
         commit_calls = [c for c in run_git_calls if c and c[0] == "commit"]
         assert not commit_calls, f"Expected no commit on reject, got: {run_git_calls}"
@@ -1037,13 +1036,18 @@ class TestWorkerExceptionHandling:
                 feedback="",
             )
 
-        accepted, _, eval_id, feedback_out, files_changed, worker_finalized = result
+        accepted = result.accepted
+        eval_id = result.eval_id
+        feedback_out = result.feedback
+        files_changed = result.files_changed
+        worker_finalized = result.worker_finalized
 
         assert accepted is False
         assert worker_finalized is True
         assert eval_id is None
         assert files_changed == 0
-        assert "worker failed" in feedback_out
+        assert "ATTEMPT FAILED" in feedback_out and "Worker" in feedback_out
+        assert result.failure is not None and result.failure.kind == "other"
 
         failed_events = [e for e in published if isinstance(e, WorkerFailedEvent)]
         assert failed_events, (
@@ -1115,7 +1119,7 @@ class TestWorkerExceptionHandling:
                 feedback="",
             )
 
-        _, _, _, feedback_out, _, _ = result
+        feedback_out = result.feedback
         failed_events = [e for e in published if isinstance(e, WorkerFailedEvent)]
         assert failed_events, "WorkerFailedEvent not published"
         assert failed_events[0].reason == "max_tokens", (
@@ -1151,10 +1155,20 @@ class TestDispatchWorkerFinalizedSkipsDoubleUpdate:
         ) -> None:
             update_calls.append((wid, eid, status))
 
-        async def fake_run_one(**kwargs: Any) -> tuple[
-            bool, str | None, str | None, str, int, bool
-        ]:
-            return (False, "worker-abc", None, "worker failed: RuntimeError", 0, True)
+        async def fake_run_one(**kwargs: Any) -> Any:
+            from yukar.agents.dispatch_attempt import AttemptResult
+            from yukar.agents.failures import AgentFailure
+
+            return AttemptResult(
+                accepted=False,
+                worker_id="worker-abc",
+                eval_id=None,
+                feedback="worker failed: RuntimeError",
+                files_changed=0,
+                worker_finalized=True,
+                failure=AgentFailure("other", "RuntimeError", "boom"),
+                failure_role="worker",
+            )
 
         repo_wt = _make_bare_repo(tmp_path, "repo_wf")
 

@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from yukar.config.settings import Settings
+from yukar.models.language import UiLanguage
 from yukar.models.roles import AgentRole
 from yukar.runs.runner import DummyRunner, RunnerProtocol
 from yukar.storage.epic_repo import get_epic
@@ -492,6 +493,7 @@ class RunSupervisor:
         manager_thread_id: str = "manager",
         agent_role: AgentRole = "manager",
         review_context: str = "",
+        language: UiLanguage | None = None,
     ) -> str:
         """Start a new run. Returns the run_id.
 
@@ -510,6 +512,8 @@ class RunSupervisor:
                 which is git-based, so a missing/stale index must not block it).
             review_context: For a reviewer run, the Manager↔user conversation used
                 to seed the reviewer's turn-0 prompt.  Ignored for manager runs.
+            language: The user's UI language (Web UI locale) — the Manager /
+                Reviewer are told to write every user-facing message in it.
         """
         _is_manager = agent_role == "manager"
         async with self._start_lock:
@@ -546,6 +550,7 @@ class RunSupervisor:
                 manager_thread_id=manager_thread_id,
                 agent_role=agent_role,
                 review_context=review_context,
+                language=language,
             )
 
             _indexer_service = self._indexer_service
@@ -805,6 +810,7 @@ class RunSupervisor:
         manager_thread_id: str = "manager",
         agent_role: AgentRole = "manager",
         review_context: str = "",
+        language: UiLanguage | None = None,
     ) -> RunnerProtocol:
         """Instantiate the appropriate runner using settings resolved right now.
 
@@ -833,6 +839,7 @@ class RunSupervisor:
                 require_plan_approval=_resolve_require_plan_approval(),
                 agent_role=agent_role,
                 review_context=review_context,
+                language=language,
             )
         return DummyRunner()
 
@@ -1059,6 +1066,7 @@ class RunSupervisor:
         manager_thread_id: str = "manager",
         agent_role: AgentRole = "manager",
         review_context: str = "",
+        language: UiLanguage | None = None,
     ) -> str:
         """Start a continuation run for an epic that has no active run.
 
@@ -1087,6 +1095,7 @@ class RunSupervisor:
                 continuation resumes a prior reviewer conversation read-only.
             review_context: Manager↔user conversation re-seed for a reviewer
                 continuation.  Ignored for manager runs.
+            language: The user's UI language (see ``start``).
 
         Returns:
             The new run_id.
@@ -1122,6 +1131,7 @@ class RunSupervisor:
                 manager_thread_id=manager_thread_id,
                 agent_role=agent_role,
                 review_context=review_context,
+                language=language,
             )
 
             _indexer_service_cont = self._indexer_service
@@ -1213,6 +1223,7 @@ class RunSupervisor:
         manager_thread_id: str = "manager",
         agent_role: AgentRole = "manager",
         review_context: str = "",
+        language: UiLanguage | None = None,
     ) -> RunnerProtocol:
         """Instantiate a continuation-mode runner using settings resolved right now.
 
@@ -1243,6 +1254,7 @@ class RunSupervisor:
                 require_plan_approval=_resolve_require_plan_approval(),
                 agent_role=agent_role,
                 review_context=review_context,
+                language=language,
             )
         return DummyRunner()
 
@@ -1255,6 +1267,7 @@ class RunSupervisor:
         content: str,
         agent_role: AgentRole = "manager",
         review_context: str = "",
+        language: UiLanguage | None = None,
     ) -> bool:
         """Route a thread user message: inject if running, else start continuation.
 
@@ -1293,6 +1306,9 @@ class RunSupervisor:
             thread_id: The thread the message was posted to.  For the manager
                 path this is the active manager-trial thread_id.
             content: The user's message text.
+            language: The user's UI language, applied when a continuation run is
+                started here.  An injected message rides on the live run, which
+                keeps the language it was started with.
 
         Returns:
             True if the message was forwarded to an active run,
@@ -1347,6 +1363,7 @@ class RunSupervisor:
             manager_thread_id=thread_id,
             agent_role=agent_role,
             review_context=review_context,
+            language=language,
         )
         return False
 

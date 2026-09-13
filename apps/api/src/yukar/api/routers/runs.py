@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from yukar.api.routers import get_epic_or_404, shelve_or_409
-from yukar.deps import SupervisorDep, UsageTrackerDep, WorkspaceRootDep
+from yukar.deps import SupervisorDep, UiLanguageDep, UsageTrackerDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
 from yukar.events.sse import (
     disconnect_aware_sse,
@@ -44,6 +44,7 @@ async def start_run(
     root: WorkspaceRootDep,
     supervisor: SupervisorDep,
     usage_tracker: UsageTrackerDep,
+    language: UiLanguageDep,
 ) -> dict[str, str]:
     """Start (or re-start) a run for this epic.
 
@@ -139,7 +140,11 @@ async def start_run(
 
         try:
             run_id = await supervisor.start(
-                root, project_id, epic_id, manager_thread_id=manager_thread_id
+                root,
+                project_id,
+                epic_id,
+                manager_thread_id=manager_thread_id,
+                language=language,
             )
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e

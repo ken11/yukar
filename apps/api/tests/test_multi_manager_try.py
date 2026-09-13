@@ -979,12 +979,13 @@ class TestStartRunResolvesActiveTrialId:
                 root=root,
                 supervisor=sup,
                 usage_tracker=tracker,
+                language=None,
             )
 
         assert result == {"run_id": "run-fake", "status": "started"}
         # The critical assertion: supervisor.start must have been called with th-2.
         mock_start.assert_called_once_with(
-            root, pid, eid, manager_thread_id="th-2"
+            root, pid, eid, manager_thread_id="th-2", language=None
         )
 
     @pytest.mark.asyncio
@@ -1047,12 +1048,13 @@ class TestStartRunResolvesActiveTrialId:
                 root=root,
                 supervisor=sup,
                 usage_tracker=tracker,
+                language=None,
             )
 
         assert result == {"run_id": "run-fake-mgr", "status": "started"}
         # Backward-compat: must still default to "manager".
         mock_start.assert_called_once_with(
-            root, pid, eid, manager_thread_id="manager"
+            root, pid, eid, manager_thread_id="manager", language=None
         )
 
 

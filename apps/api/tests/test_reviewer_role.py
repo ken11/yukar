@@ -251,6 +251,7 @@ class TestReviewerRunLifecycle:
                 root=root,
                 supervisor=sup,
                 usage_tracker=_fake_tracker(),
+                language=None,
             )
 
         # A reviewer thread was created and persisted.
@@ -309,6 +310,7 @@ class TestReviewerRunLifecycle:
                 root=root,
                 supervisor=sup,
                 usage_tracker=_fake_tracker(),
+                language=None,
             )
         assert ei.value.status_code == 409
 
@@ -343,6 +345,7 @@ class TestReviewerRunLifecycle:
                 root=root,
                 supervisor=sup,
                 usage_tracker=_fake_tracker(),
+                language=None,
             )
         assert entry.role == "reviewer"
         assert mock_start.await_count == 1
@@ -424,6 +427,7 @@ class TestReviewerRunLifecycle:
                 body=PostMessageRequest(content="what about tests?"),
                 root=root,
                 supervisor=sup,
+                language=None,
             )
 
         # Synthetic ack — the message is not persisted here.
@@ -476,7 +480,7 @@ class TestReviewerRunLifecycle:
             await task
 
         mk.assert_called_once_with(
-            manager_thread_id="rev-1", agent_role="reviewer", review_context="CTX"
+            manager_thread_id="rev-1", agent_role="reviewer", review_context="CTX", language=None
         )
         loaded = await get_epic(root, pid, eid)
         assert loaded is not None
@@ -817,6 +821,7 @@ class TestReviewerLegacyEpic:
                 root=root,
                 supervisor=sup,
                 usage_tracker=_fake_tracker(),
+                language=None,
             )
         assert entry.role == "reviewer"
         call = mock_start.await_args

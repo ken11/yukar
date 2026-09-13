@@ -4589,7 +4589,9 @@ export interface operations {
     start_run_api_projects__project_id__epics__epic_id__run_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Yukar-Locale"?: string | null;
+            };
             path: {
                 project_id: string;
                 epic_id: string;
@@ -4821,7 +4823,9 @@ export interface operations {
     start_review_api_projects__project_id__epics__epic_id__review_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Yukar-Locale"?: string | null;
+            };
             path: {
                 project_id: string;
                 epic_id: string;
@@ -4925,7 +4929,9 @@ export interface operations {
     post_message_api_projects__project_id__epics__epic_id__threads__thread_id__messages_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Yukar-Locale"?: string | null;
+            };
             path: {
                 project_id: string;
                 epic_id: string;

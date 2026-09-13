@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,6 +33,12 @@ from yukar.agents.context import AgentContext
 from yukar.agents.dispatch_helpers import (
     publish_diff_update,
     register_agent_thread,
+)
+from yukar.agents.failures import (
+    AgentFailure,
+    classify_agent_failure,
+    failure_guidance,
+    no_verdict_failure,
 )
 from yukar.config import paths as p
 from yukar.git.runner import git_author_env, run_git
@@ -55,6 +62,84 @@ if TYPE_CHECKING:
     from yukar.models.task import Task
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptResult:
+    """Outcome of one dispatch attempt (``run_one_attempt``).
+
+    ``failure`` is set when the attempt aborted for an infrastructure/agent
+    reason (Worker or Evaluator exception, or an Evaluator that gave no
+    verdict) — then ``accepted`` is False, ``feedback`` carries the
+    Manager-facing guidance, and ``failure_role`` names the agent that failed.
+    ``worker_finalized`` is True when the worker thread was already marked
+    "failed" here (the caller must not update that thread again).
+    """
+
+    accepted: bool
+    worker_id: str | None
+    eval_id: str | None
+    feedback: str
+    files_changed: int
+    worker_finalized: bool = False
+    failure: AgentFailure | None = None
+    failure_role: str | None = None
+    #: The files an Evaluator failure was about (everything staged) — the
+    #: dispatch gate rejects re-evaluating the identical subject.
+    subject_files: tuple[str, ...] = ()
+
+
+async def _staged_paths(worktree_path: Path) -> list[str]:
+    """Exact paths of the staged diff (``--name-only -z --no-renames``)."""
+    res = await run_git(
+        "diff", "--cached", "--name-only", "-z", "--no-renames", cwd=worktree_path, check=False
+    )
+    return sorted(p for p in (res.stdout or "").split("\0") if p)
+
+
+async def _worktree_footprint(worktree_path: Path) -> tuple[set[str], set[str]]:
+    """``(untracked not-ignored files, tracked files modified vs the index)``."""
+    others = await run_git(
+        "ls-files", "--others", "--exclude-standard", "-z", cwd=worktree_path, check=False
+    )
+    modified = await run_git(
+        "diff", "--name-only", "-z", "--no-renames", cwd=worktree_path, check=False
+    )
+    return (
+        {p for p in (others.stdout or "").split("\0") if p},
+        {p for p in (modified.stdout or "").split("\0") if p},
+    )
+
+
+async def _restore_worktree_after_evaluator(
+    worktree_path: Path, before: tuple[set[str], set[str]], *, who: str
+) -> None:
+    """Undo whatever an Evaluator run left in the worktree.
+
+    The Evaluator is read-only by design; anything it changed is a by-product
+    of ``run_tests`` (.coverage, build output, caches, a formatter rewriting a
+    tracked file).  Left in place, the next ``git add -A`` (a later
+    evaluator-only attempt) would stage it — content no Evaluator judged —
+    and it would end up committed.  Enforce the invariant at the host: new
+    untracked files are deleted and tracked files modified during the run are
+    restored from the index.
+    """
+    untracked_before, modified_before = before
+    untracked_after, modified_after = await _worktree_footprint(worktree_path)
+    new_paths = sorted(untracked_after - untracked_before)
+    touched = sorted(modified_after - modified_before)
+    if new_paths:
+        logger.info("%s left %d untracked artifact(s); removing", who, len(new_paths))
+        for i in range(0, len(new_paths), 200):
+            await run_git(
+                "clean", "-f", "-q", "--", *new_paths[i : i + 200], cwd=worktree_path, check=False
+            )
+    if touched:
+        logger.info("%s modified %d tracked file(s); restoring from index", who, len(touched))
+        for i in range(0, len(touched), 200):
+            await run_git(
+                "checkout", "--", *touched[i : i + 200], cwd=worktree_path, check=False
+            )
 
 
 def _resolve_profile(
@@ -160,7 +245,7 @@ async def run_one_attempt(
     *,
     include_worker: bool = True,
     include_evaluator: bool = True,
-) -> tuple[bool, str | None, str | None, str, int, bool]:
+) -> AttemptResult:
     """Run one attempt for a task with the requested agent composition.
 
     The composition comes from the dispatch item's ``agents`` argument
@@ -177,11 +262,10 @@ async def run_one_attempt(
       triggers the usual host commit.
 
     Returns:
-        ``(accepted, worker_id, eval_id, feedback_out, files_changed, worker_finalized)``
-
-        *worker_finalized* is ``True`` when this function already marked the worker
-        thread as "failed" (Worker exception path).  The caller must not perform a
-        second status update for that thread.
+        An :class:`AttemptResult`.  ``failure`` is set (and ``accepted`` False)
+        when the Worker or the Evaluator aborted with an exception, or the
+        Evaluator ended without a verdict — the attempt then says nothing about
+        the code and nothing is committed.
     """
     root = ctx_d.root
     project_id = ctx_d.project_id
@@ -297,21 +381,19 @@ async def run_one_attempt(
                 resolved_profile=resolved_profile,
             )
             worker_summary = (
-                worker_result.get("result", "")
-                if isinstance(worker_result, dict)
-                else ""
+                str(worker_result.get("result") or "") if isinstance(worker_result, dict) else ""
             )
         except asyncio.CancelledError:
             raise
         except Exception as worker_exc:
+            failure = classify_agent_failure(worker_exc)
             exc_name = type(worker_exc).__name__
-            if exc_name == "MaxTokensReachedException":
-                reason = "max_tokens"
-            elif exc_name == "ContextWindowOverflowException":
-                reason = "context_overflow"
-            else:
-                reason = exc_name
-            logger.warning("worker %s failed with %s: %s", worker_id, exc_name, worker_exc)
+            # Event reason: the classified kind for size failures (UI shows
+            # "max_tokens" / "context_overflow"), the exception class otherwise.
+            reason = failure.kind if failure.retry_verbatim_futile else exc_name
+            logger.warning(
+                "worker %s failed with %s (%s): %s", worker_id, exc_name, failure.kind, worker_exc
+            )
 
             # Remove from active_workers and persist state (mirrors normal completion path).
             async with ctx_d.state_lock:
@@ -323,6 +405,12 @@ async def run_one_attempt(
                 await state_repo.save_state(root, project_id, epic_id, state)
 
             await threads_repo.update_thread_status(root, project_id, epic_id, worker_id, "failed")
+            # Discard whatever the aborted Worker half-wrote: a cut-off file
+            # must never become an evaluation subject (an evaluator-only item
+            # could otherwise certify and commit truncated output).  This is
+            # the "partial work was discarded" the Manager's guidance states.
+            await run_git("reset", "--hard", "HEAD", cwd=worktree_path, check=False)
+            await run_git("clean", "-fd", cwd=worktree_path, check=False)
             ctx_d.pub(
                 WorkerFailedEvent(
                     project_id=project_id,
@@ -334,7 +422,16 @@ async def run_one_attempt(
                     reason=reason,
                 )
             )
-            return (False, worker_id, None, f"worker failed: {reason}", 0, True)
+            return AttemptResult(
+                accepted=False,
+                worker_id=worker_id,
+                eval_id=None,
+                feedback=failure_guidance(failure, role="worker", task_id=task.id),
+                files_changed=0,
+                worker_finalized=True,
+                failure=failure,
+                failure_role="worker",
+            )
 
         ctx_d.pub(
             WorkerCompletedEvent(
@@ -361,6 +458,10 @@ async def run_one_attempt(
     # (e.g. the output of earlier worker-only attempts).  A worker-only attempt
     # also stages so the diff signal reflects the produced files — but nothing
     # is committed (no Evaluator acceptance → no host commit).
+    # Evaluator artifacts never reach the index: every Evaluator run below
+    # ends with the files it created or modified being restored, so this
+    # ``git add -A`` only ever stages Worker output or edits made in the
+    # worktree between attempts.
     await run_git("add", "-A", cwd=worktree_path, check=False)
 
     # Publish diff update using the staged diff (see dispatch_helpers).
@@ -376,18 +477,29 @@ async def run_one_attempt(
         # silently marking the task done with an empty report (the Manager
         # decides whether to retry or replan).
         if not worker_summary.strip():
-            return (
-                False,
-                worker_id,
-                None,
-                "Worker-only attempt produced no report text — the report IS the "
-                "deliverable of a worker-only dispatch, so the task was not marked "
-                "done. Retry, or dispatch with an evaluator if the deliverable is "
-                "a code change.",
-                files_changed,
-                False,
+            return AttemptResult(
+                accepted=False,
+                worker_id=worker_id,
+                eval_id=None,
+                feedback=(
+                    "Worker-only attempt produced no report text — the report IS the "
+                    "deliverable of a worker-only dispatch, so the task was not marked "
+                    "done. Retry, or dispatch with an evaluator if the deliverable is "
+                    "a code change."
+                ),
+                files_changed=files_changed,
             )
-        return (True, worker_id, None, worker_summary, files_changed, False)
+        return AttemptResult(
+            accepted=True,
+            worker_id=worker_id,
+            eval_id=None,
+            feedback=worker_summary,
+            files_changed=files_changed,
+        )
+
+    # What this evaluation is about (recorded on failure so the dispatch gate
+    # can refuse a futile re-evaluation of the same subject).
+    staged_all = await _staged_paths(worktree_path)
 
     # Run Evaluator.
     eval_id = f"eval-{uuid.uuid4().hex[:8]}"
@@ -435,19 +547,83 @@ async def run_one_attempt(
         deny=eval_deny,
     )
 
-    verdict = await ctx_d.hooks.run_evaluator(
-        project_id=project_id,
-        epic_id=epic_id,
-        run_id=run_id,
-        eval_id=eval_id,
-        task=task,
-        ctx=eval_ctx,
-        worker_id=worker_id or "",
-        resolved_profile=resolved_eval_profile,
-    )
+    # Run Evaluator.  Like the Worker, an Evaluator exception (max_tokens,
+    # context overflow, provider/auth error) must NOT escape: it would abort the
+    # whole dispatch call with an opaque error string, leave the task stuck in
+    # in_progress, and — worst — let the Manager mistake a crashed evaluation for
+    # a clean one.  Classify it and return an explicit attempt failure instead.
+    # asyncio.CancelledError is always re-raised (pause/stop path).
+    eval_failure: AgentFailure | None = None
+    footprint_before = await _worktree_footprint(worktree_path)
+    try:
+        verdict = await ctx_d.hooks.run_evaluator(
+            project_id=project_id,
+            epic_id=epic_id,
+            run_id=run_id,
+            eval_id=eval_id,
+            task=task,
+            ctx=eval_ctx,
+            worker_id=worker_id or "",
+            resolved_profile=resolved_eval_profile,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as eval_exc:
+        eval_failure = classify_agent_failure(eval_exc)
+        logger.warning(
+            "evaluator %s failed with %s (%s): %s",
+            eval_id,
+            type(eval_exc).__name__,
+            eval_failure.kind,
+            eval_exc,
+        )
+        verdict = {"accepted": False, "feedback": "", "submitted": True}
+    finally:
+        # Read-only invariant, host-enforced: whatever the Evaluator's
+        # run_tests left behind as untracked files is removed again.
+        await _restore_worktree_after_evaluator(
+            worktree_path, footprint_before, who=f"evaluator {eval_id}"
+        )
 
-    accepted = verdict.get("accepted", False)
-    feedback_out: str = verdict.get("feedback", "")
+    if eval_failure is None and verdict.get("submitted", True) is False:
+        # The Evaluator ran to its end without calling submit_verdict (turn or
+        # token limit, or text-only answer).  No verdict exists — never an
+        # acceptance.  Reported as an attempt failure so the Manager re-runs
+        # the evaluation instead of treating it as a code rejection.
+        eval_failure = no_verdict_failure(str(verdict.get("feedback", "")))
+
+    if eval_failure is not None:
+        feedback_fail = failure_guidance(eval_failure, role="evaluator", task_id=task.id)
+        if eval_failure.kind in ("max_tokens", "context_overflow", "no_verdict") and staged_all:
+            feedback_fail += (
+                f"\n\nStaged diff of this attempt: {len(staged_all)} file(s):\n"
+                + "\n".join(f"  - {f}" for f in staged_all)
+            )
+        ctx_d.pub(
+            EvalResultEvent(
+                project_id=project_id,
+                epic_id=epic_id,
+                run_id=run_id,
+                worker_id=worker_id or "",
+                eval_id=eval_id,
+                accepted=False,
+                feedback=feedback_fail,
+            )
+        )
+        return AttemptResult(
+            accepted=False,
+            worker_id=worker_id,
+            eval_id=eval_id,
+            feedback=feedback_fail,
+            files_changed=files_changed,
+            failure=eval_failure,
+            failure_role="evaluator",
+            subject_files=tuple(staged_all),
+        )
+
+    # Strict: only a real ``True`` accepts (a stringly "false" must not).
+    accepted = verdict.get("accepted") is True
+    feedback_out: str = str(verdict.get("feedback", "") or "")
 
     # Host commit on accept.  Commit exactly what the Evaluator evaluated — i.e.
     # what the post-Worker `git add -A` staged and what read_diff(--cached) showed.
@@ -505,4 +681,10 @@ async def run_one_attempt(
         )
     )
 
-    return (accepted, worker_id, eval_id, feedback_out, files_changed, False)
+    return AttemptResult(
+        accepted=accepted,
+        worker_id=worker_id,
+        eval_id=eval_id,
+        feedback=feedback_out,
+        files_changed=files_changed,
+    )

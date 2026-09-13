@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
+import { LOCALE_COOKIE } from "./constants";
 import type { Locale } from "./dictionary";
 
-export const LOCALE_COOKIE = "yukar-locale";
+export { LOCALE_COOKIE } from "./constants";
 
 export async function getLocale(): Promise<Locale> {
   const v = (await cookies()).get(LOCALE_COOKIE)?.value;

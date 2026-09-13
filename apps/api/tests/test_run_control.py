@@ -344,6 +344,7 @@ class TestStartOrInject:
             manager_thread_id="manager",
             agent_role="manager",
             review_context="",
+            language=None,
         )
 
     async def test_start_continuation_leaves_epic_status_untouched(

@@ -65,6 +65,7 @@ from strands.session.file_session_manager import FileSessionManager
 from yukar.agents.context import AgentContext
 from yukar.agents.dispatch import (
     DispatchContext,
+    FailedAttempt,
     OrchestratorHooks,
     run_dispatch,
 )
@@ -72,6 +73,7 @@ from yukar.agents.dispatch import (
     register_agent_thread as _register_agent_thread,
 )
 from yukar.agents.evaluator import run_evaluator
+from yukar.agents.failures import dispatch_suspended_reason
 from yukar.agents.mcp_manager import McpClientManager
 from yukar.agents.orchestrator_tools import _make_task_update_tool
 from yukar.agents.project_extras import (
@@ -87,6 +89,7 @@ from yukar.agents.prompts import (
     _load_epic_docs,
     _load_project_docs,
     _summarise_tasks,
+    language_directive,
 )
 from yukar.agents.streaming import AgentUsageRecorder, StreamTranslator
 from yukar.agents.tools.agent_config_tools import make_agent_config_tools
@@ -114,6 +117,7 @@ from yukar.models.events import (
     YourTurnEndedEvent,
     YourTurnEvent,
 )
+from yukar.models.language import UiLanguage
 from yukar.models.roles import AgentRole
 from yukar.models.run import RunState
 from yukar.models.task import Task, TasksFile, compute_plan_hash
@@ -257,8 +261,12 @@ class EpicOrchestrator:
         require_plan_approval: bool = True,
         agent_role: AgentRole = "manager",
         review_context: str = "",
+        language: UiLanguage | None = None,
     ) -> None:
         self._llm = llm_settings
+        # UI language of the user who started this run (the Web UI locale).
+        # Manager/Reviewer are told to write every user-facing message in it.
+        self._language: UiLanguage | None = language
         self._git_author_name = git_author_name
         self._git_author_email = git_author_email
         self._agent_settings: AgentSettings = agent_settings or AgentSettings()
@@ -371,6 +379,11 @@ class EpicOrchestrator:
 
         # Per-task attempt counters (host safety upper bound).
         self._attempt_counts: dict[str, int] = {}
+        # Run-scoped failure memory shared by every dispatch call of this run:
+        # last infrastructure failure per task (verbatim-retry gate) and the
+        # provider-auth fault that suspends dispatch (see agents/failures.py).
+        self._dispatch_failure_log: dict[str, FailedAttempt] = {}
+        self._provider_fault: list[str] = []
 
         # L3 MCP: McpClientManager owned by this orchestrator (created in _run_loop,
         # stopped in the run's finally block — same single-ownership rule as FSM).
@@ -1030,6 +1043,11 @@ class EpicOrchestrator:
         # (Reviewer) or never at all (Manager, who writes the contracts).
         manager_system_prompt += await self._build_command_permissions_prompt(root, project_id)
 
+        # User-facing language: the Web UI locale of the user who started this
+        # run.  Appended LAST so it is the final instruction the model reads
+        # (Manager and Reviewer both talk to the user; Worker/Evaluator do not).
+        manager_system_prompt += language_directive(self._language)
+
         manager_agent = Agent(
             model=manager_model,
             agent_id=manager_thread_id,
@@ -1359,8 +1377,26 @@ class EpicOrchestrator:
 
             Returns:
                 Per-item result list, each with:
-                ``{task_id, accepted, status, feedback, worker_id, eval_id, reason?}``.
+                ``{task_id, accepted, status, feedback, worker_id, eval_id, reason?}``
+                where ``status`` is one of ``done`` / ``needs_fix`` /
+                ``failed`` (+ ``reason``: the attempt aborted for an
+                infrastructure reason; ``feedback`` carries the host's
+                guidance) / ``rejected`` / ``blocked`` / ``stopped``.
             """
+            if self._provider_fault:
+                # Host-enforced suspension: a provider-auth failure was seen in
+                # this run, so every further agent call would fail identically.
+                # No attempt is consumed; the Manager must report to the user.
+                suspended = dispatch_suspended_reason(self._provider_fault[0])
+                return [
+                    {
+                        "task_id": (item.get("task_id") if isinstance(item, dict) else None),
+                        "accepted": False,
+                        "status": "rejected",
+                        "reason": suspended,
+                    }
+                    for item in items
+                ]
             if not await self._is_plan_approved():
                 # Host-enforced approval gate: the recorded approval (if any)
                 # does not match the current plan snapshot.  Returned as a
@@ -1558,6 +1594,8 @@ class EpicOrchestrator:
             manager_thread_id=self._manager_thread_id,
             manager_trial_id=_manager_trial_id,
             manager_branch=_manager_branch,
+            failure_log=self._dispatch_failure_log,
+            provider_fault=self._provider_fault,
         )
         return await run_dispatch(ctx_d, items)
 

@@ -17,9 +17,11 @@ Public re-exports (``from yukar.agents.dispatch import ...`` keeps working):
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from yukar.agents.dispatch_attempt import ensure_worktree_for_repo, run_one_attempt
@@ -27,6 +29,11 @@ from yukar.agents.dispatch_helpers import (
     get_first_repo,
     publish_task_update,
     register_agent_thread,
+)
+from yukar.agents.failures import (
+    AgentFailure,
+    dispatch_suspended_reason,
+    verbatim_retry_reason,
 )
 from yukar.models.epic import Epic
 from yukar.models.events import DelegationEvent, DelegationItem
@@ -60,6 +67,27 @@ class OrchestratorHooks:
     drain_pending: _DrainFn
     run_worker: _RunWorkerFn
     run_evaluator: _RunEvaluatorFn
+
+
+@dataclass(frozen=True, slots=True)
+class FailedAttempt:
+    """Record of the last infrastructure failure of a task (per run).
+
+    ``fingerprint`` identifies the dispatch item that failed (contract, feedback,
+    agents, repo) so a verbatim re-dispatch after a size failure can be rejected
+    deterministically — the half-written work was discarded, so the identical
+    item would hit the identical limit.
+
+    For an Evaluator failure, ``subject_files`` / ``contract`` record what the
+    Evaluator was judging: re-evaluating the same files (or a superset) under
+    the same contract — with any request shape — is equally futile.
+    """
+
+    failure: AgentFailure
+    role: str
+    fingerprint: str
+    subject_files: frozenset[str] = frozenset()
+    contract: str = ""
 
 
 @dataclass(slots=True)
@@ -103,6 +131,17 @@ class DispatchContext:
     # Branch the manager trial uses.  Defaults to epic.branch for backward compat.
     # Set to the ThreadEntry.branch of the active trial when it is non-None.
     manager_branch: str = ""
+    # Run-scoped failure memory (shared across dispatch calls by the
+    # orchestrator).  ``failure_log`` keeps the last infrastructure failure per
+    # task (verbatim-retry gate); ``provider_fault`` holds the error detail once
+    # a provider-auth failure has been seen — dispatch is then suspended for the
+    # rest of the run (every further model call would fail the same way).
+    # In-memory only, by design: it is NOT written to state.yaml, so a
+    # continuation run (the user's next message) or a server restart starts
+    # with a clean slate — which is exactly the "fix the credentials, then send
+    # the next message" recovery path the Manager is told about.
+    failure_log: dict[str, FailedAttempt] = field(default_factory=dict)
+    provider_fault: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +184,46 @@ def _parse_agents(item: dict[str, Any]) -> tuple[bool, bool] | str:
         )
     chosen = set(raw)
     return ("worker" in chosen, "evaluator" in chosen)
+
+
+def _item_fingerprint(
+    task: Any,
+    feedback: str,
+    include_worker: bool,
+    include_evaluator: bool,
+    repo: str,
+) -> str:
+    """Stable hash of everything that shapes an attempt's input."""
+    payload = json.dumps(
+        {
+            "title": task.title,
+            "contract": task.contract,
+            "feedback": " ".join(feedback.split()),
+            "worker": include_worker,
+            "evaluator": include_evaluator,
+            "repo": repo,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def _changed_paths(worktree: Any) -> list[str]:
+    """Paths an evaluator-only attempt would stage: staged, modified, untracked.
+
+    ``git status --porcelain -z --untracked-files=all --no-renames`` — the
+    same set ``git add -A`` picks up, resolved BEFORE the attempt so that
+    re-evaluating the very subject a previous Evaluator failed on (size /
+    no verdict) is rejected without consuming an attempt.
+    """
+    from yukar.git.runner import run_git
+
+    args = ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]
+    res = await run_git(*args, cwd=worktree, check=False)
+    return sorted(
+        entry[3:] for entry in (res.stdout or "").split("\0") if len(entry) > 3
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +297,26 @@ async def _update_thread_statuses(
             eval_id,
             verdict_status,
         )
+
+
+async def _mark_blocked(ctx_d: DispatchContext, tf: TasksFile, task: Any) -> None:
+    """Set *task* to blocked, publish the update and persist tasks.yaml.
+
+    Must be called from within ``ctx_d.state_lock``.
+    """
+    task.status = "blocked"
+    publish_task_update(
+        ctx_d.pub,
+        ctx_d.project_id,
+        ctx_d.epic_id,
+        ctx_d.run_id,
+        task.id,
+        "blocked",
+        task.title,
+    )
+    done_count = sum(1 for t in tf.tasks if t.status == "done")
+    tf.progress = TaskProgress(done=done_count, total=len(tf.tasks))
+    await tasks_repo.save_tasks(ctx_d.root, ctx_d.project_id, ctx_d.epic_id, tf)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +416,34 @@ async def _handle_dispatch_item(
         )
         return
 
+    # Host gate: once a provider-auth failure has been seen in this run, every
+    # further agent call would fail the same way — reject without consuming an
+    # attempt and tell the Manager to report to the user.
+    if ctx_d.provider_fault:
+        results[idx] = _verdict(
+            task_id,
+            accepted=False,
+            status="rejected",
+            reason=dispatch_suspended_reason(ctx_d.provider_fault[0]),
+        )
+        return
+
+    # Host gate: a verbatim re-dispatch after a size failure (max_tokens /
+    # context_overflow) is futile — the half-written work was discarded, so
+    # the identical item hits the identical limit.  Reject it without
+    # consuming an attempt; a changed contract, feedback, or agents composition
+    # (different fingerprint) is allowed through.
+    fingerprint = _item_fingerprint(task, feedback, include_worker, include_evaluator, repo_name)
+    prev = ctx_d.failure_log.get(task_id)
+    if prev is not None and prev.failure.retry_verbatim_futile and prev.fingerprint == fingerprint:
+        results[idx] = _verdict(
+            task_id,
+            accepted=False,
+            status="rejected",
+            reason=verbatim_retry_reason(task_id, prev.failure.kind, role=prev.role),
+        )
+        return
+
     # Evaluator-only pre-check: there must BE something to evaluate.  The
     # worktree is created lazily by worker-bearing attempts; if it does not
     # exist yet, an evaluator-only item has no evaluation subject — reject
@@ -341,25 +468,35 @@ async def _handle_dispatch_item(
             )
             return
 
+        # Resolve the evaluation subject up front (no attempt consumed):
+        # re-evaluating the very same subject (same contract, same or a
+        # superset of the files) that an Evaluator already failed on for size
+        # / no verdict is futile whatever the request shape — reject it.  The
+        # way through is a smaller task (task_update) or a changed contract.
+        changed = await _changed_paths(worktree_probe)
+        if (
+            prev is not None
+            and prev.role == "evaluator"
+            and prev.failure.retry_verbatim_futile
+            and prev.contract == task.contract
+            and prev.subject_files
+            and prev.subject_files <= set(changed)
+        ):
+            results[idx] = _verdict(
+                task_id,
+                accepted=False,
+                status="rejected",
+                reason=verbatim_retry_reason(task_id, prev.failure.kind, role="evaluator"),
+            )
+            return
+
     # Host safety: attempt counter upper bound.
     # Read-check-increment under state_lock to prevent double-dispatch
     # races when the same task_id appears in parallel coroutines.
     async with ctx_d.state_lock:
         attempt_count = ctx_d.attempt_counts.get(task_id, 0)
         if attempt_count >= ctx_d.max_attempts:
-            task.status = "blocked"
-            publish_task_update(
-                ctx_d.pub,
-                ctx_d.project_id,
-                ctx_d.epic_id,
-                ctx_d.run_id,
-                task.id,
-                "blocked",
-                task.title,
-            )
-            done_count = sum(1 for t in tf.tasks if t.status == "done")
-            tf.progress = TaskProgress(done=done_count, total=len(tf.tasks))
-            await tasks_repo.save_tasks(ctx_d.root, ctx_d.project_id, ctx_d.epic_id, tf)
+            await _mark_blocked(ctx_d, tf, task)
             results[idx] = _verdict(
                 task_id,
                 accepted=False,
@@ -417,23 +554,73 @@ async def _handle_dispatch_item(
             ctx_d.epic,
         )
 
-        attempt_result = await run_one_attempt(
-            ctx_d=ctx_d,
-            task=task,
-            repo_name=repo_name,
-            worktree_path=worktree_path,
-            feedback=feedback,
-            include_worker=include_worker,
-            include_evaluator=include_evaluator,
-        )
+        try:
+            attempt_result = await run_one_attempt(
+                ctx_d=ctx_d,
+                task=task,
+                repo_name=repo_name,
+                worktree_path=worktree_path,
+                feedback=feedback,
+                include_worker=include_worker,
+                include_evaluator=include_evaluator,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as host_exc:
+            # Safety net: a host/tool bug inside the attempt must not abort the
+            # whole dispatch call and strand the task in in_progress.  Report it
+            # as an explicit attempt failure instead.
+            from yukar.agents.dispatch_attempt import AttemptResult
+            from yukar.agents.failures import classify_agent_failure, failure_guidance
 
-    # attempt_result: (accepted, worker_id, eval_id, feedback_out, files_changed, worker_finalized)
+            logger.exception("dispatch attempt for %s crashed", task_id)
+            host_failure = classify_agent_failure(host_exc)
+            attempt_result = AttemptResult(
+                accepted=False,
+                worker_id=None,
+                eval_id=None,
+                feedback=failure_guidance(host_failure, role="worker", task_id=task_id),
+                files_changed=0,
+                failure=host_failure,
+                failure_role="host",
+            )
+
     # worker_finalized=True means run_one_attempt already marked the worker thread as failed
     # (exception path) — skip double-update for that thread.
-    accepted, worker_id, eval_id, feedback_out, files_changed, worker_finalized = attempt_result
+    accepted = attempt_result.accepted
+    worker_id = attempt_result.worker_id
+    eval_id = attempt_result.eval_id
+    feedback_out = attempt_result.feedback
+    files_changed = attempt_result.files_changed
+    worker_finalized = attempt_result.worker_finalized
+    failure = attempt_result.failure
 
     # Update task status and shared state under lock.
     async with ctx_d.state_lock:
+        # Failure memory: remember an infrastructure failure for the verbatim-
+        # retry gate; a normal outcome (accept or a real evaluator rejection)
+        # supersedes any earlier failure record.  A provider-auth failure
+        # suspends dispatch for the rest of the run.
+        if failure is not None:
+            ctx_d.failure_log[task_id] = FailedAttempt(
+                failure=failure,
+                role=attempt_result.failure_role or "worker",
+                fingerprint=fingerprint,
+                subject_files=frozenset(attempt_result.subject_files),
+                contract=task.contract,
+            )
+            if failure.run_fatal and not ctx_d.provider_fault:
+                ctx_d.provider_fault.append(f"{failure.exc_name}: {failure.detail}")
+                logger.error(
+                    "dispatch suspended for run %s after provider auth failure: %s",
+                    ctx_d.run_id,
+                    ctx_d.provider_fault[0],
+                )
+        else:
+            # A real outcome (accept or a code rejection) supersedes the
+            # failure memory.
+            ctx_d.failure_log.pop(task_id, None)
+
         if accepted:
             task.status = "done"
             completed_ids.add(task.id)
@@ -463,6 +650,13 @@ async def _handle_dispatch_item(
                 # Worker thread status was already set to "failed" inside run_one_attempt
                 # (exception path).  Only update the evaluator thread (if any).
                 await _update_thread_statuses(ctx_d, None, eval_id, "failed")
+            elif failure is not None and attempt_result.failure_role == "evaluator":
+                # The Worker finished normally; it was the EVALUATION that
+                # aborted (exception / no verdict).  The worker thread is
+                # resolved (it did its job — leaving it "active" would show a
+                # forever-running worker), only the evaluator thread failed.
+                await _update_thread_statuses(ctx_d, worker_id, None, "resolved")
+                await _update_thread_statuses(ctx_d, None, eval_id, "failed")
             else:
                 await _update_thread_statuses(ctx_d, worker_id, eval_id, "failed")
 
@@ -478,6 +672,21 @@ async def _handle_dispatch_item(
     extra_kw: dict[str, Any] = {"diff_files_changed": files_changed}
     if hitl_messages:
         extra_kw["hitl_messages"] = hitl_messages
+    if failure is not None:
+        # status="failed" (not needs_fix): the attempt aborted for an
+        # infrastructure reason and says nothing about the code.  ``reason``
+        # names the kind; ``feedback`` carries the host's guidance.
+        results[idx] = _verdict(
+            task_id,
+            accepted=False,
+            status="failed",
+            feedback=feedback_out,
+            worker_id=worker_id,
+            eval_id=eval_id,
+            reason=f"{attempt_result.failure_role or 'worker'} failed: {failure.kind}",
+            **extra_kw,
+        )
+        return
     results[idx] = _verdict(
         task_id,
         accepted=accepted,
@@ -563,6 +772,7 @@ async def run_dispatch(
 
 __all__ = [
     "DispatchContext",
+    "FailedAttempt",
     "OrchestratorHooks",
     "run_dispatch",
     "publish_task_update",

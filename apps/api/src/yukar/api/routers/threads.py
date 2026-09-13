@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from yukar.api.routers import get_epic_or_404, shelve_or_409
-from yukar.deps import UsageTrackerDep, WorkspaceRootDep
+from yukar.deps import UiLanguageDep, UsageTrackerDep, WorkspaceRootDep
 from yukar.events import bus as event_bus
 from yukar.events.sse import format_keepalive, run_event_to_sse, sse_response
 from yukar.git.worktree import remove_worktree
@@ -531,6 +531,7 @@ async def start_review(
     root: WorkspaceRootDep,
     supervisor: SupervisorDep,
     usage_tracker: UsageTrackerDep,
+    language: UiLanguageDep,
 ) -> ThreadEntry:
     """Start a read-only Reviewer run for this epic.
 
@@ -634,6 +635,7 @@ async def start_review(
                 manager_thread_id=thread_id,
                 agent_role="reviewer",
                 review_context=review_context,
+                language=language,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -750,6 +752,7 @@ async def post_message(
     body: PostMessageRequest,
     root: WorkspaceRootDep,
     supervisor: SupervisorDep,
+    language: UiLanguageDep,
 ) -> Message:
     # Reject messages targeting a non-existent epic before any session/state dir
     # is created.  Without this guard a client could post to an arbitrary epic_id
@@ -821,6 +824,7 @@ async def post_message(
                     thread_id,
                     body.content,
                     agent_role="reviewer",
+                    language=language,
                 )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -862,7 +866,9 @@ async def post_message(
 
         try:
             async with epic_thread_lock(project_id, epic_id):
-                await supervisor.start_or_inject(root, project_id, epic_id, thread_id, body.content)
+                await supervisor.start_or_inject(
+                    root, project_id, epic_id, thread_id, body.content, language=language
+                )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         # Return a synthetic Message so the caller gets a 201 with the content
