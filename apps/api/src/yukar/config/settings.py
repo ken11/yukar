@@ -196,8 +196,8 @@ class AgentSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_parallel_epics: int = Field(default=2, ge=1)
     max_parallel_workers: int = Field(default=4, ge=1)
-    worker_max_turns: int = Field(default=60, ge=1)
-    evaluator_max_turns: int = Field(default=20, ge=1)
+    worker_max_turns: int = Field(default=100, ge=1)
+    evaluator_max_turns: int = Field(default=100, ge=1)
     worker_max_total_tokens: int | None = None
     evaluator_max_total_tokens: int | None = None
 

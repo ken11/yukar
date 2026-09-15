@@ -55,7 +55,7 @@ async def run_worker(
     indexer_service: Any | None,
     git_author_name: str,
     git_author_email: str,
-    max_turns: int = 60,
+    max_turns: int = 100,
     max_total_tokens: int | None = None,
     extra_system_prompt: str = "",
     extra_tools: list[Any] | None = None,

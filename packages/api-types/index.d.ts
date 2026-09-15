@@ -1595,12 +1595,12 @@ export interface components {
             max_parallel_workers: number;
             /**
              * Worker Max Turns
-             * @default 60
+             * @default 100
              */
             worker_max_turns: number;
             /**
              * Evaluator Max Turns
-             * @default 20
+             * @default 100
              */
             evaluator_max_turns: number;
             /** Worker Max Total Tokens */

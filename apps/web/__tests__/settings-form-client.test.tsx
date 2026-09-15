@@ -49,8 +49,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     agent: {
       max_parallel_epics: 2,
       max_parallel_workers: 4,
-      worker_max_turns: 60,
-      evaluator_max_turns: 20,
+      worker_max_turns: 100,
+      evaluator_max_turns: 100,
       worker_max_total_tokens: null,
       evaluator_max_total_tokens: null,
     },

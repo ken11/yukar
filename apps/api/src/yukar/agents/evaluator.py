@@ -83,7 +83,7 @@ async def run_evaluator(
     conversation_manager: Any | None,
     epic: Epic | None = None,
     indexer_service: Any | None = None,
-    max_turns: int = 20,
+    max_turns: int = 100,
     max_total_tokens: int | None = None,
     extra_system_prompt: str = "",
     extra_tools: list[Any] | None = None,
