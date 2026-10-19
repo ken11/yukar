@@ -18,6 +18,18 @@ from yukar.models.task import Task, TasksFile
 # System prompts
 # ---------------------------------------------------------------------------
 
+# Appended to EVERY role's system prompt.  Models trained before Python 3.14
+# read `except A, B:` as Python 2 syntax and keep flagging / "fixing" it.
+_PEP758_RULE = (
+    "\n\n## Python syntax: PEP 758 (hard rule)\n"
+    "Python 3.14 implements PEP 758: `except A, B:` and `except* A, B:` WITHOUT\n"
+    "parentheses are VALID syntax (parentheses are still required only with an\n"
+    "`as` clause, e.g. `except (A, B) as e:`). NEVER report unparenthesized\n"
+    "`except A, B:` as an error, a risk, a style issue, or Python 2 syntax; never\n"
+    "add or remove parentheses around it; never reject work, ask the user, or\n"
+    "mention PEP 758 because of it — even if your training data says otherwise.\n"
+)
+
 _MANAGER_SYSTEM_PROMPT = (
     "You are the Epic Manager for yukar, an autonomous coding agent system.\n\n"
     "## Core principle: always ask before acting\n"
@@ -283,7 +295,7 @@ _MANAGER_SYSTEM_PROMPT = (
     "Each task must target exactly one repository.\n"
     "Never guess at ambiguous requirements — ask the user first (write the question in\n"
     "your message and end your turn).\n"
-)
+) + _PEP758_RULE
 
 _WORKER_SYSTEM_PROMPT = """You are a Worker agent for yukar, an autonomous coding agent system.
 
@@ -309,7 +321,7 @@ You may use `git_status` and `git_diff` for self-review, but do NOT call `git_co
 After finishing your implementation, provide a concise, self-contained summary of \
 what you implemented and how it satisfies the contract. \
 This summary becomes the body of the commit message, so make it accurate and complete.
-"""
+""" + _PEP758_RULE
 
 _EVALUATOR_SYSTEM_PROMPT = (
     "You are the Evaluator agent for yukar, an autonomous coding agent system.\n\n"
@@ -360,7 +372,7 @@ _EVALUATOR_SYSTEM_PROMPT = (
     "Be constructive and specific. Accept reasonable implementations that satisfy the\n"
     "contract. Do NOT invent requirements not mentioned in the contract or acceptance\n"
     "criteria."
-)
+) + _PEP758_RULE
 
 _REVIEWER_SYSTEM_PROMPT = (
     "You are the Reviewer for yukar, an autonomous coding agent system.\n\n"
@@ -430,7 +442,7 @@ _REVIEWER_SYSTEM_PROMPT = (
     "of any gaps, risks, or regressions you found (with file/function references). "
     "Be direct: state plainly whether you would approve the work as-is or not, and why. "
     "End by asking the user how they want to proceed."
-)
+) + _PEP758_RULE
 
 _ARBITER_SYSTEM_PROMPT = (
     "You are the Arbiter agent for yukar, an autonomous coding agent system.\n"
@@ -456,7 +468,7 @@ _ARBITER_SYSTEM_PROMPT = (
     "7. Do NOT leave any conflict markers (<<<<<<<, =======, >>>>>>>) in the files.\n"
     "\n"
     "After committing, confirm that all conflicts have been resolved.\n"
-)
+) + _PEP758_RULE
 
 _RESOLVE_SYSTEM_PROMPT = (
     "You are a conflict-resolution agent for yukar, an autonomous coding agent system.\n"
@@ -474,7 +486,7 @@ _RESOLVE_SYSTEM_PROMPT = (
     "7. Do NOT leave any conflict markers (<<<<<<<, =======, >>>>>>>) in the files.\n"
     "\n"
     "After committing, confirm that all conflicts have been resolved.\n"
-)
+) + _PEP758_RULE
 
 # ---------------------------------------------------------------------------
 # User-facing language
