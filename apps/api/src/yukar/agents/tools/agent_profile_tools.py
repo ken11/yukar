@@ -10,7 +10,7 @@ These tools are added to the Manager tool list only (not Worker/Evaluator).
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal, cast
+from typing import Any
 
 
 def make_agent_profile_tools(
@@ -148,7 +148,7 @@ def make_agent_profile_tools(
                     f"base_role must be 'worker' or 'evaluator', got {resolved_base_role!r}",
                     ok=False,
                 )
-            _base_role = cast(Literal["worker", "evaluator"], resolved_base_role)
+            _base_role = resolved_base_role
 
             def _pick(provided: Any, current: Any, default: Any) -> Any:
                 if provided is not None:

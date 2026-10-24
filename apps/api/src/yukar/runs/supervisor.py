@@ -45,7 +45,7 @@ import contextlib
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -376,7 +376,7 @@ class RunSupervisor:
         return (project_id, epic_id)
 
     @contextlib.asynccontextmanager
-    async def epic_mutation_lock(self) -> AsyncIterator[None]:
+    async def epic_mutation_lock(self) -> AsyncGenerator[None]:
         """Participate in the supervisor's run-start lock.
 
         ``PATCH /epics/{id} {status: completed}`` runs its guard + write inside

@@ -189,7 +189,7 @@ def _fake_tracker() -> TokenUsageTracker:
     from yukar.usage.tracker import TokenUsageTracker
 
     tracker = TokenUsageTracker.__new__(TokenUsageTracker)
-    tracker.is_over_budget = lambda: False  # type: ignore[attr-defined]
+    tracker.is_over_budget = lambda: False  # type: ignore[attr-defined]  # ty: ignore[invalid-assignment]
     return tracker
 
 

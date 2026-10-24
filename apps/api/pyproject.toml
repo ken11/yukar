@@ -17,8 +17,14 @@ dependencies = [
     "numpy>=2.0",
     "watchfiles>=0.21",
     "httpx>=0.28.1",
-    "anthropic>=0.105.2",
+    # strands-agents[anthropic] declares anthropic<1.0; AnthropicModel is not
+    # tested against the 1.x SDK, so stay within the range Strands supports.
+    "anthropic>=0.105.2,<1",
     "playwright>=1.61.0",
+    # Imported directly by agents/mcp_manager.py. strands-agents caps mcp below 2.2,
+    # and only the newest release of each mcp line receives fixes, so stay on the
+    # maintained 1.x line until strands accepts the current 2.x release.
+    "mcp>=1.30.0,<2",
     "python-pptx>=1.0.2",
 ]
 
@@ -34,6 +40,9 @@ packages = ["src/yukar"]
 
 [tool.uv]
 exclude-newer = "7 days"
+# Security exception (GHSA-6q48-6c7w-9gw2, compromised eMudhra CAs): take the
+# latest certifi immediately. Remove once the release-age window has passed.
+exclude-newer-package = { certifi = false }
 package = true
 
 [dependency-groups]
@@ -41,9 +50,7 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "httpx>=0.27.0",
-    # Pinned <0.15: ruff 0.15.x formatter corrupts `except (A, B):` into invalid
-    # `except A, B:` under target-version py314 (astral-sh/ruff#25065, #24041).
-    "ruff>=0.4.0,<0.15",
+    "ruff>=0.4.0",
     "ty>=0.0.1a6",
 ]
 

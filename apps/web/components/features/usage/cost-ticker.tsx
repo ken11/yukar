@@ -92,7 +92,9 @@ export function CostTicker({ initialData }: CostTickerProps) {
       >
         <span className="text-outline" style={{ fontSize: "9px", lineHeight: "12px" }}>
           {t("usage.budget.dailySpent")}
-        </span>
+        </span>{" "}
+        {/* Explicit separator keeps the accessible name "label amount" even where
+            the flex items are not blockified (no layout effect inside flex). */}
         <span
           className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap"
           style={{ fontSize: "11px", lineHeight: "15px" }}

@@ -953,8 +953,7 @@ class TestStartRunResolvesActiveTrialId:
         from yukar.usage.tracker import TokenUsageTracker
 
         tracker = TokenUsageTracker.__new__(TokenUsageTracker)
-        tracker._over_budget = False  # type: ignore[attr-defined]
-        tracker.is_over_budget = lambda: False  # type: ignore[attr-defined]
+        tracker.is_over_budget = lambda: False  # type: ignore[attr-defined]  # ty: ignore[invalid-assignment]
 
         sup = RunSupervisor()
         mock_start = AsyncMock(return_value="run-fake")
@@ -1022,8 +1021,7 @@ class TestStartRunResolvesActiveTrialId:
         )
 
         tracker = TokenUsageTracker.__new__(TokenUsageTracker)
-        tracker._over_budget = False  # type: ignore[attr-defined]
-        tracker.is_over_budget = lambda: False  # type: ignore[attr-defined]
+        tracker.is_over_budget = lambda: False  # type: ignore[attr-defined]  # ty: ignore[invalid-assignment]
 
         sup = RunSupervisor()
         mock_start = AsyncMock(return_value="run-fake-mgr")

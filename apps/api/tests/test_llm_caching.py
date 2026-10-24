@@ -1,10 +1,10 @@
 """Tests for prompt-caching and conversation-manager factory additions.
 
 Covers:
-- CachingAnthropicModel: Strands CacheConfig + cachePoint injection, converted by
-  the parent AnthropicModel into cache_control ephemeral on the last user message.
-- create_model(provider="anthropic") returns CachingAnthropicModel / AnthropicModel
-  depending on prompt_caching.
+- AnthropicModel with Strands CacheConfig: cache_control ephemeral on the last
+  user message, cache token counts in metadata usage.
+- create_model(provider="anthropic") attaches cache_config only when
+  prompt_caching is on.
 - create_conversation_manager returns SummarizingConversationManager / None
   depending on enabled flag and proactive_compression_threshold.
 """
@@ -19,21 +19,22 @@ from unittest.mock import patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# CachingAnthropicModel tests
+# AnthropicModel cache_config tests
 # ---------------------------------------------------------------------------
 
 
-class TestCachingAnthropicModel:
-    """Unit tests for CachingAnthropicModel (CacheConfig + cachePoint injection)."""
+class TestAnthropicModelCacheConfig:
+    """Strands AnthropicModel with ``cache_config`` (the shape create_model builds)."""
 
-    def _make_model(self, **kwargs: Any):  # type: ignore[return]
-        from yukar.llm.anthropic_cache import CachingAnthropicModel
+    def _make_model(self, cache_config: Any = None):  # type: ignore[return]
+        from strands.models import CacheConfig
+        from strands.models.anthropic import AnthropicModel
 
-        return CachingAnthropicModel(
+        return AnthropicModel(
             model_id="claude-3-haiku-20240307",
             max_tokens=256,
             client_args={"api_key": "test-key"},
-            **kwargs,
+            cache_config=cache_config or CacheConfig(strategy="anthropic"),
         )
 
     def _minimal_messages(self) -> list[dict[str, Any]]:
@@ -55,12 +56,7 @@ class TestCachingAnthropicModel:
             },
         ]
 
-    def test_default_cache_config_strategy_anthropic(self) -> None:
-        model = self._make_model()
-        assert model._cache_config.strategy == "anthropic"  # type: ignore[attr-defined]
-
-    # The injected cachePoint is converted by AnthropicModel into cache_control
-    # ephemeral on the last user message's last content block.
+    # cache_control ephemeral lands on the last user message's last content block.
     def test_cache_control_on_last_user_message(self) -> None:
         model = self._make_model()
         req = model.format_request(
@@ -69,22 +65,22 @@ class TestCachingAnthropicModel:
             system_prompt="You are helpful.",
         )
         last_content = req["messages"][-1]["content"]
-        # cachePoint is consumed (never emitted as its own block); cache_control
-        # lands on the preceding real content block.
         assert last_content[-1].get("cache_control") == {"type": "ephemeral"}
         assert last_content[-1]["type"] == "text"
 
-    # A single message breakpoint already caches tools+system as the request
-    # prefix (Anthropic cache ordering tools -> system -> messages), so system
-    # stays a plain string and tools carry no separate cache_control.
-    def test_system_and_tools_left_unannotated(self) -> None:
+    # The system prompt carries its own breakpoint (so tools+system stay cached
+    # even when summarization rewrites the history); tools need none because the
+    # system breakpoint already covers them (cache order tools -> system -> messages).
+    def test_system_breakpoint_tools_unannotated(self) -> None:
         model = self._make_model()
         req = model.format_request(
             messages=self._minimal_messages(),
             tool_specs=self._minimal_tools(),
             system_prompt="You are helpful.",
         )
-        assert isinstance(req["system"], str)
+        assert req["system"] == [
+            {"type": "text", "text": "You are helpful.", "cache_control": {"type": "ephemeral"}}
+        ]
         for tool in req["tools"]:
             assert "cache_control" not in tool
 
@@ -109,69 +105,27 @@ class TestCachingAnthropicModel:
         before = json.loads(json.dumps(messages))
         model.format_request(messages=messages, system_prompt="sys")
         assert messages == before, "source messages must not be mutated"
-        # No cachePoint leaked into the source.
         assert all("cachePoint" not in block for block in messages[0]["content"])
 
-    # CacheConfig.ttl is carried onto the injected cachePoint.
-    def test_ttl_forwarded_to_cache_point(self) -> None:
-        from strands.models import CacheConfig
-
-        model = self._make_model(cache_config=CacheConfig(strategy="anthropic", ttl="1h"))
-        injected = model._with_cache_point(self._minimal_messages())  # type: ignore[attr-defined]
-        cache_block = injected[-1]["content"][-1]
-        assert cache_block["cachePoint"] == {"type": "default", "ttl": "1h"}
-
-    # Boundary: no messages at all → no injection, no crash.
+    # Boundary: no messages at all → no crash.
     def test_no_messages_no_injection(self) -> None:
         model = self._make_model()
         req = model.format_request(messages=[], system_prompt="sys")
         assert req["messages"] == []
 
-    # Boundary: no user message → original list returned unchanged.
-    def test_no_user_message_returns_unchanged(self) -> None:
+    # Boundary: no user message → nothing annotated.
+    def test_no_user_message_no_cache_control(self) -> None:
         model = self._make_model()
         messages = [{"role": "assistant", "content": [{"text": "hi"}]}]
-        injected = model._with_cache_point(messages)  # type: ignore[attr-defined]
-        assert injected is messages
+        req = model.format_request(messages=messages, system_prompt="sys")
+        for block in req["messages"][0]["content"]:
+            assert "cache_control" not in block
 
-    # Boundary: a user message with empty content is not chosen as the target.
-    def test_empty_content_user_message_skipped(self) -> None:
-        model = self._make_model()
-        messages = [{"role": "user", "content": []}]
-        injected = model._with_cache_point(messages)  # type: ignore[attr-defined]
-        assert injected is messages
-
-    # Boundary: a user message whose blocks are all non-anchor (e.g. media the
-    # parent may skip) is not chosen — guards against an empty formatted block
-    # list when the cachePoint is converted. The earlier text message wins.
-    def test_anchorless_user_message_not_targeted(self) -> None:
-        model = self._make_model()
-        image_block = {"image": {"format": "png", "source": {"bytes": b"x"}}}
-        messages = [
-            {"role": "user", "content": [{"text": "anchor here"}]},
-            {"role": "assistant", "content": [{"text": "ok"}]},
-            {"role": "user", "content": [image_block]},
-        ]
-        injected = model._with_cache_point(messages)  # type: ignore[attr-defined]
-        # cachePoint lands on the first (text) user message, not the image one.
-        assert any("cachePoint" in b for b in injected[0]["content"])
-        assert all("cachePoint" not in b for b in injected[2]["content"])
-
-    # Boundary: no anchor block anywhere → no injection, no crash.
-    def test_no_anchor_block_returns_unchanged(self) -> None:
-        model = self._make_model()
-        messages = [{"role": "user", "content": [{"image": {"format": "png", "source": {}}}]}]
-        injected = model._with_cache_point(messages)  # type: ignore[attr-defined]
-        assert injected is messages
-
-    # format_chunk enriches metadata events with cache token counts.
+    # format_chunk reports cache token counts on metadata events.
     # The "metadata" synthetic event is built by AnthropicModel.stream from the
     # final message snapshot (get_final_message().usage.model_dump()).
     def test_format_chunk_metadata_enriched_with_cache_tokens(self) -> None:
-        """format_chunk must add cacheReadInputTokens / cacheWriteInputTokens to metadata."""
         model = self._make_model()
-        # Simulate the synthetic "metadata" event that AnthropicModel.stream builds
-        # from the final message snapshot's usage.model_dump() output.
         metadata_event = {
             "type": "metadata",
             "usage": {
@@ -187,12 +141,10 @@ class TestCachingAnthropicModel:
         usage = chunk["metadata"]["usage"]  # type: ignore[index]
         assert usage.get("cacheReadInputTokens") == 80
         assert usage.get("cacheWriteInputTokens") == 10
-        # Parent's keys must be preserved.
         assert "inputTokens" in usage
         assert "outputTokens" in usage
 
     def test_format_chunk_no_cache_fields_passthrough(self) -> None:
-        """format_chunk must not inject keys when raw usage has no cache fields."""
         model = self._make_model()
         metadata_event = {
             "type": "metadata",
@@ -207,14 +159,6 @@ class TestCachingAnthropicModel:
         usage = chunk["metadata"]["usage"]  # type: ignore[index]
         assert "cacheReadInputTokens" not in usage
         assert "cacheWriteInputTokens" not in usage
-
-    def test_format_chunk_non_metadata_event_passthrough(self) -> None:
-        """format_chunk must pass through non-metadata events unchanged."""
-        model = self._make_model()
-        message_start_event = {"type": "message_start"}
-        chunk = model.format_chunk(message_start_event)
-        assert isinstance(chunk, dict)
-        assert "messageStart" in chunk
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +245,13 @@ class TestCreateModelBedrock:
 
 
 class TestCreateModelAnthropic:
-    """create_model with provider='anthropic' returns the right class."""
+    """create_model with provider='anthropic' respects prompt_caching."""
 
-    def test_prompt_caching_true_returns_caching_model(self) -> None:
+    def test_prompt_caching_true_attaches_cache_config(self) -> None:
+        from strands.models import CacheConfig
+        from strands.models.anthropic import AnthropicModel
+
         from yukar.config.settings import LLMSettings
-        from yukar.llm.anthropic_cache import CachingAnthropicModel
         from yukar.llm.factory import create_model
 
         settings = LLMSettings(
@@ -315,14 +261,15 @@ class TestCreateModelAnthropic:
         )
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
             model = create_model(settings)
-        assert isinstance(model, CachingAnthropicModel)
-        assert model._cache_config.strategy == "anthropic"  # type: ignore[attr-defined]
+        assert isinstance(model, AnthropicModel)
+        cc = model.config.get("cache_config")  # type: ignore[attr-defined]
+        assert isinstance(cc, CacheConfig)
+        assert cc.strategy == "anthropic"
 
-    def test_prompt_caching_false_returns_base_model(self) -> None:
+    def test_prompt_caching_false_no_cache_config(self) -> None:
         from strands.models.anthropic import AnthropicModel
 
         from yukar.config.settings import LLMSettings
-        from yukar.llm.anthropic_cache import CachingAnthropicModel
         from yukar.llm.factory import create_model
 
         settings = LLMSettings(
@@ -333,7 +280,7 @@ class TestCreateModelAnthropic:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
             model = create_model(settings)
         assert isinstance(model, AnthropicModel)
-        assert not isinstance(model, CachingAnthropicModel)
+        assert "cache_config" not in model.config  # type: ignore[attr-defined]
 
     # The base model (caching disabled) injects no cache_control at all.
     def test_base_model_emits_no_cache_control(self) -> None:

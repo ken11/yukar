@@ -209,7 +209,7 @@ class TestMcpToolsByServer:
 
         mgr = McpClientManager([McpServerConfig(name="s1", type="stdio", command="echo")])
         expected = {"s1": [MagicMock()]}
-        mgr._get_tools_by_server = MagicMock(return_value=expected)  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        mgr._get_tools_by_server = MagicMock(return_value=expected)  # type: ignore[method-assign]
 
         with patch("asyncio.to_thread", new=AsyncMock(return_value=expected)):
             result = await mgr.get_tools_by_server_async()

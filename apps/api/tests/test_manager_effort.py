@@ -160,26 +160,29 @@ class TestCreateModelEffortAnthropic:
         assert "params" not in cfg
 
     def test_effort_with_caching_sets_params(self) -> None:
-        """Effort is injected on CachingAnthropicModel when prompt_caching=True."""
-        from yukar.llm.anthropic_cache import CachingAnthropicModel
+        """Effort is injected alongside cache_config when prompt_caching=True."""
+        from strands.models.anthropic import AnthropicModel
+
         from yukar.llm.factory import create_model
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
             model = create_model(self._make_settings(prompt_caching=True), effort="max")
-        assert isinstance(model, CachingAnthropicModel)
+        assert isinstance(model, AnthropicModel)
         cfg = cast(dict[str, Any], model.config)  # type: ignore[attr-defined]
+        assert "cache_config" in cfg
         assert "params" in cfg
         params = cast(dict[str, Any], cfg["params"])
         assert params["thinking"] == {"type": "adaptive"}
         assert params["output_config"] == {"effort": "max"}
 
     def test_caching_without_effort_no_params(self) -> None:
-        from yukar.llm.anthropic_cache import CachingAnthropicModel
+        from strands.models.anthropic import AnthropicModel
+
         from yukar.llm.factory import create_model
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
             model = create_model(self._make_settings(prompt_caching=True))
-        assert isinstance(model, CachingAnthropicModel)
+        assert isinstance(model, AnthropicModel)
         cfg = cast(dict[str, Any], model.config)  # type: ignore[attr-defined]
         assert "params" not in cfg
 

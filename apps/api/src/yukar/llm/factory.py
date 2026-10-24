@@ -126,14 +126,8 @@ def create_model(
 
     if provider == "anthropic":
         # Lazy import: fails with clear message if 'anthropic' is not installed.
-        # CachingAnthropicModel imports AnthropicModel internally, so both are
-        # wrapped in the same try/except to surface a helpful message when the
-        # 'anthropic' package is absent.
         try:
             from strands.models.anthropic import AnthropicModel
-
-            if settings.prompt_caching:
-                from yukar.llm.anthropic_cache import CachingAnthropicModel
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError(
                 "provider='anthropic' requires the 'anthropic' package. Run: uv add anthropic"
@@ -160,13 +154,10 @@ def create_model(
         if settings.prompt_caching:
             from strands.models import CacheConfig
 
-            return CachingAnthropicModel(
-                cache_config=CacheConfig(strategy="anthropic"),
-                model_id=model_id,
-                max_tokens=settings.max_tokens,
-                client_args=client_args or None,
-                **anthropic_extra,
-            )
+            # AnthropicModel places a single cache point on the last user message
+            # (caching the whole tools → system → messages prefix) and reports
+            # cacheRead/WriteInputTokens in its metadata usage.
+            anthropic_extra["cache_config"] = CacheConfig(strategy="anthropic")
 
         return AnthropicModel(
             model_id=model_id,

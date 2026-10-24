@@ -809,7 +809,7 @@ class TestNativeWiring:
         from strands.injection._message_injection import _fold_into_last_user_message
 
         original: list[Any] = [{"role": "user", "content": [{"text": "hello"}]}]
-        folded = _fold_into_last_user_message(original, "<memory>test</memory>")
+        folded, _ = _fold_into_last_user_message(original, "<memory>test</memory>")
 
         # folded is a new list
         assert folded is not original

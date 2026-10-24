@@ -285,11 +285,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 async def _prefetch_grammars() -> None:
     """Ensure the tree-sitter grammar bundle is cached before indexing starts.
 
-    ``DownloadManager.new(version).ensure_group("all")`` fetches the "all"
-    bundle (~21 MB) once and stores it under the platform cache directory.
+    ``download_group("all")`` fetches the "all" bundle (~21 MB) once and
+    stores it under the platform cache directory.
     Subsequent calls are idempotent (the files are already present).
 
-    The call is wrapped in ``asyncio.to_thread`` because ``ensure_group`` is a
+    The call is wrapped in ``asyncio.to_thread`` because ``download_group`` is a
     synchronous network/filesystem operation.  Failure is logged as a warning
     so the application still starts; structure splitting will degrade to
     line-based splitting until the bundle is available.
@@ -298,8 +298,7 @@ async def _prefetch_grammars() -> None:
     def _do_prefetch() -> None:
         import tree_sitter_language_pack as tslp  # type: ignore[import-untyped]
 
-        dm = tslp.DownloadManager.new(tslp.__version__)
-        dm.ensure_group("all")
+        tslp.download_group("all")
 
     try:
         await asyncio.to_thread(_do_prefetch)
