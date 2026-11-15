@@ -221,7 +221,7 @@ class TestArbiterRunnerStopRemainder:
                 return result
             return await original_process(*args, **kwargs)
 
-        runner._process_epic = _process_epic_with_stop  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        runner._process_epic = _process_epic_with_stop  # type: ignore[method-assign]
 
         # Receive EpicMergeProgressEvent(phase="finished") and verify results.
         from yukar.events import bus as event_bus
@@ -321,7 +321,7 @@ class TestArbiterRunnerStopRemainder:
                 runner._stopped = True
             return result
 
-        runner._process_epic = _process_with_stop  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        runner._process_epic = _process_with_stop  # type: ignore[method-assign]
 
         from yukar.events import bus as event_bus
         from yukar.models.events import EpicMergeProgressEvent

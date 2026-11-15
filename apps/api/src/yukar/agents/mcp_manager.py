@@ -302,8 +302,11 @@ class McpClientManager:
                         args=list(cfg.args),
                         env=child_env,
                     )
+                    # strands' MCPTransport annotation still names mcp 1.x's anyio
+                    # memory streams; mcp 2.x stdio_client yields the equivalent
+                    # ReadStream/WriteStream protocols, which ClientSession accepts.
                     client = MCPClient(
-                        lambda _params=params: stdio_client(_params),  # noqa: B023
+                        lambda _params=params: stdio_client(_params),  # noqa: B023  # ty: ignore[invalid-argument-type]
                         **filter_kwargs,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
                     )
 

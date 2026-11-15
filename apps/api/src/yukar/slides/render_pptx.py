@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from lxml import etree  # ty: ignore[unresolved-import] — lxml ships no stubs
+from lxml import etree  # ty: ignore[import-not-found] — lxml ships no stubs
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE

@@ -21,10 +21,10 @@ dependencies = [
     # tested against the 1.x SDK, so stay within the range Strands supports.
     "anthropic>=0.105.2,<1",
     "playwright>=1.61.0",
-    # Imported directly by agents/mcp_manager.py. strands-agents caps mcp below 2.2,
-    # and only the newest release of each mcp line receives fixes, so stay on the
-    # maintained 1.x line until strands accepts the current 2.x release.
-    "mcp>=1.30.0,<2",
+    # Imported directly by agents/mcp_manager.py. Only the newest release of each
+    # mcp line receives fixes; strands-agents accepts mcp < 2.4, which includes the
+    # current 2.x release.
+    "mcp>=2.3.0,<3",
     "python-pptx>=1.0.2",
 ]
 
@@ -40,9 +40,6 @@ packages = ["src/yukar"]
 
 [tool.uv]
 exclude-newer = "7 days"
-# Security exception (GHSA-6q48-6c7w-9gw2, compromised eMudhra CAs): take the
-# latest certifi immediately. Remove once the release-age window has passed.
-exclude-newer-package = { certifi = false }
 package = true
 
 [dependency-groups]

@@ -1,6 +1,54 @@
 version: 2
+
+# Supply-chain policy: only take releases that are at least 7 days old.
+# This mirrors `minimumReleaseAge: 10080` (pnpm-workspace.yaml) and
+# `exclude-newer = "7 days"` (apps/api/pyproject.toml). Without a matching
+# cooldown, Dependabot would pick versions that pnpm / uv then refuse to resolve.
+# (Cooldown does not apply to security updates; those still go through the
+# package managers' own release-age gate.)
+
 updates:
+  # Frontend: pnpm workspace (apps/web, packages/api-types).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Node runtime is pinned to 24.x (.node-version / engines / CI).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # packages/api-types must stay on TypeScript 5: openapi-typescript needs
+      # the JS compiler API, which TypeScript 7 (Go) no longer ships.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  # Backend: uv project (pyproject.toml + uv.lock).
+  - package-ecosystem: "uv"
+    directory: "/apps/api"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      uv-minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # strands-agents[anthropic] declares anthropic < 1.0.
+      - dependency-name: "anthropic"
+        update-types: ["version-update:semver-major"]
+
+  # CI workflow actions (pinned by commit SHA).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      actions-minor-and-patch:
+        update-types: ["minor", "patch"]

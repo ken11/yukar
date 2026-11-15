@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 
 import pytest
-from lxml import etree  # ty: ignore[unresolved-import] — lxml ships no stubs
+from lxml import etree  # ty: ignore[import-not-found] — lxml ships no stubs
 from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
